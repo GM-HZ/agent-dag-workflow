@@ -1,0 +1,220 @@
+import type { Context } from '@deepseek-ai/cordis'
+import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import {
+  snapshotJsonObject,
+  snapshotJsonValue,
+  type WorkflowRun,
+  type WorkflowRunResult,
+  type WorkflowTemplate,
+} from '@gm-hz/dsh-workflow-core'
+import type {
+  CanvasCatalogSummary,
+  CanvasDraftCreateRequest,
+  CanvasDraftDiffRequest,
+  CanvasDraftPublishRequest,
+  CanvasDraftReadRequest,
+  CanvasDraftRunRequest,
+  CanvasNodeDefinition,
+  CanvasPublishedRevision,
+  CanvasResumeRequest,
+  CanvasRunRequest,
+  CanvasRunResult,
+  CanvasTemplateRequest,
+  CanvasTrace,
+  CanvasTraceRequest,
+  CanvasDraftUpdateRequest,
+  CanvasTemplateDiff,
+  CanvasWorkflowDiagnostic,
+  CanvasWorkflowDraft,
+  CanvasWorkflowTemplate,
+  WorkflowCanvasAction,
+  WorkflowCanvasConfig,
+  WorkflowCanvasPrincipal,
+} from './types.js'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    workflowCanvas: WorkflowCanvasGateway
+  }
+}
+
+export class WorkflowCanvasGateway extends TypertRemoteService {
+  static inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine']
+
+  constructor(ctx: Context, private readonly config: WorkflowCanvasConfig) {
+    super(ctx, 'workflowCanvas')
+  }
+
+  @Remote
+  async nodes(sessionId: string): Promise<readonly CanvasNodeDefinition[]> {
+    await this.guard(sessionId, 'nodes:list')
+    return this.ctx.workflowNodes.list().map(node => ({
+      uses: `${node.type}@${node.version}`,
+      title: node.title,
+      description: node.description,
+      role: node.role ?? 'regular',
+      configSchema: snapshotJsonObject(node.configSchema),
+      inputSchema: snapshotJsonObject(node.inputSchema),
+      outputSchema: snapshotJsonObject(node.outputSchema),
+      outputPorts: [...node.outputPorts],
+      requiredOutputPorts: [...(node.requiredOutputPorts ?? [])],
+      capabilities: [...node.capabilities],
+      retry: node.retry,
+    }))
+  }
+
+  @Remote
+  async templates(sessionId: string): Promise<readonly CanvasCatalogSummary[]> {
+    await this.guard(sessionId, 'templates:list')
+    return snapshotJsonValue(this.ctx.workflowTemplates.list()) as unknown as readonly CanvasCatalogSummary[]
+  }
+
+  @Remote
+  async createDraft(sessionId: string, request: CanvasDraftCreateRequest): Promise<CanvasWorkflowDraft> {
+    await this.guard(sessionId, 'draft:create', request.template.metadata.id)
+    return snapshotJsonValue(this.ctx.workflowTemplates.createDraft(asTemplate(request.template))) as unknown as CanvasWorkflowDraft
+  }
+
+  @Remote
+  async readDraft(sessionId: string, request: CanvasDraftReadRequest): Promise<CanvasWorkflowDraft> {
+    await this.guard(sessionId, 'draft:read', request.id)
+    return snapshotJsonValue(this.ctx.workflowTemplates.readDraft(request.id)) as unknown as CanvasWorkflowDraft
+  }
+
+  @Remote
+  async updateDraft(sessionId: string, request: CanvasDraftUpdateRequest): Promise<CanvasWorkflowDraft> {
+    await this.guard(sessionId, 'draft:update', request.id)
+    return snapshotJsonValue(this.ctx.workflowTemplates.updateDraft(
+      request.id,
+      request.expectedRevision,
+      asTemplate(request.template),
+    )) as unknown as CanvasWorkflowDraft
+  }
+
+  @Remote
+  async validate(sessionId: string, request: CanvasTemplateRequest): Promise<{
+    readonly diagnostics: readonly CanvasWorkflowDiagnostic[]
+  }> {
+    await this.guard(sessionId, 'draft:validate', request.template.metadata.id)
+    return {
+      diagnostics: snapshotJsonValue(this.ctx.workflowTemplates.validate(asTemplate(request.template))) as unknown as readonly CanvasWorkflowDiagnostic[],
+    }
+  }
+
+  @Remote
+  async diff(sessionId: string, request: CanvasDraftDiffRequest): Promise<CanvasTemplateDiff> {
+    await this.guard(sessionId, 'draft:diff', request.id)
+    return snapshotJsonValue(this.ctx.workflowTemplates.diff(request.id, asTemplate(request.candidate))) as unknown as CanvasTemplateDiff
+  }
+
+  @Remote
+  async publish(sessionId: string, request: CanvasDraftPublishRequest): Promise<CanvasPublishedRevision> {
+    await this.guard(sessionId, 'draft:publish', request.id)
+    return snapshotJsonValue(this.ctx.workflowTemplates.publish(request.id, request.expectedRevision)) as unknown as CanvasPublishedRevision
+  }
+
+  @Remote
+  async run(sessionId: string, request: CanvasRunRequest, signal: AbortSignal): Promise<CanvasRunResult> {
+    const principal = await this.guard(sessionId, 'run:start', request.id)
+    const published = this.ctx.workflowTemplates.getPublished(request.id, request.revision)
+    if (published.revision !== request.revision) throw new Error(`published revision mismatch for ${request.id}`)
+    return settle(this.ctx.dagWorkflowEngine.start({
+      template: published.template,
+      inputs: snapshotJsonObject(request.inputs),
+      parent: principal.agent,
+      signal,
+    }))
+  }
+
+  @Remote
+  async runDraft(sessionId: string, request: CanvasDraftRunRequest, signal: AbortSignal): Promise<CanvasRunResult> {
+    const principal = await this.guard(sessionId, 'run:start', request.template.metadata.id)
+    return settle(this.ctx.dagWorkflowEngine.start({
+      template: asTemplate(request.template),
+      inputs: snapshotJsonObject(request.inputs),
+      parent: principal.agent,
+      signal,
+    }))
+  }
+
+  @Remote
+  async resume(sessionId: string, request: CanvasResumeRequest, signal: AbortSignal): Promise<CanvasRunResult> {
+    const principal = await this.guard(sessionId, 'run:resume', request.runId)
+    return settle(this.ctx.dagWorkflowEngine.resume({
+      runId: request.runId,
+      parent: principal.agent,
+      signal,
+      ...(request.unknownNodeResolutions === undefined ? {} : {
+        unknownNodeResolutions: request.unknownNodeResolutions,
+      }),
+    }))
+  }
+
+  @Remote
+  async trace(sessionId: string, request: CanvasTraceRequest): Promise<CanvasTrace> {
+    await this.guard(sessionId, 'run:trace', request.runId)
+    const record = this.ctx.workflowRuns.loadRun(request.runId)
+    if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
+    const checkpoint = record.checkpoint
+    return {
+      runId: record.runId,
+      templateId: record.template.metadata.id,
+      semanticHash: record.semanticHash,
+      createdAt: record.createdAt,
+      status: checkpoint.status,
+      checkpointSeq: checkpoint.seq,
+      nodeStates: checkpoint.nodeStates,
+      edgeStates: checkpoint.edgeStates,
+      nodeOutputs: checkpoint.nodeOutputs,
+      nodeProgress: checkpoint.nodeProgress,
+      events: record.events.map(event => snapshotJsonObject(event)),
+      ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
+    }
+  }
+
+  private async guard(
+    sessionId: string,
+    action: WorkflowCanvasAction,
+    resourceId?: string,
+  ): Promise<WorkflowCanvasPrincipal> {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('workflow canvas sessionId is required')
+    const principal = await this.config.authorize({
+      sessionId,
+      action,
+      ...(resourceId === undefined ? {} : { resourceId }),
+    })
+    if (principal === undefined) throw new Error(`workflow canvas access denied for ${action}`)
+    if (typeof principal.subject !== 'string' || principal.subject.length === 0) throw new Error('workflow canvas authority returned an invalid subject')
+    const agent = principal.agent
+    if (agent === null || typeof agent !== 'object' || agent.session === null || typeof agent.session !== 'object'
+      || typeof agent.session.append !== 'function') {
+      throw new Error('workflow canvas authority returned an invalid DSH Agent')
+    }
+    return principal
+  }
+}
+
+async function settle(run: WorkflowRun): Promise<CanvasRunResult> {
+  let result: WorkflowRunResult | undefined
+  let executionError: unknown
+  try { result = await run.result } catch (error: unknown) { executionError = error }
+  let disposalError: unknown
+  try { await run.dispose() } catch (error: unknown) { disposalError = error }
+  if (executionError !== undefined || disposalError !== undefined) {
+    const errors = [executionError, disposalError].filter(error => error !== undefined)
+    throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'workflow run and disposal failed')
+  }
+  if (result === undefined) throw new Error('workflow result was not available')
+  return result.status === 'completed'
+    ? { runId: result.runId, status: result.status, outputs: result.outputs }
+    : {
+        runId: result.runId,
+        status: result.status,
+        error: result.error,
+        ...(result.needsAttention === undefined ? {} : { needsAttention: result.needsAttention }),
+      }
+}
+
+function asTemplate(template: CanvasWorkflowTemplate): WorkflowTemplate {
+  return snapshotJsonObject(template) as unknown as WorkflowTemplate
+}

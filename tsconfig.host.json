@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@deepseek-ai/dsh-typert-protocol": ["./packages/canvas/typert-protocol.d.ts"]
+    }
+  },
+  "files": [],
+  "references": [
+    { "path": "./packages/canvas/tsconfig.host.json" }
+  ]
+}
