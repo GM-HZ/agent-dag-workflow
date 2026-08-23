@@ -1,0 +1,13 @@
+# Upstream source checkouts are local research material. Keep only the
+# reproducible revision and sparse-checkout instructions in ref_project/README.md.
+/ref_project/deepseek-harness/
+/ref_project/coze-studio/
+/ref_project/dify/
+/ref_project/graphon/
+
+# Local/editor artifacts
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
