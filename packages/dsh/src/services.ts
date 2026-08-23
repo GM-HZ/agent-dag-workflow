@@ -3,6 +3,7 @@ import {
   DagWorkflowEngine as CoreDagWorkflowEngine,
   InMemoryWorkflowRunStore,
   WorkflowExecutionError,
+  WorkflowPauseError,
   WorkflowNodeRegistry,
   compileWorkflowOrThrow,
   registerCoreNodes,
@@ -156,7 +157,7 @@ export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplat
 }
 
 export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
-  static inject = ['tools', 'subagents', 'approval', 'workflowNodes', 'workflowRuns']
+  static inject = ['tools', 'subagents', 'approval', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Set<WorkflowRun>()
@@ -167,7 +168,8 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
     const runtime = ctx as DshRuntimeContext
     const tools = runtime.tools
     this.recordSessionEvents = config.recordSessionEvents ?? true
-    this.engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
+    let engine: CoreDagWorkflowEngine
+    engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
       tools: {
         execute: async request => {
           if (!isDshAgentLike(request.owner)) {
@@ -249,7 +251,58 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
           })
         },
       },
+      subworkflows: {
+        execute: async request => {
+          if (!isDshAgentLike(request.owner)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'nested workflows require the owning DSH Agent', { nodeId: request.nodeId })
+          }
+          const published = ctx.workflowTemplates.getPublished(request.templateId, request.revision)
+          if (published.revision !== request.revision) {
+            throw new WorkflowExecutionError('SUBWORKFLOW_REVISION_MISMATCH', `expected ${request.templateId}@${request.revision}, received revision ${published.revision}`, { nodeId: request.nodeId })
+          }
+          const compiled = compileWorkflowOrThrow(published.template, ctx.workflowNodes.registry)
+          const observe = createRunObserver(ctx, request.owner, published.id, compiled.semanticHash, this.recordSessionEvents)
+          const child = engine.invoke({
+            invocationId: request.invocationId,
+            depth: request.depth,
+            subworkflowDepthLimit: request.depthLimit,
+            template: published.template,
+            inputs: request.inputs,
+            owner: request.owner,
+            signal: request.signal,
+            onEvent: observe,
+          })
+          this.active.add(child)
+          let result: Awaited<typeof child.result> | undefined
+          let executionError: unknown
+          try {
+            result = await child.result
+          } catch (error: unknown) {
+            executionError = error
+          }
+          this.active.delete(child)
+          let disposalError: unknown
+          try {
+            await child.dispose()
+          } catch (error: unknown) {
+            disposalError = error
+          }
+          if (executionError !== undefined || disposalError !== undefined) {
+            const errors = [executionError, disposalError].filter(error => error !== undefined)
+            throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'subworkflow execution and disposal failed')
+          }
+          if (result === undefined) throw new Error('subworkflow result was not available')
+          if (result.status === 'paused') {
+            throw new WorkflowPauseError(`subworkflow ${result.runId} requires operator attention: ${result.error}`, result.runId)
+          }
+          if (result.status !== 'completed') {
+            throw new WorkflowExecutionError('SUBWORKFLOW_FAILED', `subworkflow ${result.runId} ${result.status}: ${result.error}`, { nodeId: request.nodeId })
+          }
+          return { runId: result.runId, outputs: result.outputs }
+        },
+      },
     }, { runStore: ctx.workflowRuns })
+    this.engine = engine
     ctx.effect(() => async () => {
       const runs = [...this.active]
       for (const run of runs) run.cancel('dag workflow provider disposed')

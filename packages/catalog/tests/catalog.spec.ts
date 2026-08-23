@@ -26,6 +26,39 @@ function template(overrides: { name?: string; layoutX?: number; endUses?: string
   }
 }
 
+function dependencyTemplate(id: string, dependency?: { readonly id: string; readonly revision: number }, maxDepth?: number): WorkflowTemplate {
+  const middle = dependency === undefined
+    ? []
+    : [{
+        id: 'child',
+        uses: 'core.subworkflow@1',
+        with: { templateId: dependency.id, revision: dependency.revision },
+        inputs: {},
+      }]
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id, name: id },
+    spec: {
+      inputSchema: { type: 'object', additionalProperties: false },
+      outputSchema: { type: 'object', additionalProperties: false },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        ...middle,
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+      ],
+      edges: dependency === undefined
+        ? [{ id: 'start-end', source: 'start', target: 'end' }]
+        : [
+            { id: 'start-child', source: 'start', target: 'child' },
+            { id: 'child-end', source: 'child', target: 'end' },
+          ],
+      outputs: {},
+      ...(maxDepth === undefined ? {} : { policies: { subworkflowMaxDepth: maxDepth } }),
+    },
+  }
+}
+
 function setup() {
   const nodes = new WorkflowNodeRegistry()
   registerCoreNodes(nodes)
@@ -86,5 +119,29 @@ describe('workflow template catalog', () => {
     const renamedId = { ...template(), metadata: { id: 'other-id', name: 'Other' } }
     expect(() => catalog.updateDraft('catalog-test', 1, renamedId)).toThrow(expect.objectContaining({ code: 'CATALOG_ID_MISMATCH' }))
     expect(() => catalog.readDraft('missing')).toThrow(WorkflowCatalogError)
+  })
+
+  it('validates fixed published dependencies, cycles, and maximum depth before publish', () => {
+    const { catalog } = setup()
+    const missing = catalog.createDraft(dependencyTemplate('missing-parent', { id: 'not-published', revision: 1 }))
+    expect(catalog.validate(missing.template)).toContainEqual(expect.objectContaining({
+      code: 'SUBWORKFLOW_REVISION_NOT_FOUND',
+      nodeId: 'child',
+    }))
+    expect(() => catalog.publish(missing.id, missing.revision)).toThrow(expect.objectContaining({ code: 'CATALOG_PUBLISH_INVALID' }))
+
+    const self = catalog.createDraft(dependencyTemplate('self-cycle', { id: 'self-cycle', revision: 1 }))
+    expect(catalog.validate(self.template)).toContainEqual(expect.objectContaining({ code: 'SUBWORKFLOW_DEPENDENCY_CYCLE' }))
+
+    const leaf = catalog.createDraft(dependencyTemplate('leaf'))
+    catalog.publish(leaf.id, leaf.revision)
+    const middle = catalog.createDraft(dependencyTemplate('middle', { id: 'leaf', revision: 1 }))
+    catalog.publish(middle.id, middle.revision)
+    const root = catalog.createDraft(dependencyTemplate('root', { id: 'middle', revision: 1 }, 1))
+
+    expect(catalog.validate(root.template)).toContainEqual(expect.objectContaining({
+      code: 'SUBWORKFLOW_DEPTH_EXCEEDED',
+      message: expect.stringContaining('depth 2'),
+    }))
   })
 })

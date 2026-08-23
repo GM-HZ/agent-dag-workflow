@@ -127,11 +127,35 @@ export interface WorkflowApprovalGateway {
   request(request: WorkflowApprovalRequest): Promise<WorkflowApprovalOutcome>
 }
 
+export interface WorkflowSubworkflowRequest {
+  readonly parentRunId: string
+  readonly nodeId: string
+  readonly invocationId: string
+  readonly templateId: string
+  readonly revision: number
+  readonly inputs: JsonObject
+  readonly depth: number
+  readonly depthLimit: number
+  readonly signal: AbortSignal
+  readonly owner?: unknown
+}
+
+export interface WorkflowSubworkflowResult {
+  readonly runId: string
+  readonly outputs: JsonObject
+}
+
+export interface WorkflowSubworkflowGateway {
+  /** Implementations must make invocationId idempotent across process restarts. */
+  execute(request: WorkflowSubworkflowRequest): Promise<WorkflowSubworkflowResult>
+}
+
 export interface WorkflowNodeServices {
   readonly tools?: WorkflowToolGateway
   readonly secrets?: WorkflowSecretGateway
   readonly agents?: WorkflowAgentGateway
   readonly approvals?: WorkflowApprovalGateway
+  readonly subworkflows?: WorkflowSubworkflowGateway
 }
 
 export interface WorkflowNodeExecutionContext {
@@ -142,6 +166,10 @@ export interface WorkflowNodeExecutionContext {
   readonly config: JsonObject
   readonly signal: AbortSignal
   readonly services: WorkflowNodeServices
+  readonly depth: number
+  readonly subworkflowMaxDepth: number
+  readonly progress?: JsonValue
+  checkpointProgress(progress: JsonValue): void
   readonly owner?: unknown
 }
 
@@ -182,7 +210,7 @@ export type WorkflowEvent =
   | { readonly seq: number; readonly type: 'run.failed'; readonly runId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'run.cancelled'; readonly runId: string; readonly reason: string }
   | { readonly seq: number; readonly type: 'run.paused'; readonly runId: string; readonly reason: string }
-  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.progress' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
   | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'edge.taken' | 'edge.skipped'; readonly runId: string; readonly edgeId: string }
   | { readonly seq: number; readonly type: 'checkpoint.committed'; readonly runId: string; readonly checkpointSeq: number }
@@ -237,6 +265,12 @@ export interface WorkflowResumeRequest {
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
 }
 
+export interface WorkflowInvocationRequest extends WorkflowStartRequest {
+  readonly invocationId: string
+  readonly depth: number
+  readonly subworkflowDepthLimit: number
+}
+
 export type PersistedWorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'
 
 export interface WorkflowRunCheckpoint {
@@ -248,8 +282,12 @@ export interface WorkflowRunCheckpoint {
   readonly nodeStates: Readonly<Record<string, WorkflowNodeStatus>>
   readonly edgeStates: Readonly<Record<string, WorkflowEdgeStatus>>
   readonly nodeOutputs: Readonly<Record<string, JsonObject>>
+  readonly nodeProgress: Readonly<Record<string, JsonValue>>
   readonly ready: readonly string[]
   readonly nodeRuns: number
+  readonly depth: number
+  readonly subworkflowDepthLimit: number
+  readonly invocationId?: string
   readonly updatedAt: number
   readonly resultOutputs?: JsonObject
   readonly error?: string

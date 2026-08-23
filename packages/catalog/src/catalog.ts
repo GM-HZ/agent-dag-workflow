@@ -51,7 +51,11 @@ export class WorkflowTemplateCatalog {
   }
 
   validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[] {
-    return compileWorkflow(template, this.nodes).diagnostics
+    const diagnostics = [...compileWorkflow(template, this.nodes).diagnostics]
+    if (!diagnostics.some(item => item.code === 'TEMPLATE_NOT_LOSSLESS_JSON')) {
+      diagnostics.push(...this.validatePublishedDependencies(template))
+    }
+    return diagnostics
   }
 
   diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff {
@@ -77,6 +81,60 @@ export class WorkflowTemplateCatalog {
   list(): readonly WorkflowCatalogSummary[] {
     return this.repository.list()
   }
+
+  private validatePublishedDependencies(root: WorkflowTemplate): WorkflowDiagnostic[] {
+    const diagnostics: WorkflowDiagnostic[] = []
+    const latest = this.repository.readPublished(root.metadata.id)
+    const rootKey = dependencyKey(root.metadata.id, (latest?.revision ?? 0) + 1)
+    const visit = (template: WorkflowTemplate, depth: number, inheritedLimit: number, stack: ReadonlySet<string>): void => {
+      const localLimit = Math.min(inheritedLimit, template.spec.policies?.subworkflowMaxDepth ?? 8)
+      for (const dependency of dependenciesOf(template)) {
+        const nextDepth = depth + 1
+        if (nextDepth > localLimit) {
+          diagnostics.push(dependencyDiagnostic(
+            'SUBWORKFLOW_DEPTH_EXCEEDED',
+            `dependency ${dependency.id}@${dependency.revision} reaches depth ${nextDepth}, limit is ${localLimit}`,
+            dependency.nodeId,
+          ))
+          continue
+        }
+        const key = dependencyKey(dependency.id, dependency.revision)
+        if (stack.has(key)) {
+          diagnostics.push(dependencyDiagnostic('SUBWORKFLOW_DEPENDENCY_CYCLE', `published dependency cycle reaches ${key}`, dependency.nodeId))
+          continue
+        }
+        const published = this.repository.readPublished(dependency.id, dependency.revision)
+        if (published === undefined) {
+          diagnostics.push(dependencyDiagnostic('SUBWORKFLOW_REVISION_NOT_FOUND', `published workflow revision not found: ${key}`, dependency.nodeId))
+          continue
+        }
+        visit(published.template, nextDepth, localLimit, new Set([...stack, key]))
+      }
+    }
+    visit(root, 0, root.spec.policies?.subworkflowMaxDepth ?? 8, new Set([rootKey]))
+    return diagnostics
+  }
+}
+
+function dependenciesOf(template: WorkflowTemplate): { readonly nodeId: string; readonly id: string; readonly revision: number }[] {
+  const result: { readonly nodeId: string; readonly id: string; readonly revision: number }[] = []
+  for (const node of template.spec.nodes) {
+    if (node.uses !== 'core.subworkflow@1' && node.uses !== 'core.foreach@1') continue
+    const id = node.with.templateId
+    const revision = node.with.revision
+    if (typeof id === 'string' && typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 1) {
+      result.push({ nodeId: node.id, id, revision })
+    }
+  }
+  return result
+}
+
+function dependencyKey(id: string, revision: number): string {
+  return `${id}@${revision}`
+}
+
+function dependencyDiagnostic(code: string, message: string, nodeId: string): WorkflowDiagnostic {
+  return { code, severity: 'error', message, nodeId }
 }
 
 export function diffWorkflowTemplates(base: WorkflowTemplate, candidate: WorkflowTemplate): WorkflowTemplateDiff {

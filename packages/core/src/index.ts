@@ -3,7 +3,7 @@ export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileResult } fr
 export { createDshToolGateway } from './dsh-tool-adapter.js'
 export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './dsh-tool-adapter.js'
 export { DagWorkflowEngine } from './engine.js'
-export { WorkflowCompileError, WorkflowExecutionError } from './errors.js'
+export { WorkflowCompileError, WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 export { materializeWorkflowTemplate } from './hash.js'
 export type { MaterializedWorkflowTemplate } from './hash.js'
 export { isJsonObject, LosslessJsonError, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
@@ -11,9 +11,11 @@ export {
   agentNodeDefinition,
   conditionNodeDefinition,
   endNodeDefinition,
+  foreachNodeDefinition,
   humanApprovalNodeDefinition,
   registerCoreNodes,
   startNodeDefinition,
+  subworkflowNodeDefinition,
   toolNodeDefinition,
 } from './nodes.js'
 export { nodeDefinitionKey, WorkflowNodeRegistry } from './registry.js'

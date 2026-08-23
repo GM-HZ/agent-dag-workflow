@@ -163,6 +163,120 @@ function agentApprovalTemplate(): WorkflowTemplate {
   }
 }
 
+function childTemplate(id: string, foreach = false): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id, name: `${id} child` },
+    spec: {
+      inputSchema: foreach
+        ? {
+            type: 'object',
+            additionalProperties: false,
+            required: ['item', 'index', 'shared'],
+            properties: { item: {}, index: { type: 'integer' }, shared: { type: 'object' } },
+          }
+        : {
+            type: 'object',
+            additionalProperties: false,
+            required: ['message'],
+            properties: { message: { type: 'string' } },
+          },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['value'],
+        properties: { value: {} },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'end',
+          uses: 'core.end@1',
+          with: {},
+          inputs: { value: { input: foreach ? 'item' : 'message' } },
+        },
+      ],
+      edges: [{ id: 'start-end', source: 'start', target: 'end' }],
+      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+    },
+  }
+}
+
+function nestedParentTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'nested-parent', name: 'Nested parent' },
+    spec: {
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['message'],
+        properties: { message: { type: 'string' } },
+      },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['value'],
+        properties: { value: { type: 'string' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'child',
+          uses: 'core.subworkflow@1',
+          with: { templateId: 'nested-child', revision: 1 },
+          inputs: { message: { input: 'message' } },
+        },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'child', path: ['outputs', 'value'] } } } },
+      ],
+      edges: [
+        { id: 'start-child', source: 'start', target: 'child' },
+        { id: 'child-end', source: 'child', target: 'end' },
+      ],
+      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+    },
+  }
+}
+
+function foreachParentTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'foreach-parent', name: 'For each parent' },
+    spec: {
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['items'],
+        properties: { items: { type: 'array' } },
+      },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['results'],
+        properties: { results: { type: 'array' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'map',
+          uses: 'core.foreach@1',
+          with: { templateId: 'item-worker', revision: 1, maxConcurrency: 2, maxItems: 5 },
+          inputs: { items: { input: 'items' }, shared: { literal: {} } },
+        },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { node: 'map', path: ['results'] } } } },
+      ],
+      edges: [
+        { id: 'start-map', source: 'start', target: 'map' },
+        { id: 'map-end', source: 'map', target: 'end' },
+      ],
+      outputs: { results: { output: { node: 'end', path: ['results'] } } },
+    },
+  }
+}
+
 async function mountRuntime(ctx: Context): Promise<void> {
   await ctx.plugin(StubToolRuntime)
   await ctx.plugin(StubSubagentRuntime)
@@ -191,7 +305,9 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.workflowNodes.list().map(node => `${node.type}@${node.version}`)).toEqual([
       'core.condition@1',
       'core.end@1',
+      'core.foreach@1',
       'core.start@1',
+      'core.subworkflow@1',
       'dsh.agent@1',
       'dsh.human-approval@1',
       'dsh.tool@1',
@@ -289,5 +405,43 @@ describe('DSH Cordis plugin', () => {
     }))
     const record = ctx.workflowRuns.loadRun(result.runId)
     expect(record?.events).toContainEqual(expect.objectContaining({ type: 'node.waiting', nodeId: 'approve' }))
+  })
+
+  it('executes fixed published subworkflows and durable foreach child invocations', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    await ctx.plugin(DshWorkflowPlugin)
+    const parent: DshAgentLike = { session: new StubSession() }
+    for (const child of [childTemplate('nested-child'), childTemplate('item-worker', true)]) {
+      const draft = ctx.workflowTemplates.createDraft(child)
+      ctx.workflowTemplates.publish(draft.id, draft.revision)
+    }
+
+    const nested = await ctx.dagWorkflowEngine.start({
+      template: nestedParentTemplate(),
+      inputs: { message: 'nested value' },
+      parent,
+    }).result
+    const mapped = await ctx.dagWorkflowEngine.start({
+      template: foreachParentTemplate(),
+      inputs: { items: ['alpha', 'beta', 'gamma'] },
+      parent,
+    }).result
+
+    expect(nested).toMatchObject({ status: 'completed', outputs: { value: 'nested value' } })
+    expect(mapped).toMatchObject({
+      status: 'completed',
+      outputs: {
+        results: [
+          { index: 0, outputs: { value: 'alpha' } },
+          { index: 1, outputs: { value: 'beta' } },
+          { index: 2, outputs: { value: 'gamma' } },
+        ],
+      },
+    })
+    if (mapped.status !== 'completed') throw new Error(mapped.error)
+    for (const item of mapped.outputs.results as readonly { readonly runId: string }[]) {
+      expect(ctx.workflowRuns.loadRun(item.runId)?.checkpoint).toMatchObject({ status: 'completed', depth: 1 })
+    }
   })
 })

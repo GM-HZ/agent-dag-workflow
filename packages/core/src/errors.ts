@@ -21,3 +21,14 @@ export class WorkflowExecutionError extends Error {
     if (options?.nodeId !== undefined) this.nodeId = options.nodeId
   }
 }
+
+/** A nested durable activity cannot continue until an operator resolves its child run. */
+export class WorkflowPauseError extends Error {
+  readonly childRunId?: string
+
+  constructor(message: string, childRunId?: string) {
+    super(message)
+    this.name = 'WorkflowPauseError'
+    if (childRunId !== undefined) this.childRunId = childRunId
+  }
+}

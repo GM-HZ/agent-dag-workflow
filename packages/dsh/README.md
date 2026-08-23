@@ -21,6 +21,8 @@ await ctx.plugin(DagWorkflow)
 
 插件声明 `inject = ['tools', 'subagents', 'approval']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`dsh.agent@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`dsh.human-approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
+`core.subworkflow@1` 与 `core.foreach@1` 还会读取 `ctx.workflowTemplates` 中的精确 published revision。每个 child 是同一 `ctx.workflowRuns` 中的确定性 run；子流程暂停时父流程进入 `paused/needs_attention`，不会把未知副作用误报成普通失败。
+
 ```ts
 const run = ctx.dagWorkflowEngine.start({
   template,

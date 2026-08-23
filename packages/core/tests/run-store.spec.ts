@@ -4,6 +4,7 @@ import {
   InMemoryWorkflowRunStore,
   registerCoreNodes,
   WorkflowNodeRegistry,
+  WorkflowPauseError,
   type WorkflowEvent,
   type JsonValue,
   type WorkflowRunCheckpoint,
@@ -77,6 +78,70 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
         { id: 'approval-end-no', source: 'approval', target: 'end', sourcePort: 'rejected' },
       ],
       outputs: { approved: { output: { node: 'end', path: ['approved'] } } },
+    },
+  }
+}
+
+function foreachWorkflowTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'foreach-flow', name: 'For each flow' },
+    spec: {
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['items'],
+        properties: { items: { type: 'array' } },
+      },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['results'],
+        properties: { results: { type: 'array' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'map',
+          uses: 'core.foreach@1',
+          with: { templateId: 'item-worker', revision: 1, maxConcurrency: 1, maxItems: 4 },
+          inputs: { items: { input: 'items' }, shared: { literal: { topic: 'test' } } },
+        },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { node: 'map', path: ['results'] } } } },
+      ],
+      edges: [
+        { id: 'start-map', source: 'start', target: 'map' },
+        { id: 'map-end', source: 'map', target: 'end' },
+      ],
+      outputs: { results: { output: { node: 'end', path: ['results'] } } },
+    },
+  }
+}
+
+function subworkflowParentTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'subworkflow-parent', name: 'Subworkflow parent' },
+    spec: {
+      inputSchema: { type: 'object', additionalProperties: false },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['value'],
+        properties: { value: { type: 'string' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        { id: 'child', uses: 'core.subworkflow@1', with: { templateId: 'child', revision: 1 }, inputs: {} },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'child', path: ['outputs', 'value'] } } } },
+      ],
+      edges: [
+        { id: 'start-child', source: 'start', target: 'child' },
+        { id: 'child-end', source: 'child', target: 'end' },
+      ],
+      outputs: { value: { output: { node: 'end', path: ['value'] } } },
     },
   }
 }
@@ -191,5 +256,90 @@ describe('workflow run store and recovery', () => {
     expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
     expect(durableStatusAtRequest).toBe('waiting')
     expect(waitingEventWasDurable).toBe(true)
+  })
+
+  it('reuses a deterministic nested invocation instead of replaying its effects', async () => {
+    const store = new InMemoryWorkflowRunStore()
+    let toolCalls = 0
+    const engine = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store })
+    const request = {
+      invocationId: 'parent:node:item:0',
+      depth: 1,
+      subworkflowDepthLimit: 8,
+      template: toolWorkflowTemplate(),
+      inputs: { message: 'nested' },
+    } as const
+
+    const first = await engine.invoke(request).result
+    const second = await engine.invoke(request).result
+
+    expect(first).toMatchObject({ status: 'completed', outputs: { answer: 'nested' } })
+    expect(second).toMatchObject({ status: 'completed', runId: first.runId, outputs: { answer: 'nested' } })
+    expect(toolCalls).toBe(1)
+    expect(() => engine.invoke({ ...request, inputs: { message: 'different' } })).toThrowError(/different immutable inputs/)
+  })
+
+  it('recovers foreach container frames after a completed child result commit crashes', async () => {
+    let progressCommits = 0
+    const store = new OneShotFailingStore(events => {
+      if (!events.some(event => event.type === 'node.progress' && event.nodeId === 'map')) return false
+      progressCommits++
+      return progressCommits === 3
+    })
+    const completed = new Map<string, { readonly runId: string; readonly outputs: { readonly value: JsonValue } }>()
+    let childEffects = 0
+    const subworkflows = {
+      async execute(request: import('../src/index.js').WorkflowSubworkflowRequest) {
+        const existing = completed.get(request.invocationId)
+        if (existing !== undefined) return existing
+        childEffects++
+        const result = { runId: `child-${childEffects}`, outputs: { value: request.inputs.item! } }
+        completed.set(request.invocationId, result)
+        return result
+      },
+    }
+    const firstEngine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
+    const first = firstEngine.start({ template: foreachWorkflowTemplate(), inputs: { items: ['a', 'b'] } })
+
+    expect(await first.result).toMatchObject({ status: 'failed', error: 'simulated process crash before checkpoint commit' })
+    expect(store.loadRun(first.id)?.checkpoint.nodeStates.map).toBe('running')
+    expect(store.loadRun(first.id)?.checkpoint.nodeProgress.map).toMatchObject({
+      kind: 'foreach',
+      items: [{ index: 0, status: 'running' }, { index: 1, status: 'pending' }],
+    })
+
+    const result = await new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store }).resume({ runId: first.id }).result
+
+    expect(result).toMatchObject({
+      status: 'completed',
+      outputs: {
+        results: [
+          { index: 0, runId: 'child-1', outputs: { value: 'a' } },
+          { index: 1, runId: 'child-2', outputs: { value: 'b' } },
+        ],
+      },
+    })
+    expect(childEffects).toBe(2)
+  })
+
+  it('pauses a parent when its durable child needs attention and resumes after an explicit retry', async () => {
+    const store = new InMemoryWorkflowRunStore()
+    let childResolved = false
+    const subworkflows = {
+      async execute() {
+        if (!childResolved) throw new WorkflowPauseError('child run child-1 requires operator attention', 'child-1')
+        return { runId: 'child-1', outputs: { value: 'resolved' } }
+      },
+    }
+    const engine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
+    const run = engine.start({ template: subworkflowParentTemplate(), inputs: {} })
+    const paused = await run.result
+
+    expect(paused).toMatchObject({ status: 'paused', needsAttention: ['child'] })
+    expect(store.loadRun(run.id)?.checkpoint.nodeStates.child).toBe('needs_attention')
+
+    childResolved = true
+    const result = await engine.resume({ runId: run.id, unknownNodeResolutions: { child: 'retry' } }).result
+    expect(result).toMatchObject({ status: 'completed', outputs: { value: 'resolved' } })
   })
 })

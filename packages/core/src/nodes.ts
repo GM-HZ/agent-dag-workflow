@@ -5,6 +5,7 @@ import type {
 } from './types.js'
 import type { WorkflowNodeDisposer, WorkflowNodeRegistry } from './registry.js'
 import { WorkflowExecutionError } from './errors.js'
+import { stableJsonStringify } from './json.js'
 
 const objectSchema = { type: 'object' } as const
 
@@ -237,6 +238,157 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   },
 }
 
+export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
+  type: 'core.subworkflow',
+  version: 1,
+  title: 'Subworkflow',
+  description: 'Runs one fixed published workflow revision as a durable child invocation.',
+  configSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['templateId', 'revision'],
+    properties: {
+      templateId: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+      revision: { type: 'integer', minimum: 1 },
+    },
+  },
+  inputSchema: objectSchema,
+  outputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['runId', 'outputs'],
+    properties: { runId: { type: 'string' }, outputs: { type: 'object' } },
+  },
+  outputPorts: ['success'],
+  capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  retry: 'safe',
+  async execute(context) {
+    const subworkflows = requireSubworkflows(context.services.subworkflows, context.nodeId)
+    const target = subworkflowTarget(context.config, context.nodeId)
+    const depth = nextSubworkflowDepth(context.depth, context.subworkflowMaxDepth, context.nodeId)
+    const result = await subworkflows.execute({
+      parentRunId: context.runId,
+      nodeId: context.nodeId,
+      invocationId: `${context.runId}:${context.nodeId}:subworkflow`,
+      templateId: target.templateId,
+      revision: target.revision,
+      inputs: context.inputs,
+      depth,
+      depthLimit: context.subworkflowMaxDepth,
+      signal: context.signal,
+      ...(context.owner === undefined ? {} : { owner: context.owner }),
+    })
+    return { outputs: { runId: result.runId, outputs: result.outputs } }
+  },
+}
+
+export const foreachNodeDefinition: WorkflowNodeDefinition = {
+  type: 'core.foreach',
+  version: 1,
+  title: 'For each',
+  description: 'Runs a fixed published workflow revision once per item using durable container frames.',
+  configSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['templateId', 'revision'],
+    properties: {
+      templateId: { type: 'string', pattern: '^[a-z][a-z0-9-]*$' },
+      revision: { type: 'integer', minimum: 1 },
+      maxConcurrency: { type: 'integer', minimum: 1, maximum: 64 },
+      maxItems: { type: 'integer', minimum: 0, maximum: 10000 },
+    },
+  },
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['items'],
+    properties: { items: { type: 'array' }, shared: { type: 'object' } },
+  },
+  outputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['results'],
+    properties: {
+      results: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['index', 'runId', 'outputs'],
+          properties: { index: { type: 'integer' }, runId: { type: 'string' }, outputs: { type: 'object' } },
+        },
+      },
+    },
+  },
+  outputPorts: ['success'],
+  capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  retry: 'safe',
+  async execute(context) {
+    const subworkflows = requireSubworkflows(context.services.subworkflows, context.nodeId)
+    const target = subworkflowTarget(context.config, context.nodeId)
+    const depth = nextSubworkflowDepth(context.depth, context.subworkflowMaxDepth, context.nodeId)
+    const items = context.inputs.items
+    if (!Array.isArray(items)) throw new WorkflowExecutionError('FOREACH_INPUT', 'foreach items must be an array', { nodeId: context.nodeId })
+    const sharedValue = context.inputs.shared ?? {}
+    if (!isObject(sharedValue)) throw new WorkflowExecutionError('FOREACH_INPUT', 'foreach shared must be an object', { nodeId: context.nodeId })
+    const maxItems = optionalIntegerConfig(context.config, 'maxItems', context.nodeId) ?? 100
+    if (items.length > maxItems) {
+      throw new WorkflowExecutionError('FOREACH_ITEM_LIMIT', `foreach received ${items.length} items, limit is ${maxItems}`, { nodeId: context.nodeId })
+    }
+    const concurrency = Math.min(optionalIntegerConfig(context.config, 'maxConcurrency', context.nodeId) ?? 4, Math.max(1, items.length))
+    const frames = restoreForEachFrames(context.progress, items.length, context.nodeId)
+    checkpointFrames()
+    let cursor = 0
+    let firstError: unknown
+    const stop = new AbortController()
+    const signal = AbortSignal.any([context.signal, stop.signal])
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (!signal.aborted) {
+        let index = cursor++
+        while (index < frames.length && frames[index]!.status === 'completed') index = cursor++
+        if (index >= frames.length) return
+        frames[index] = { index, status: 'running' }
+        checkpointFrames()
+        try {
+          const result = await subworkflows.execute({
+            parentRunId: context.runId,
+            nodeId: context.nodeId,
+            invocationId: `${context.runId}:${context.nodeId}:item:${index}`,
+            templateId: target.templateId,
+            revision: target.revision,
+            inputs: { item: items[index]!, index, shared: sharedValue },
+            depth,
+            depthLimit: context.subworkflowMaxDepth,
+            signal,
+            ...(context.owner === undefined ? {} : { owner: context.owner }),
+          })
+          frames[index] = { index, status: 'completed', runId: result.runId, outputs: result.outputs }
+          checkpointFrames()
+        } catch (error: unknown) {
+          firstError ??= error
+          stop.abort('foreach child failed')
+          return
+        }
+      }
+    })
+    await Promise.allSettled(workers)
+    if (firstError !== undefined) throw firstError
+    if (context.signal.aborted) throw new WorkflowExecutionError('WORKFLOW_CANCELLED', 'foreach was cancelled', { nodeId: context.nodeId })
+    return {
+      outputs: {
+        results: frames.map(frame => {
+          if (frame.status !== 'completed') throw new WorkflowExecutionError('FOREACH_FRAME_INVALID', `foreach item ${frame.index} did not complete`, { nodeId: context.nodeId })
+          return { index: frame.index, runId: frame.runId, outputs: frame.outputs }
+        }),
+      },
+    }
+
+    function checkpointFrames(): void {
+      context.checkpointProgress({ version: 1, kind: 'foreach', items: frames })
+    }
+  },
+}
+
 export function registerCoreNodes(registry: WorkflowNodeRegistry): WorkflowNodeDisposer {
   const disposers = [
     registry.register(startNodeDefinition),
@@ -245,6 +397,8 @@ export function registerCoreNodes(registry: WorkflowNodeRegistry): WorkflowNodeD
     registry.register(toolNodeDefinition),
     registry.register(agentNodeDefinition),
     registry.register(humanApprovalNodeDefinition),
+    registry.register(subworkflowNodeDefinition),
+    registry.register(foreachNodeDefinition),
   ]
   let disposed = false
   return () => {
@@ -257,7 +411,7 @@ export function registerCoreNodes(registry: WorkflowNodeRegistry): WorkflowNodeD
 function renderAgentPrompt(prompt: string, inputs: JsonObject): string {
   const keys = Object.keys(inputs)
   if (keys.length === 0) return prompt
-  return `${prompt}\n\nWorkflow node inputs (JSON):\n${JSON.stringify(inputs)}`
+  return `${prompt}\n\nWorkflow node inputs (JSON):\n${stableJsonStringify(inputs)}`
 }
 
 function stringConfig(config: JsonObject, name: string, nodeId: string): string {
@@ -288,6 +442,45 @@ function optionalIntegerConfig(config: JsonObject, name: string, nodeId: string)
 
 function isObject(value: JsonValue): value is JsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function requireSubworkflows(value: import('./types.js').WorkflowSubworkflowGateway | undefined, nodeId: string): import('./types.js').WorkflowSubworkflowGateway {
+  if (value === undefined) throw new WorkflowExecutionError('SUBWORKFLOW_GATEWAY_MISSING', 'nested workflow node requires a WorkflowSubworkflowGateway', { nodeId })
+  return value
+}
+
+function subworkflowTarget(config: JsonObject, nodeId: string): { readonly templateId: string; readonly revision: number } {
+  const templateId = stringConfig(config, 'templateId', nodeId)
+  const revision = optionalIntegerConfig(config, 'revision', nodeId)
+  if (revision === undefined || revision < 1) throw new WorkflowExecutionError('SUBWORKFLOW_CONFIG', 'revision must be a positive safe integer', { nodeId })
+  return { templateId, revision }
+}
+
+function nextSubworkflowDepth(depth: number, maxDepth: number, nodeId: string): number {
+  const next = depth + 1
+  if (next > maxDepth) throw new WorkflowExecutionError('SUBWORKFLOW_DEPTH_EXCEEDED', `subworkflow depth ${next} exceeds limit ${maxDepth}`, { nodeId })
+  return next
+}
+
+type ForEachFrame =
+  | { readonly index: number; readonly status: 'pending' | 'running' }
+  | { readonly index: number; readonly status: 'completed'; readonly runId: string; readonly outputs: JsonObject }
+
+function restoreForEachFrames(progress: JsonValue | undefined, itemCount: number, nodeId: string): ForEachFrame[] {
+  if (progress === undefined) return Array.from({ length: itemCount }, (_, index) => ({ index, status: 'pending' as const }))
+  if (!isObject(progress) || progress.version !== 1 || progress.kind !== 'foreach' || !Array.isArray(progress.items) || progress.items.length !== itemCount) {
+    throw new WorkflowExecutionError('FOREACH_FRAME_INVALID', 'persisted foreach frame has an invalid envelope or item count', { nodeId })
+  }
+  return progress.items.map((value, index): ForEachFrame => {
+    if (!isObject(value) || value.index !== index || (value.status !== 'pending' && value.status !== 'running' && value.status !== 'completed')) {
+      throw new WorkflowExecutionError('FOREACH_FRAME_INVALID', `persisted foreach item ${index} is invalid`, { nodeId })
+    }
+    if (value.status !== 'completed') return { index, status: value.status }
+    if (typeof value.runId !== 'string' || value.outputs === undefined || !isObject(value.outputs)) {
+      throw new WorkflowExecutionError('FOREACH_FRAME_INVALID', `persisted foreach item ${index} result is invalid`, { nodeId })
+    }
+    return { index, status: 'completed', runId: value.runId, outputs: value.outputs }
+  })
 }
 
 function evaluateCondition(operator: string, left: JsonValue | undefined, right: JsonValue | undefined): boolean {
