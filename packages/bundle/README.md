@@ -1,9 +1,9 @@
-# @gm-hz/dsh-dag-workflow
+# @gm-hz/dsh-workflow
 
 Installable DeepSeek Harness bundle for durable DAG workflows, Agent authoring tools, SQLite persistence, and Canvas Studio.
 
 ```bash
-dsh plugin --profile web add @gm-hz/dsh-dag-workflow
+dsh plugin --profile web add @gm-hz/dsh-workflow
 ```
 
 The bundle patch mounts the durable runtime and `@gm-hz/dsh-workflow-canvas`. Its default SQLite database is stored at `dshHomePath('dsh-workflow/workflows.db')`.

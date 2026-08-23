@@ -17,7 +17,7 @@ export interface Config {
   readonly recordSessionEvents?: boolean
 }
 
-export const name = 'gm-hz-dsh-dag-workflow'
+export const name = 'gm-hz-dsh-workflow'
 export const inject = ['tools', 'subagents', 'approval', 'skills']
 
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {

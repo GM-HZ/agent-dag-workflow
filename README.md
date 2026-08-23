@@ -70,7 +70,15 @@ spec:
 
 ## 快速开始
 
-本仓库要求 Node.js 22.19+ 和 pnpm 11：
+要求 Node.js 22.19+。将完整 Workflow bundle 安装到 DSH Web profile：
+
+```bash
+dsh plugin --profile web add @gm-hz/dsh-workflow
+```
+
+该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-workflow/workflows.db`。
+
+从源码开发和运行全部门禁需要 pnpm 11：
 
 ```bash
 git clone https://github.com/GM-HZ/dsh-workflow.git
@@ -79,23 +87,7 @@ pnpm install
 pnpm check
 ```
 
-当前 v0.1 尚未发布到 npm。源码接入时，将本仓库的 `packages/*` 加入 DSH Host 的 `pnpm-workspace.yaml`，再给 Host 包添加所需的 workspace 依赖：
-
-```yaml
-packages:
-  - packages/*
-  - ../dsh-workflow/packages/*
-```
-
-```bash
-pnpm --filter your-host-package add '@gm-hz/dsh-workflow-dsh@workspace:*'
-pnpm --filter your-host-package add '@gm-hz/dsh-workflow-sqlite@workspace:*'
-pnpm --filter your-host-package add '@gm-hz/dsh-workflow-canvas@workspace:*'
-```
-
-SQLite 和 Canvas 是可选依赖；只验证内存执行时安装 `@gm-hz/dsh-workflow-dsh` 即可。
-
-在 DSH Host 中装配内存版服务：
+需要定制存储或 Canvas authority 时，也可以只安装子包并在 DSH Host 中手动装配。最小内存版只需要 `@gm-hz/dsh-workflow-dsh`：
 
 ```ts
 import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
@@ -265,6 +257,7 @@ ctx.effect(() => ctx.workflowNodes.register({
 
 | 包 | 职责 |
 | --- | --- |
+| [`@gm-hz/dsh-workflow`](packages/bundle/README.md) | 可由 `dsh plugin add` 安装的完整 bundle，默认启用 SQLite 和 Canvas |
 | [`@gm-hz/dsh-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
 | [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
 | [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
