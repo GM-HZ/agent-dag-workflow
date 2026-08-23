@@ -1,0 +1,21 @@
+{
+  "name": "dsh-workflow-root",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @gm-hz/dsh-workflow-core build",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "test": "pnpm --filter @gm-hz/dsh-workflow-core test",
+    "typecheck": "pnpm --filter @gm-hz/dsh-workflow-core typecheck"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}

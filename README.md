@@ -2,7 +2,21 @@
 
 基于 DeepSeek Harness（DSH）插件体系构建可生成、可执行、可恢复、可视化的 DAG Workflow。
 
-当前仓库处于源码研究与架构设计阶段。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
+当前仓库已经进入 Phase 0 实现阶段。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
+
+## v0.1 已实现
+
+- TypeScript 核心包 [`@gm-hz/dsh-workflow-core`](packages/core/README.md)。
+- `WorkflowTemplate v1alpha1` 解析、结构/拓扑/binding/provider 校验和结构化 diagnostics。
+- 可处置的节点注册表与精确 `type@version` 解析。
+- 有界并发内存调度器、`unknown/taken/skipped` 边状态、分支 skip propagation、取消和运行事件。
+- `core.start@1`、`core.end@1`、`core.condition@1`、`dsh.tool@1`。
+- 窄接口 DSH Tool adapter，Host 侧可把调用接入 `ctx.tools.execute()`。
+
+```bash
+pnpm install
+pnpm check
+```
 
 ## 当前结论
 
@@ -18,11 +32,16 @@
 - [源码对照与取舍](docs/source-findings.md)
 - [Workflow Template v1 语义](spec/workflow-template-v1.md)
 - [示例模板](examples/research-report.workflow.yaml)
+- [v0.1 可运行 Tool 示例](examples/tool-echo.workflow.yaml)
 - [参考仓库版本与检出方式](ref_project/README.md)
 
 ## 建议实施顺序
 
-1. 先完成模板协议、节点注册表、编译校验和内存执行器，只实现 `start/end/tool/condition`。
+1. 接入 DSH Cordis Service Definition/Provider，把 `dsh.tool@1` 绑定到真实 `ctx.tools.execute()`。
 2. 接入独立的运行事件存储与 checkpoint，再增加 `agent/foreach/subworkflow/human_approval`。
 3. 提供 Agent 工具与 `workflow-builder` 引导 skill，形成“规划 -> 构建 -> 校验 -> 预览 diff -> 发布”的生成闭环。
 4. 最后接 Canvas；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
+
+## License
+
+[MIT](LICENSE)

@@ -11,3 +11,7 @@
 *.swo
 .idea/
 .vscode/
+node_modules/
+lib/
+coverage/
+*.tsbuildinfo

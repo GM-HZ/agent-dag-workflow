@@ -1,0 +1,62 @@
+apiVersion: dsh.workflow/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  id: tool-echo
+  name: Tool echo
+  description: Minimal workflow supported by the v0.1 runtime.
+spec:
+  inputSchema:
+    type: object
+    additionalProperties: false
+    required: [message]
+    properties:
+      message: { type: string }
+  outputSchema:
+    type: object
+    additionalProperties: false
+    required: [answer]
+    properties:
+      answer: { type: string }
+  nodes:
+    - id: start
+      uses: core.start@1
+      with: {}
+      inputs: {}
+    - id: echo
+      uses: dsh.tool@1
+      with:
+        name: echo
+      inputs:
+        message:
+          input: message
+    - id: end
+      uses: core.end@1
+      with: {}
+      inputs:
+        answer:
+          output:
+            node: echo
+            path: [result, echo]
+  edges:
+    - id: start-echo
+      source: start
+      target: echo
+    - id: echo-end
+      source: echo
+      target: end
+  outputs:
+    answer:
+      output:
+        node: end
+        path: [answer]
+  policies:
+    maxConcurrentNodes: 2
+    maxNodeRuns: 8
+    maxDurationMs: 5000
+    maxOutputBytes: 10000
+layout:
+  engine: xyflow
+  nodes:
+    start: { x: 0, y: 80 }
+    echo: { x: 280, y: 80 }
+    end: { x: 560, y: 80 }
