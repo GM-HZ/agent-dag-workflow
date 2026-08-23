@@ -43,6 +43,7 @@ export interface DshDagWorkflowEngine {
 
 export interface DshWorkflowPluginConfig {
   readonly recordSessionEvents?: boolean
+  readonly catalog?: 'memory' | 'external'
 }
 
 export interface DagWorkflowRunStartData {

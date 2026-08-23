@@ -94,6 +94,9 @@ describe('DSH Cordis plugin', () => {
       'core.start@1',
       'dsh.tool@1',
     ])
+    const draft = ctx.workflowTemplates.createDraft(template())
+    const published = ctx.workflowTemplates.publish(draft.id, draft.revision)
+    expect(ctx.workflowTemplates.getPublished(draft.id).revision).toBe(published.revision)
     expect(observed).toContain('run.completed')
     expect(session.events.map(event => event.type)).toEqual([
       'dsh-dag-workflow/run-start',
@@ -111,6 +114,7 @@ describe('DSH Cordis plugin', () => {
     await plugin.dispose()
     expect(ctx.get('dagWorkflowEngine')).toBeUndefined()
     expect(ctx.get('workflowNodes')).toBeUndefined()
+    expect(ctx.get('workflowTemplates')).toBeUndefined()
   })
 
   it('contains Session recording and request observer failures', async () => {

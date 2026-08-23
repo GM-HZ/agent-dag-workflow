@@ -1,27 +1,18 @@
 {
-  "name": "@gm-hz/dsh-workflow-dsh",
+  "name": "@gm-hz/dsh-workflow-sqlite",
   "version": "0.1.0",
-  "description": "Cordis service provider that integrates DSH with the DAG workflow core",
+  "description": "Node SQLite persistence providers for DSH workflow templates and runs",
   "type": "module",
   "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
+  "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
-    "directory": "packages/dsh"
+    "directory": "packages/sqlite"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
-  "keywords": ["deepseek", "dsh", "cordis", "dag", "workflow"],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./lib/index.d.ts",
-      "default": "./lib/index.js"
-    }
-  },
+  "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" } },
   "files": ["lib", "src"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -30,7 +21,8 @@
   },
   "dependencies": {
     "@gm-hz/dsh-workflow-catalog": "workspace:^",
-    "@gm-hz/dsh-workflow-core": "workspace:^"
+    "@gm-hz/dsh-workflow-core": "workspace:^",
+    "@gm-hz/dsh-workflow-dsh": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

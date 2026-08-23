@@ -1,5 +1,5 @@
 export type JsonPrimitive = string | number | boolean | null
-export type JsonValue = JsonPrimitive | JsonObject | JsonValue[]
+export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[]
 export interface JsonObject { [key: string]: JsonValue }
 export type JsonSchema = Record<string, unknown>
 

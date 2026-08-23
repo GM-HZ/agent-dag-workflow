@@ -10,6 +10,16 @@ import {
   type WorkflowNodeDisposer,
   type WorkflowRun,
 } from '@gm-hz/dsh-workflow-core'
+import {
+  InMemoryWorkflowCatalogRepository,
+  WorkflowTemplateCatalog,
+  type PublishedWorkflowRevision,
+  type WorkflowCatalogRepository,
+  type WorkflowCatalogSummary,
+  type WorkflowDraft,
+  type WorkflowTemplateDiff,
+} from '@gm-hz/dsh-workflow-catalog'
+import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
 import type {
   DagWorkflowNodeEndData,
   DagWorkflowNodeStartData,
@@ -24,6 +34,7 @@ import type {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     workflowNodes: WorkflowNodeRegistryService
+    workflowTemplates: WorkflowTemplatesService
     dagWorkflowEngine: DagWorkflowEngineService
   }
 
@@ -61,6 +72,49 @@ export abstract class DagWorkflowEngineService extends Service {
   }
 
   abstract start(request: DshDagWorkflowStartRequest): WorkflowRun
+}
+
+export abstract class WorkflowTemplatesService extends Service {
+  constructor(ctx: Context) {
+    super(ctx, 'workflowTemplates')
+  }
+
+  abstract createDraft(template: WorkflowTemplate): WorkflowDraft
+  abstract readDraft(id: string): WorkflowDraft
+  abstract updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft
+  abstract validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[]
+  abstract diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff
+  abstract publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision
+  abstract getPublished(id: string, revision?: number): PublishedWorkflowRevision
+  abstract list(): readonly WorkflowCatalogSummary[]
+}
+
+export abstract class RepositoryWorkflowTemplatesProvider extends WorkflowTemplatesService {
+  private readonly catalog: WorkflowTemplateCatalog
+
+  constructor(ctx: Context, repository: WorkflowCatalogRepository) {
+    super(ctx)
+    this.catalog = new WorkflowTemplateCatalog(repository, ctx.workflowNodes.registry)
+  }
+
+  createDraft(template: WorkflowTemplate): WorkflowDraft { return this.catalog.createDraft(template) }
+  readDraft(id: string): WorkflowDraft { return this.catalog.readDraft(id) }
+  updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft {
+    return this.catalog.updateDraft(id, expectedRevision, template)
+  }
+  validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[] { return this.catalog.validate(template) }
+  diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff { return this.catalog.diff(id, candidate) }
+  publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision { return this.catalog.publish(id, expectedDraftRevision) }
+  getPublished(id: string, revision?: number): PublishedWorkflowRevision { return this.catalog.getPublished(id, revision) }
+  list(): readonly WorkflowCatalogSummary[] { return this.catalog.list() }
+}
+
+export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplatesProvider {
+  static inject = ['workflowNodes']
+
+  constructor(ctx: Context) {
+    super(ctx, new InMemoryWorkflowCatalogRepository())
+  }
 }
 
 export class DagWorkflowEngineProvider extends DagWorkflowEngineService {

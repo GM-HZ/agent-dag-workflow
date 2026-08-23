@@ -3,6 +3,7 @@
 把 `@gm-hz/dsh-workflow-core` 装配成 DSH 原生 Cordis 服务。插件发布：
 
 - `ctx.workflowNodes`：可处置的 Workflow 节点注册服务。
+- `ctx.workflowTemplates`：默认内存 Catalog provider；生产环境可替换为 SQLite provider。
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
 - `dsh-dag-workflow/*` Session 摘要事件：用于重放顶层 run/node 状态。
@@ -14,6 +15,8 @@ import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
 
 await ctx.plugin(DagWorkflow)
 ```
+
+传入 `{ catalog: 'external' }` 可跳过默认内存 Catalog，并显式装配 `SqliteWorkflowTemplatesProvider`。
 
 插件声明 `inject = ['tools']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`，并传入发起运行的 owning Agent、caller-owned signal 和 run/node 派生 call id。
 

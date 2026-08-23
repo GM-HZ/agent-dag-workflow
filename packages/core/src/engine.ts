@@ -3,7 +3,7 @@ import type { CompiledWorkflow, CompiledWorkflowNode } from './compiler.js'
 import { compileWorkflowOrThrow } from './compiler.js'
 import { WorkflowExecutionError } from './errors.js'
 import type { WorkflowNodeRegistry } from './registry.js'
-import { isJsonObject } from './schema.js'
+import { isJsonObject, snapshotJsonObject, snapshotJsonValue } from './json.js'
 import type {
   JsonObject,
   JsonValue,
@@ -68,7 +68,7 @@ export class DagWorkflowEngine {
     if (request.signal?.aborted === true) abortFromCaller()
     else request.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
-    const result = this.#execute(id, workflow, snapshotObject(request.inputs), request.owner, controller, () => cancelReason, request.onEvent)
+    const result = this.#execute(id, workflow, snapshotJsonObject(request.inputs), request.owner, controller, () => cancelReason, request.onEvent)
       .catch((error: unknown): WorkflowRunFailure => ({
         status: 'failed',
         runId: id,
@@ -178,7 +178,7 @@ export class DagWorkflowEngine {
         }
 
         nodeStates.set(completion.nodeId, 'succeeded')
-        nodeOutputs.set(completion.nodeId, snapshotObject(completion.result.outputs))
+        nodeOutputs.set(completion.nodeId, completion.result.outputs)
         emit({ type: 'node.completed', nodeId: completion.nodeId })
         settleOutgoingEdges(completion.nodeId, completion.result.selectedPorts ?? ['success'])
       }
@@ -186,7 +186,7 @@ export class DagWorkflowEngine {
       const unresolved = [...nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running')
       if (unresolved.length > 0) return failedResult(`scheduler stopped with unresolved nodes: ${unresolved.map(([id]) => id).join(', ')}`)
 
-      const outputs = await resolveBindings(workflow.template.spec.outputs, undefined)
+      const outputs = snapshotJsonObject(await resolveBindings(workflow.template.spec.outputs, undefined))
       const outputErrors = workflow.validateWorkflowOutputs(outputs)
       if (outputErrors.length > 0) return failedResult(`workflow output is invalid: ${outputErrors.join('; ')}`)
       assertOutputSize(outputs, policies.maxOutputBytes, 'workflow result')
@@ -244,10 +244,10 @@ export class DagWorkflowEngine {
     }
 
     async function resolveBinding(binding: WorkflowBinding, nodeId: string | undefined): Promise<JsonValue> {
-      if ('literal' in binding) return structuredClone(binding.literal)
+      if ('literal' in binding) return snapshotJsonValue(binding.literal)
       if ('input' in binding) {
         if (!(binding.input in workflowInputs)) throw new WorkflowExecutionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, nodeId === undefined ? undefined : { nodeId })
-        return structuredClone(workflowInputs[binding.input]!)
+        return snapshotJsonValue(workflowInputs[binding.input]!)
       }
       if ('secret' in binding) {
         if (nodeId === undefined) throw new WorkflowExecutionError('SECRET_OUTPUT_FORBIDDEN', 'workflow outputs cannot contain secret bindings')
@@ -257,7 +257,7 @@ export class DagWorkflowEngine {
       }
       const source = nodeOutputs.get(binding.output.node)
       if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, nodeId === undefined ? undefined : { nodeId })
-      return structuredClone(readPath(source, binding.output.path, binding.output.node))
+      return snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
     }
 
     function successResult(outputs: JsonObject): WorkflowRunSuccess {
@@ -306,13 +306,13 @@ export class DagWorkflowEngine {
     maxOutputBytes: number,
   ): Promise<NodeCompletion> {
     try {
-      const inputs = await resolveNodeInputs(node, workflowInputs, nodeOutputs, runId, runSignal, this.#services)
+      const inputs = snapshotJsonObject(await resolveNodeInputs(node, workflowInputs, nodeOutputs, runId, runSignal, this.#services))
       const inputErrors = node.validateInputs(inputs)
       if (inputErrors.length > 0) throw new WorkflowExecutionError('NODE_INPUT_INVALID', inputErrors.join('; '), { nodeId: node.template.id })
       const timeoutSignal = node.template.policy?.timeoutMs === undefined
         ? runSignal
         : AbortSignal.any([runSignal, AbortSignal.timeout(node.template.policy.timeoutMs)])
-      const result = await node.definition.execute({
+      const rawResult = await node.definition.execute({
         runId,
         nodeId: node.template.id,
         workflowInputs,
@@ -322,7 +322,12 @@ export class DagWorkflowEngine {
         services: this.#services,
         ...(owner === undefined ? {} : { owner }),
       })
-      const outputErrors = node.validateOutputs(result.outputs)
+      const outputs = snapshotJsonObject(rawResult.outputs)
+      const result: WorkflowNodeExecutionResult = {
+        outputs,
+        ...(rawResult.selectedPorts === undefined ? {} : { selectedPorts: Object.freeze([...rawResult.selectedPorts]) }),
+      }
+      const outputErrors = node.validateOutputs(outputs)
       if (outputErrors.length > 0) throw new WorkflowExecutionError('NODE_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
       const selected = result.selectedPorts ?? ['success']
       if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
@@ -346,17 +351,17 @@ async function resolveNodeInputs(
 ): Promise<JsonObject> {
   const result: JsonObject = {}
   for (const [name, binding] of Object.entries(node.template.inputs)) {
-    if ('literal' in binding) result[name] = structuredClone(binding.literal)
+    if ('literal' in binding) result[name] = snapshotJsonValue(binding.literal)
     else if ('input' in binding) {
       if (!(binding.input in workflowInputs)) throw new WorkflowExecutionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, { nodeId: node.template.id })
-      result[name] = structuredClone(workflowInputs[binding.input]!)
+      result[name] = snapshotJsonValue(workflowInputs[binding.input]!)
     } else if ('secret' in binding) {
       if (services.secrets === undefined) throw new WorkflowExecutionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, { nodeId: node.template.id })
       result[name] = await services.secrets.resolve(binding.secret.ref, { runId, nodeId: node.template.id, signal })
     } else {
       const source = nodeOutputs.get(binding.output.node)
       if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, { nodeId: node.template.id })
-      result[name] = structuredClone(readPath(source, binding.output.path, binding.output.node))
+      result[name] = snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
     }
   }
   return result
@@ -390,10 +395,6 @@ async function settleActiveAsCancelled(
 function assertOutputSize(value: JsonValue, maxBytes: number, label: string): void {
   const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8')
   if (bytes > maxBytes) throw new WorkflowExecutionError('OUTPUT_TOO_LARGE', `${label} is ${bytes} bytes, limit is ${maxBytes}`)
-}
-
-function snapshotObject(value: JsonObject): JsonObject {
-  return structuredClone(value)
 }
 
 function renderAbortReason(reason: unknown, fallback: string): string {

@@ -13,6 +13,8 @@
 - `core.start@1`、`core.end@1`、`core.condition@1`、`dsh.tool@1`。
 - 窄接口 DSH Tool adapter，Host 侧可把调用接入 `ctx.tools.execute()`。
 - DSH Cordis 插件包 [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md)，提供真实 `ctx.workflowNodes`、`ctx.dagWorkflowEngine`、Session 摘要与卸载收敛。
+- Template Catalog 包 [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) 与 [Node SQLite provider](packages/sqlite/README.md)，提供 draft CAS、发布校验和不可变 revision。
+- 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
 
 ```bash
 pnpm install

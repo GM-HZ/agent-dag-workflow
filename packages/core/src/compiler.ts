@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto'
 import type { WorkflowNodeRegistry } from './registry.js'
 import { compileJsonValidator, structuralDiagnostics } from './schema.js'
+import { snapshotJsonValue } from './json.js'
+import { materializeWorkflowTemplate } from './hash.js'
 import type {
-  JsonObject,
   WorkflowBinding,
   WorkflowDiagnostic,
   WorkflowEdgeTemplate,
@@ -37,7 +37,13 @@ export interface WorkflowCompileResult {
   readonly diagnostics: readonly WorkflowDiagnostic[]
 }
 
-export function compileWorkflow(template: WorkflowTemplate, registry: WorkflowNodeRegistry): WorkflowCompileResult {
+export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowNodeRegistry): WorkflowCompileResult {
+  let template: WorkflowTemplate
+  try {
+    template = snapshotJsonValue(candidate) as unknown as WorkflowTemplate
+  } catch (error: unknown) {
+    return { diagnostics: [diagnostic('TEMPLATE_NOT_LOSSLESS_JSON', renderError(error))] }
+  }
   const diagnostics = structuralDiagnostics(template)
   if (diagnostics.length > 0) return { diagnostics }
 
@@ -177,7 +183,7 @@ export function compileWorkflow(template: WorkflowTemplate, registry: WorkflowNo
       edges: edgesById,
       order,
       startNodeId,
-      semanticHash: semanticHash(template),
+      semanticHash: materializeWorkflowTemplate(template).semanticHash,
       validateWorkflowInputs,
       validateWorkflowOutputs,
     },
@@ -272,24 +278,6 @@ function computeAncestors(
     result.set(nodeId, ancestors)
   }
   return result
-}
-
-function semanticHash(template: WorkflowTemplate): string {
-  const semanticDocument: JsonObject = {
-    apiVersion: template.apiVersion,
-    kind: template.kind,
-    metadata: template.metadata as JsonObject,
-    spec: template.spec as unknown as JsonObject,
-  }
-  return createHash('sha256').update(stableStringify(semanticDocument)).digest('hex')
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`
-  if (value !== null && typeof value === 'object') {
-    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(',')}}`
-  }
-  return JSON.stringify(value)
 }
 
 function diagnostic(code: string, message: string, nodeId?: string, path?: readonly (string | number)[]): WorkflowDiagnostic {

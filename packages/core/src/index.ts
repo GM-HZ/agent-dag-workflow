@@ -4,6 +4,9 @@ export { createDshToolGateway } from './dsh-tool-adapter.js'
 export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './dsh-tool-adapter.js'
 export { DagWorkflowEngine } from './engine.js'
 export { WorkflowCompileError, WorkflowExecutionError } from './errors.js'
+export { materializeWorkflowTemplate } from './hash.js'
+export type { MaterializedWorkflowTemplate } from './hash.js'
+export { isJsonObject, LosslessJsonError, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 export {
   conditionNodeDefinition,
   endNodeDefinition,

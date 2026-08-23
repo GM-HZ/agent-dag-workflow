@@ -1,6 +1,7 @@
 import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv'
 import { parse } from 'yaml'
-import type { JsonObject, JsonSchema, JsonValue, WorkflowDiagnostic, WorkflowTemplate } from './types.js'
+import { snapshotJsonValue } from './json.js'
+import type { JsonSchema, WorkflowDiagnostic, WorkflowTemplate } from './types.js'
 
 const bindingSchema = {
   oneOf: [
@@ -138,8 +139,7 @@ const validateTemplateSchema = ajv.compile(WORKFLOW_TEMPLATE_SCHEMA)
 
 export function parseWorkflowTemplate(source: string): WorkflowTemplate {
   const parsed: unknown = parse(source)
-  assertLosslessJson(parsed, '$')
-  return parsed as unknown as WorkflowTemplate
+  return snapshotJsonValue(parsed) as unknown as WorkflowTemplate
 }
 
 export function structuralDiagnostics(candidate: unknown): WorkflowDiagnostic[] {
@@ -158,10 +158,6 @@ export function compileJsonValidator(schema: JsonSchema, label: string): (value:
   return (value: unknown) => validator(value) ? [] : diagnosticsFromAjv(label, validator.errors).map(item => item.message)
 }
 
-export function isJsonObject(value: JsonValue): value is JsonObject {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 function diagnosticsFromAjv(code: string, errors: readonly ErrorObject[] | null | undefined): WorkflowDiagnostic[] {
   return (errors ?? []).map(error => ({
     code,
@@ -169,21 +165,4 @@ function diagnosticsFromAjv(code: string, errors: readonly ErrorObject[] | null 
     message: `${error.instancePath || '/'} ${error.message ?? 'is invalid'}`,
     path: error.instancePath.split('/').filter(Boolean).map(segment => decodeURIComponent(segment.replaceAll('~1', '/').replaceAll('~0', '~'))),
   }))
-}
-
-function assertLosslessJson(value: unknown, path: string): asserts value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
-  if (typeof value === 'number') {
-    if (Number.isFinite(value)) return
-    throw new Error(`${path} contains a non-finite number`)
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertLosslessJson(item, `${path}[${index}]`))
-    return
-  }
-  if (typeof value === 'object') {
-    for (const [key, item] of Object.entries(value)) assertLosslessJson(item, `${path}.${key}`)
-    return
-  }
-  throw new Error(`${path} is not lossless JSON`)
 }

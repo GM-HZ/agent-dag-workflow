@@ -1,0 +1,6 @@
+export { diffWorkflowTemplates, WorkflowTemplateCatalog } from './catalog.js'
+export type { WorkflowTemplateCatalogOptions } from './catalog.js'
+export { InMemoryWorkflowCatalogRepository } from './repository.js'
+export type { WorkflowCatalogRepository } from './repository.js'
+export { WorkflowCatalogError } from './types.js'
+export type * from './types.js'

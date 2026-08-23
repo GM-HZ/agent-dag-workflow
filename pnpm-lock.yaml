@@ -18,6 +18,22 @@ importers:
         specifier: ^4.1.8
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
 
+  packages/catalog:
+    dependencies:
+      '@gm-hz/dsh-workflow-core':
+        specifier: workspace:^
+        version: link:../core
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.8
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
+
   packages/core:
     dependencies:
       ajv:
@@ -39,9 +55,37 @@ importers:
 
   packages/dsh:
     dependencies:
+      '@gm-hz/dsh-workflow-catalog':
+        specifier: workspace:^
+        version: link:../catalog
       '@gm-hz/dsh-workflow-core':
         specifier: workspace:^
         version: link:../core
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.8
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
+
+  packages/sqlite:
+    dependencies:
+      '@gm-hz/dsh-workflow-catalog':
+        specifier: workspace:^
+        version: link:../catalog
+      '@gm-hz/dsh-workflow-core':
+        specifier: workspace:^
+        version: link:../core
+      '@gm-hz/dsh-workflow-dsh':
+        specifier: workspace:^
+        version: link:../dsh
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.1

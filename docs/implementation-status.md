@@ -4,7 +4,7 @@
 
 | 能力 | 状态 | 当前证据 | 未完成项 |
 |---|---|---|---|
-| Template v1alpha1 envelope/binding/layout | 部分完成 | `packages/core/src/types.ts`、`schema.ts` | schema migration、类型兼容推导 |
+| Template v1alpha1 envelope/binding/layout | 部分完成 | `packages/core/src/types.ts`、`schema.ts`、lossless JSON snapshot | schema migration、类型兼容推导 |
 | 节点注册与插件卸载 | 完成 | `registry.ts`、compiler lease 测试、Cordis registry service 测试 | 后续只需扩充节点类型 |
 | 编译诊断、DAG、上游 binding、端口、终态路径 | 完成 | `compiler.ts`、`compiler.spec.ts` | container/subworkflow 校验随对应节点实现 |
 | 内存调度、condition/join/skip、取消、caps | 完成 | `engine.ts`、`engine.spec.ts` | 持久事务与恢复由下一项承接 |
@@ -12,7 +12,7 @@
 | DSH Cordis `ctx.workflowNodes/ctx.dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、`plugin.spec.ts` | 加入正式 DSH bundle patch |
 | 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
 | Session 摘要与实时事件 | 完成 | run/node Session event 与 observer containment 测试 | UI projection 尚未实现 |
-| Template catalog、draft/revision/hash/CAS/publish | 未开始 | 总体架构 §3.2 | 全部实现与测试 |
+| Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、`packages/sqlite` 重开/CAS/ownership 测试 | 仅剩接入 Cordis service（不改变 catalog 语义） |
 | Run event store、checkpoint、crash recovery | 未开始 | 总体架构 §4.3 | 全部实现与故障注入测试 |
 | `agent/foreach/subworkflow/human-approval` | 未开始 | 总体架构 §5 | 全部实现与恢复语义 |
 | Agent CRUD/validate/diff/publish/run tools | 未开始 | 总体架构 §6 | 全部实现 |
