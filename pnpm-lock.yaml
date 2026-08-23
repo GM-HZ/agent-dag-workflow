@@ -18,10 +18,38 @@ importers:
         specifier: ^4.1.8
         version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
 
+  packages/bundle:
+    dependencies:
+      '@gm-hz/dsh-workflow-canvas':
+        specifier: workspace:^
+        version: link:../canvas
+      '@gm-hz/dsh-workflow-dsh':
+        specifier: workspace:^
+        version: link:../dsh
+      '@gm-hz/dsh-workflow-sqlite':
+        specifier: workspace:^
+        version: link:../sqlite
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.1
+        version: 4.0.1
+      '@gm-hz/dsh-workflow-core':
+        specifier: workspace:^
+        version: link:../core
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.8
+        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
+
   packages/canvas:
     dependencies:
       '@deepseek-ai/dsh-typert-protocol':
-        specifier: 0.1.1-rc.2
+        specifier: ^0.1.1-rc.2
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))
       '@gm-hz/dsh-workflow-catalog':
         specifier: workspace:^

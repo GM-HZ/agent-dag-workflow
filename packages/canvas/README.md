@@ -1,17 +1,20 @@
 # @gm-hz/dsh-workflow-canvas
 
-Authorized Host Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1alpha1.
+Host-scoped Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1alpha1.
 
-The Host plugin fails closed unless `authorize` resolves a browser `sessionId` from Host-owned state and returns the real DSH Agent for that session:
+Every RPC first resolves `sessionId` through DSH's live Host Agent registry and accepts only an attached, top-level Agent. Multi-user and multi-tenant deployments must layer a user/workspace/action policy after that lookup:
 
 ```ts
 await ctx.plugin(workflowCanvas, {
-  authorize: async ({ sessionId, action, resourceId }) => {
-    const agent = resolveAgentTheCallerMayUse(sessionId, action, resourceId)
-    return agent === undefined ? undefined : { subject: currentUserId(), agent }
+  authorize: async ({ sessionId, agent, action, resourceId }) => {
+    return mayUseWorkflow(currentUserId(), agent, action, resourceId)
+      ? { subject: currentUserId(), agent }
+      : undefined
   },
 })
 ```
+
+When `authorize` is omitted, the plugin uses a local single-user default: missing, detached, and subagent-owned session identities are rejected. A `sessionId` is a lookup key, not a multi-tenant credential.
 
 The package contributes its generated Typert Remote client and XYFlow editor through its `dsh.client` manifest. The editor persists only the canonical workflow template and its `layout.canvas.positions`; there is no second graph DSL.
 

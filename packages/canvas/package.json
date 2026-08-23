@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Authorized DSH Remote gateway and XYFlow visual studio for DAG workflows",
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "license": "MIT",
   "publishConfig": { "access": "public" },
   "repository": {
@@ -10,8 +11,9 @@
     "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
     "directory": "packages/canvas"
   },
+  "bugs": { "url": "https://github.com/GM-HZ/dsh-workflow/issues" },
   "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
-  "keywords": ["deepseek", "dsh", "canvas", "xyflow", "dag", "workflow"],
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "canvas", "xyflow", "dag", "workflow"],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -52,12 +54,12 @@
     "@gm-hz/dsh-workflow-core": "workspace:^",
     "@gm-hz/dsh-workflow-catalog": "workspace:^",
     "@gm-hz/dsh-workflow-dsh": "workspace:^",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
     "@xyflow/react": "^12.11.3",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.1-rc.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },

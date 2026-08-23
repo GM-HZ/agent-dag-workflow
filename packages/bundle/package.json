@@ -1,7 +1,7 @@
 {
-  "name": "@gm-hz/dsh-workflow-dsh",
+  "name": "@gm-hz/dsh-dag-workflow",
   "version": "0.1.0",
-  "description": "Cordis service provider that integrates DSH with the DAG workflow core",
+  "description": "Installable DSH bundle for durable DAG workflows, Agent authoring, SQLite runs, and Canvas Studio",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "license": "MIT",
@@ -11,34 +11,45 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
-    "directory": "packages/dsh"
+    "directory": "packages/bundle"
   },
-  "bugs": { "url": "https://github.com/GM-HZ/dsh-workflow/issues" },
   "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
-  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "cordis", "dag", "workflow"],
+  "bugs": {
+    "url": "https://github.com/GM-HZ/dsh-workflow/issues"
+  },
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "dag", "workflow", "canvas"],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml", "README.md", "LICENSE"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
     }
   },
-  "files": ["lib", "src", "skills"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-catalog": "workspace:^",
-    "@gm-hz/dsh-workflow-core": "workspace:^"
+    "@gm-hz/dsh-workflow-canvas": "workspace:^",
+    "@gm-hz/dsh-workflow-dsh": "workspace:^",
+    "@gm-hz/dsh-workflow-sqlite": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
+    "@gm-hz/dsh-workflow-core": "workspace:^",
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

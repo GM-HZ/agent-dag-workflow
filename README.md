@@ -196,19 +196,21 @@ await resumed.dispose()
 
 ### 3. 启用 Canvas Studio
 
-Canvas 是独立插件。它要求 Host 提供 fail-closed 授权函数，从 Host 自己的 session 状态解析真实 Agent：
+Canvas 是独立插件。所有 RPC 会先通过 Host 的实时 Agent registry 解析 `sessionId`，只接受仍附着在当前 Host 的顶层 Agent。多人或多租户部署应继续按用户、workspace、action/resource 增加授权策略：
 
 ```ts
 import * as WorkflowCanvas from '@gm-hz/dsh-workflow-canvas'
 
 await ctx.plugin(WorkflowCanvas, {
-  authorize: async ({ sessionId, action, resourceId }) => {
-    const agent = resolveAgentTheCallerMayUse(sessionId, action, resourceId)
-    if (agent === undefined) return undefined
-    return { subject: currentUserId(), agent }
+  authorize: async ({ sessionId, agent, action, resourceId }) => {
+    return mayUseWorkflow(currentUserId(), agent, action, resourceId)
+      ? { subject: currentUserId(), agent }
+      : undefined
   },
 })
 ```
+
+省略 `authorize` 时使用面向本地单用户 profile 的默认边界：不存在、未附着或属于 subagent 的 session identity 会被拒绝，但 `sessionId` 本身不是多租户身份凭证。
 
 包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 支持节点和边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
 
@@ -254,7 +256,7 @@ ctx.effect(() => ctx.workflowNodes.register({
 - `core.subworkflow@1` 和 `core.foreach@1` 只调用固定 published revision，并设置继承深度上限。
 - secret binding 只保存引用；原值通过 Host 的 scoped resolver 进入瞬时节点输入，若流入节点输出则拒绝持久化。
 - 自动恢复只处理 `running + ownerRef + 可重新解析的 Agent`；paused 或无 authority 的 run 保持不动。
-- Canvas 所有读写和运行 RPC 都经过 Host 授权，未提供 `authorize` 时插件拒绝启动。
+- Canvas 所有读写和运行 RPC 都先解析 Host 中的实时顶层 Agent；多人部署必须叠加用户/workspace/action/resource 授权策略。
 - 模板、输入、binding 和输出在执行/存储边界进行 lossless JSON materialize 与深冻结。
 
 生产部署前请阅读 [安全与恢复边界](docs/security.md)。

@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import type {} from '@gm-hz/dsh-workflow-dsh'
 import {
   snapshotJsonObject,
   snapshotJsonValue,
@@ -39,7 +40,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export class WorkflowCanvasGateway extends TypertRemoteService {
-  static inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine']
+  static inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine', 'agents']
 
   constructor(ctx: Context, private readonly config: WorkflowCanvasConfig) {
     super(ctx, 'workflowCanvas')
@@ -178,16 +179,32 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
     resourceId?: string,
   ): Promise<WorkflowCanvasPrincipal> {
     if (typeof sessionId !== 'string' || sessionId.length === 0) throw new Error('workflow canvas sessionId is required')
-    const principal = await this.config.authorize({
-      sessionId,
-      action,
-      ...(resourceId === undefined ? {} : { resourceId }),
-    })
+    const agent = (this.ctx as Context & {
+      readonly agents: { get(id: string): unknown }
+    }).agents.get(sessionId)
+    if (agent === null || typeof agent !== 'object'
+      || !('session' in agent) || agent.session === null || typeof agent.session !== 'object'
+      || !('append' in agent.session) || typeof agent.session.append !== 'function') {
+      throw new Error(`workflow canvas access denied for ${action}`)
+    }
+    const header = 'header' in agent.session && agent.session.header !== null && typeof agent.session.header === 'object'
+      ? agent.session.header as { readonly origin?: unknown }
+      : undefined
+    if (header?.origin === 'subagent') throw new Error(`workflow canvas access denied for ${action}`)
+    const scopedAgent = agent as unknown as WorkflowCanvasPrincipal['agent']
+    const principal = this.config.authorize === undefined
+      ? { subject: sessionId, agent: scopedAgent }
+      : await this.config.authorize({
+          sessionId,
+          agent: scopedAgent,
+          action,
+          ...(resourceId === undefined ? {} : { resourceId }),
+        })
     if (principal === undefined) throw new Error(`workflow canvas access denied for ${action}`)
     if (typeof principal.subject !== 'string' || principal.subject.length === 0) throw new Error('workflow canvas authority returned an invalid subject')
-    const agent = principal.agent
-    if (agent === null || typeof agent !== 'object' || agent.session === null || typeof agent.session !== 'object'
-      || typeof agent.session.append !== 'function') {
+    const authorizedAgent = principal.agent
+    if (authorizedAgent === null || typeof authorizedAgent !== 'object' || authorizedAgent.session === null || typeof authorizedAgent.session !== 'object'
+      || typeof authorizedAgent.session.append !== 'function') {
       throw new Error('workflow canvas authority returned an invalid DSH Agent')
     }
     return principal

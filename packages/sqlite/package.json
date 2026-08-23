@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "Node SQLite persistence providers for DSH workflow templates and runs",
   "type": "module",
+  "engines": { "node": ">=22.19.0" },
   "license": "MIT",
   "publishConfig": { "access": "public" },
   "repository": {
@@ -10,6 +11,9 @@
     "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
     "directory": "packages/sqlite"
   },
+  "bugs": { "url": "https://github.com/GM-HZ/dsh-workflow/issues" },
+  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "workflow", "sqlite"],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": { ".": { "types": "./lib/index.d.ts", "default": "./lib/index.js" } },

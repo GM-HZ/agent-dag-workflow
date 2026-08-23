@@ -18,7 +18,7 @@
 | Agent CRUD/validate/diff/publish/run tools | 完成 | 8 个 `workflow_*` tools；scope-visible node/tool schemas、CAS、显式 revision run 集成测试 | 无 |
 | `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
 | Canvas Host RPC 与 Client overlay | 完成 | `packages/canvas`：12 Remote descriptors、shell overlay、XYFlow、schema form、diagnostics、CAS/diff/publish/run/trace/resume、renderer registry、navigation controller | 无 |
-| 安全/权限/secret/idempotency review | 完成 | fail-closed Canvas authority、真实 Agent reacquire、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
+| 安全/权限/secret/idempotency review | 完成 | Canvas 实时顶层 Agent lookup、多用户附加 authority、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
 | CI、构建、包内容、MIT | 完成 | `.github/workflows/ci.yml`、pack 检查、LICENSE | 发布前 provenance/SBOM 可选 |
 
 ## Cordis 兼容性审阅结论
@@ -45,6 +45,6 @@
 
 1. Host 使用官方 Typert protocol 与生成器，生成 12 个带 Zod wire codec 的 Remote descriptor；Client 自行 `$mount` contribution。
 2. `shell.overlay` 是 additive list slot，不替换 DSH `root`/conversation/details owner。
-3. 浏览器不传 Agent object；每个 RPC 都先执行 Host `authorize(sessionId, action, resourceId)`，运行时 Agent 只能由该回调返回。
+3. 浏览器不传 Agent object；每个 RPC 都先从 Host 实时 registry 解析顶层 Agent，再执行可选的 `authorize(sessionId, agent, action, resourceId)`；多人部署必须提供该策略。
 4. Canvas 只在 `layout.canvas.positions` 写坐标；node/edge/config/binding 始终是同一份 `WorkflowTemplate`。
 5. 真实 Chromium 已验证 1200×744 和 900×700、节点选择、palette 新增与最终 0 console error/warning。

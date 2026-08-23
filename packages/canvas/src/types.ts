@@ -53,7 +53,9 @@ export type WorkflowCanvasAction =
   | 'run:start' | 'run:resume' | 'run:trace'
 
 export interface WorkflowCanvasAuthorizationRequest {
+  /** Session identity resolved from the Host-owned live Agent registry. */
   readonly sessionId: string
+  readonly agent: DshAgentLike
   readonly action: WorkflowCanvasAction
   readonly resourceId?: string
 }
@@ -61,8 +63,8 @@ export interface WorkflowCanvasAuthorizationRequest {
 export interface WorkflowCanvasPrincipal { readonly subject: string; readonly agent: DshAgentLike }
 
 export interface WorkflowCanvasConfig {
-  /** Required fail-closed policy hook. It must resolve the session from Host-owned state. */
-  readonly authorize: (
+  /** Required for multi-user deployments; layered after the Host resolves a live top-level Agent. */
+  readonly authorize?: (
     request: WorkflowCanvasAuthorizationRequest,
   ) => Promise<WorkflowCanvasPrincipal | undefined> | WorkflowCanvasPrincipal | undefined
 }
