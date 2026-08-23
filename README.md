@@ -17,6 +17,7 @@
 - 内存与 SQLite Run Store，提供顺序事件日志、原子 checkpoint、崩溃恢复、未知副作用暂停和显式恢复决策。
 - `dsh.agent@1` 与 `dsh.human-approval@1`，分别严格经过 `ctx.subagents` 与 `ctx.approval`；人工等待先提交 checkpoint 再发问。
 - `core.subworkflow@1` 与 `core.foreach@1`，只调用固定 published revision；确定性 child invocation、item container frame 与继承深度上限支持崩溃恢复。
+- 八个受策略保护的 `workflow_*` Agent tools 与随包发布的 `workflow-builder` Skill，形成 topology → draft CAS → validate → diff → publish → exact-revision run 闭环。
 - 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
 
 ```bash
@@ -44,9 +45,8 @@ pnpm check
 
 ## 建议实施顺序
 
-1. 提供 Agent 工具与 `workflow-builder` 引导 skill，形成“规划 -> 构建 -> 校验 -> 预览 diff -> 发布”的生成闭环。
-2. 接入 Canvas Host RPC 与 Client overlay；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
-3. 在完整 Harness composition 中跑兼容、安全和端到端门禁。
+1. 接入 Canvas Host RPC 与 Client overlay；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
+2. 在完整 Harness composition 中跑兼容、安全和端到端门禁。
 
 ## License
 

@@ -22,7 +22,7 @@
       "default": "./lib/index.js"
     }
   },
-  "files": ["lib", "src"],
+  "files": ["lib", "src", "skills"],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",

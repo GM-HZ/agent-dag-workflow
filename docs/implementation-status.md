@@ -15,8 +15,8 @@
 | Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis provider | 无 |
 | Run event store、checkpoint、crash recovery | 部分完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、总时长/深度继承测试 | Host 自动恢复协调器 |
 | `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
-| Agent CRUD/validate/diff/publish/run tools | 未开始 | 总体架构 §6 | 全部实现 |
-| `workflow-builder` Skill | 未开始 | 总体架构 §6 | 规划/构建/修复/预览闭环 |
+| Agent CRUD/validate/diff/publish/run tools | 完成 | 8 个 `workflow_*` tools；scope-visible node/tool schemas、CAS、显式 revision run 集成测试 | 无 |
+| `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
 | Canvas Host RPC 与 Client overlay | 未开始 | 总体架构 §7 | 编辑、校验、diff、trace、renderer registry |
 | 安全/权限/secret/idempotency review | 部分完成 | tool policy 路径、secret reference、单次执行约束 | 持久化与扩展节点实现后完整审计 |
 | CI、构建、包内容、MIT | 完成 | `.github/workflows/ci.yml`、pack 检查、LICENSE | 发布前 provenance/SBOM 可选 |

@@ -66,6 +66,42 @@ export interface DshToolRuntimeLike {
   execute(input: DshToolRuntimeInput): Promise<DshToolRuntimeResult>
 }
 
+export interface DshToolRunContextLike {
+  readonly agent?: DshAgentLike
+  readonly signal: AbortSignal
+}
+
+export interface DshWorkflowToolDefinition {
+  readonly name: string
+  readonly description: string
+  readonly parameters: Readonly<Record<string, unknown>>
+  readonly output: {
+    readonly schema: Readonly<Record<string, unknown>>
+    render(args: unknown, value: JsonValue): readonly { readonly type: 'text'; readonly text: string }[]
+  }
+  readonly isConcurrencySafe?: (args: unknown) => boolean
+  execute(args: unknown, context: DshToolRunContextLike): Promise<JsonValue>
+}
+
+export interface DshToolRegistryLike extends DshToolRuntimeLike {
+  register(definition: DshWorkflowToolDefinition): () => void
+  schemas(scope?: unknown): readonly {
+    readonly name: string
+    readonly description: string
+    readonly parameters: Readonly<Record<string, unknown>>
+  }[]
+}
+
+export interface DshSkillRuntimeLike {
+  register(skill: {
+    readonly name: string
+    readonly description: string
+    readonly source: string
+    readonly content: string
+    readonly invocation?: { readonly modelInvocable: boolean; readonly userInvocable: boolean }
+  }): () => void
+}
+
 export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'owner'> {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject

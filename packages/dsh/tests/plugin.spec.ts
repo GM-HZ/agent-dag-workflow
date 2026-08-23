@@ -5,9 +5,11 @@ import * as DshWorkflowPlugin from '../src/index.js'
 import type {
   DshAgentLike,
   DshApprovalRuntimeLike,
+  DshSkillRuntimeLike,
   DshSubagentRuntimeLike,
   DshToolRuntimeInput,
   DshToolRuntimeResult,
+  DshWorkflowToolDefinition,
 } from '../src/index.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -15,6 +17,7 @@ declare module '@deepseek-ai/cordis' {
     tools: StubToolRuntime
     subagents: StubSubagentRuntime
     approval: StubApprovalRuntime
+    skills: StubSkillRuntime
   }
 }
 
@@ -50,6 +53,7 @@ class StubApprovalRuntime extends Service implements DshApprovalRuntimeLike {
 
 class StubToolRuntime extends Service {
   readonly requests: DshToolRuntimeInput[] = []
+  readonly definitions = new Map<string, DshWorkflowToolDefinition>()
   handler: (input: DshToolRuntimeInput) => Promise<DshToolRuntimeResult> = async input => ({
     isError: false,
     value: { echo: input.arguments.message ?? null },
@@ -62,6 +66,29 @@ class StubToolRuntime extends Service {
   async execute(input: DshToolRuntimeInput): Promise<DshToolRuntimeResult> {
     this.requests.push(input)
     return this.handler(input)
+  }
+
+  register(definition: DshWorkflowToolDefinition): () => void {
+    if (this.definitions.has(definition.name)) throw new Error(`duplicate tool ${definition.name}`)
+    this.definitions.set(definition.name, definition)
+    return () => { this.definitions.delete(definition.name) }
+  }
+
+  schemas(): readonly { readonly name: string; readonly description: string; readonly parameters: Readonly<Record<string, unknown>> }[] {
+    return [...this.definitions.values()].map(({ name, description, parameters }) => ({ name, description, parameters }))
+  }
+}
+
+class StubSkillRuntime extends Service implements DshSkillRuntimeLike {
+  readonly definitions = new Map<string, Parameters<DshSkillRuntimeLike['register']>[0]>()
+
+  constructor(ctx: Context) {
+    super(ctx, 'skills')
+  }
+
+  register(skill: Parameters<DshSkillRuntimeLike['register']>[0]): () => void {
+    this.definitions.set(skill.name, skill)
+    return () => { this.definitions.delete(skill.name) }
   }
 }
 
@@ -281,6 +308,7 @@ async function mountRuntime(ctx: Context): Promise<void> {
   await ctx.plugin(StubToolRuntime)
   await ctx.plugin(StubSubagentRuntime)
   await ctx.plugin(StubApprovalRuntime)
+  await ctx.plugin(StubSkillRuntime)
 }
 
 describe('DSH Cordis plugin', () => {
@@ -328,6 +356,20 @@ describe('DSH Cordis plugin', () => {
     ])
     expect(session.events[0]?.data).toEqual(expect.objectContaining({ templateId: 'dsh-plugin-test', semanticHash: expect.any(String) }))
     expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+    expect([...tools.definitions.keys()].sort()).toEqual([
+      'workflow_diff',
+      'workflow_draft_create',
+      'workflow_draft_read',
+      'workflow_draft_update',
+      'workflow_nodes_list',
+      'workflow_publish',
+      'workflow_run',
+      'workflow_validate',
+    ])
+    expect(ctx.skills.definitions.get('workflow-builder')).toMatchObject({
+      invocation: { modelInvocable: true, userInvocable: true },
+      content: expect.stringContaining('workflow_nodes_list'),
+    })
     const replayed = await ctx.dagWorkflowEngine.resume({ runId: run.id, parent }).result
     expect(replayed).toMatchObject({ status: 'completed', outputs: { answer: 'hello' } })
     expect(tools.requests).toHaveLength(1)
@@ -338,6 +380,8 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.get('workflowNodes')).toBeUndefined()
     expect(ctx.get('workflowTemplates')).toBeUndefined()
     expect(ctx.get('workflowRuns')).toBeUndefined()
+    expect(tools.definitions).toEqual(new Map())
+    expect(ctx.skills.definitions).toEqual(new Map())
   })
 
   it('contains Session recording and request observer failures', async () => {
@@ -443,5 +487,37 @@ describe('DSH Cordis plugin', () => {
     for (const item of mapped.outputs.results as readonly { readonly runId: string }[]) {
       expect(ctx.workflowRuns.loadRun(item.runId)?.checkpoint).toMatchObject({ status: 'completed', depth: 1 })
     }
+  })
+
+  it('exposes the guarded authoring CRUD, validation, publish, and run tools', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    await ctx.plugin(DshWorkflowPlugin)
+    const parent: DshAgentLike = { session: new StubSession() }
+    const execution = { agent: parent, signal: new AbortController().signal }
+    const authored = childTemplate('tool-authored')
+    const call = async (name: string, args: unknown) => {
+      const definition = ctx.tools.definitions.get(name)
+      if (definition === undefined) throw new Error(`missing ${name}`)
+      return definition.execute(args, execution)
+    }
+
+    const nodes = await call('workflow_nodes_list', {})
+    expect(nodes).toMatchObject({ nodes: expect.arrayContaining([expect.objectContaining({ uses: 'core.foreach@1' })]) })
+    const created = await call('workflow_draft_create', { template: authored })
+    expect(created).toMatchObject({ id: 'tool-authored', revision: 1 })
+    expect(await call('workflow_draft_read', { id: 'tool-authored' })).toEqual(created)
+    const updatedTemplate = { ...authored, metadata: { ...authored.metadata, name: 'Updated through tool' } }
+    const updated = await call('workflow_draft_update', { id: 'tool-authored', expectedRevision: 1, template: updatedTemplate })
+    expect(updated).toMatchObject({ revision: 2, template: { metadata: { name: 'Updated through tool' } } })
+    expect(await call('workflow_validate', { template: updatedTemplate })).toEqual({ diagnostics: [] })
+    expect(await call('workflow_diff', { id: 'tool-authored', candidate: updatedTemplate })).toMatchObject({ semanticChanged: false })
+    const published = await call('workflow_publish', { id: 'tool-authored', expectedRevision: 2 })
+    expect(published).toMatchObject({ id: 'tool-authored', revision: 1 })
+    expect(await call('workflow_run', { id: 'tool-authored', revision: 1, inputs: { message: 'from tool' } })).toMatchObject({
+      status: 'completed',
+      outputs: { value: 'from tool' },
+    })
+    await expect(call('workflow_run', { id: 'tool-authored', template: authored, inputs: {} })).rejects.toThrow(/exactly one/)
   })
 })

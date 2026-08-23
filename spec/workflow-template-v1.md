@@ -132,6 +132,16 @@ layout:
 
 `layout` 不参与 semantic hash，也不进入 executable IR。未知 layout 字段按 layout schema/version 处理，不能影响运行结果。
 
+## 嵌套与人工节点约定
+
+- `core.subworkflow@1.with` 必须包含 `{ templateId, revision }`；`inputs` 直接作为 child workflow inputs，输出为 `{ runId, outputs }`。
+- `core.foreach@1.with` 必须包含 `{ templateId, revision }`，可选 `maxConcurrency/maxItems`；节点输入是 `{ items, shared? }`，每个 child 收到 `{ item, index, shared }`，节点输出是按原 index 排序的 `{ results: [{ index, runId, outputs }] }`。
+- subworkflow/foreach 只解析精确 published revision。Catalog publish 校验版本存在、依赖无环和继承后的最大深度；运行时把有效 depth ceiling 写入每个 child checkpoint。
+- 每个 child invocation id 由 parent run/node/item index 稳定派生。同一 invocation 必须绑定同一模板 semantic hash、inputs 和 depth；冲突 fail loud。
+- foreach checkpoint 保存每个 item 的 `pending/running/completed` frame。崩溃后 running item 恢复同一 child run，不创建第二个副作用执行。
+- `dsh.human-approval@1.with` 必须包含 `{ action, reason }`；任意 `inputs` 作为只读详情。节点在调用 approval seam 前提交 `waiting` checkpoint，结果走 `approved/rejected` 端口。
+- `dsh.agent@1.with` 必须包含 `{ provider, prompt }`，可选 `label/outputSchema/maxDepth`；输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
+
 ## 发布校验
 
 发布至少执行：

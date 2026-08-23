@@ -8,6 +8,7 @@
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
 - `dsh-dag-workflow/*` Session 摘要事件：用于重放顶层 run/node 状态。
+- 八个 `workflow_*` authoring tools 与 model/user 均可调用的 bundled `workflow-builder` Skill。
 
 ## 装配
 
@@ -19,9 +20,11 @@ await ctx.plugin(DagWorkflow)
 
 传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存 provider，并显式装配 `SqliteWorkflowTemplatesProvider` 与 `SqliteWorkflowRunsProvider`。
 
-插件声明 `inject = ['tools', 'subagents', 'approval']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`dsh.agent@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`dsh.human-approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
+插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`dsh.agent@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`dsh.human-approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
 `core.subworkflow@1` 与 `core.foreach@1` 还会读取 `ctx.workflowTemplates` 中的精确 published revision。每个 child 是同一 `ctx.workflowRuns` 中的确定性 run；子流程暂停时父流程进入 `paused/needs_attention`，不会把未知副作用误报成普通失败。
+
+Authoring tools 包括 `workflow_nodes_list`、`workflow_draft_create/read/update`、`workflow_validate`、`workflow_diff`、`workflow_publish`、`workflow_run`。它们作为普通 DSH tools 重新经过 scope、guard、approval 与 observer policy；published run 必须指定精确 revision。Skill 只引导调用这些工具，不自行读写 Catalog。
 
 ```ts
 const run = ctx.dagWorkflowEngine.start({
