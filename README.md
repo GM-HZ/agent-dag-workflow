@@ -1,60 +1,288 @@
 # DSH DAG Workflow
 
-基于 DeepSeek Harness（DSH）插件体系构建可生成、可执行、可恢复、可视化的 DAG Workflow。
+DSH DAG Workflow 是一套基于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件体系的持久化 Workflow 能力：Skill 或 Agent 负责生成模板，DAG Engine 按模板执行，Canvas 直接编辑和观察同一份模板。
 
-当前仓库已经完成首版内核、DSH 装配、Template Catalog、持久化恢复、生成 Skill 和 Canvas Studio。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
+它不是对 DSH 现有动态 JavaScript workflow 的替代。动态 workflow 适合 Agent 临时规划和扇出任务；本项目解决需要保存、复用、版本化、审计、暂停恢复和可视化编排的流程。
 
-## v0.1 已实现
+## 设计
 
-- TypeScript 核心包 [`@gm-hz/dsh-workflow-core`](packages/core/README.md)。
-- `WorkflowTemplate v1alpha1` 解析、结构/拓扑/binding/provider 校验和结构化 diagnostics。
-- 可处置的节点注册表与精确 `type@version` 解析。
-- 有界并发内存调度器、`unknown/taken/skipped` 边状态、分支 skip propagation、取消和运行事件。
-- `core.start@1`、`core.end@1`、`core.condition@1`、`dsh.tool@1`。
-- 窄接口 DSH Tool adapter，Host 侧可把调用接入 `ctx.tools.execute()`。
-- DSH Cordis 插件包 [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md)，提供真实 `ctx.workflowNodes`、`ctx.dagWorkflowEngine`、Session 摘要与卸载收敛。
-- Template Catalog 包 [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) 与 [Node SQLite provider](packages/sqlite/README.md)，提供 draft CAS、发布校验和不可变 revision。
-- 内存与 SQLite Run Store，提供顺序事件日志、原子 checkpoint、崩溃恢复、未知副作用暂停和显式恢复决策。
-- `dsh.agent@1` 与 `dsh.human-approval@1`，分别严格经过 `ctx.subagents` 与 `ctx.approval`；人工等待先提交 checkpoint 再发问。
-- `core.subworkflow@1` 与 `core.foreach@1`，只调用固定 published revision；确定性 child invocation、item container frame 与继承深度上限支持崩溃恢复。
-- 八个受策略保护的 `workflow_*` Agent tools 与随包发布的 `workflow-builder` Skill，形成 topology → draft CAS → validate → diff → publish → exact-revision run 闭环。
-- Canvas 包 [`@gm-hz/dsh-workflow-canvas`](packages/canvas/README.md)：12 个 Typert Remote 端点、Host fail-closed authority、DSH `shell.overlay` 浮动入口与全屏 XYFlow Studio。
-- Canvas 直接编辑唯一 `WorkflowTemplate`，支持 provider palette、schema config form、edge/node 编辑、diagnostics、CAS save、diff、publish、draft test run、持久 trace 与 unknown-side-effect resume 决策。
-- 可选 Host restart coordinator 通过持久 `ownerRef` 重新取得真实 Agent；没有 authority、paused 或无 owner 的 run 保持不动。
-- secret binding 只经 scoped resolver 进入瞬时节点输入；原值出现在节点输出时拒绝持久化。
-- 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
+```mermaid
+flowchart LR
+  A["Skill / Agent"] -->|生成、校验、发布| T["WorkflowTemplate"]
+  C["Canvas Studio"] -->|编辑同一份模板| T
+  T --> E["DAG Engine"]
+  E --> N["Node Registry"]
+  E --> R["Run Store"]
+  N --> D["DSH tools / subagents / approval"]
+  R --> C
+```
+
+核心设计约束：
+
+- **一个真源**：Agent、Engine 和 Canvas 都读写 `WorkflowTemplate`，不再维护第二套 Canvas DSL。
+- **精确解析**：节点使用 `type@version`，发布后的 Workflow 和子流程固定到不可变 revision。
+- **能力不越权**：`dsh.tool@1`、`dsh.agent@1`、`dsh.human-approval@1` 始终经过当前 DSH scope 的 tool、subagent、approval 和 owning Agent。
+- **执行可恢复**：每次状态推进同时追加有序事件并提交 checkpoint；未知副作用不会自动重试，而是进入 `needs_attention`。
+- **布局不污染语义**：节点位置和 viewport 位于 `layout`，移动节点只产生 layout diff，不改变 Workflow 的 semantic hash。
+
+一个模板包含输入/输出 Schema、节点、边、binding、执行策略和可选布局：
+
+```yaml
+apiVersion: dsh.workflow/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  id: echo-message
+  name: Echo message
+spec:
+  inputSchema:
+    type: object
+    required: [message]
+    properties:
+      message: { type: string }
+  outputSchema:
+    type: object
+    required: [answer]
+    properties:
+      answer: { type: string }
+  nodes:
+    - id: start
+      uses: core.start@1
+      with: {}
+      inputs: {}
+    - id: echo
+      uses: dsh.tool@1
+      with: { name: echo }
+      inputs:
+        message: { input: message }
+    - id: end
+      uses: core.end@1
+      with: {}
+      inputs:
+        answer: { output: { node: echo, path: [result, echo] } }
+  edges:
+    - { id: start-echo, source: start, target: echo }
+    - { id: echo-end, source: echo, target: end }
+  outputs:
+    answer: { output: { node: end, path: [answer] } }
+```
+
+完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)，多 Agent 示例见 [research-report.workflow.yaml](examples/research-report.workflow.yaml)。
+
+## 快速开始
+
+本仓库要求 Node.js 22.19+ 和 pnpm 11：
 
 ```bash
+git clone https://github.com/GM-HZ/dsh-workflow.git
+cd dsh-workflow
 pnpm install
 pnpm check
 ```
 
-## 当前结论
+当前 v0.1 尚未发布到 npm。源码接入时，将本仓库的 `packages/*` 加入 DSH Host 的 `pnpm-workspace.yaml`，再给 Host 包添加所需的 workspace 依赖：
 
-这个方向值得做，并且 DSH 已经提供了很好的落点：
+```yaml
+packages:
+  - packages/*
+  - ../dsh-workflow/packages/*
+```
 
-- DSH 已有 `ctx.workflowEngine`，用于执行模型生成的 JavaScript 编排脚本并扇出 subagent，但源码明确暂不支持保存、嵌套、journal 与 resume。DAG Workflow 应作为互补能力，不应破坏或改写现有 dynamic workflow。
-- DSH 的 Cordis effect、scoped tool registry、skill registry、Typert Remote、client module 和 UI slot 已覆盖插件生命周期、Agent 可见能力、前后端 RPC 与 Canvas 装载所需的主要基础设施。
-- Coze Studio 证明了“Canvas 数据 -> 运行 Schema -> 编译后执行图”的分层价值；Dify/Graphon 证明了 ready queue、边状态、运行快照、暂停恢复、执行 layer 与生成预览/差异确认的价值。
+```bash
+pnpm --filter your-host-package add '@gm-hz/dsh-workflow-dsh@workspace:*'
+pnpm --filter your-host-package add '@gm-hz/dsh-workflow-sqlite@workspace:*'
+pnpm --filter your-host-package add '@gm-hz/dsh-workflow-canvas@workspace:*'
+```
 
-## 设计入口
+SQLite 和 Canvas 是可选依赖；只验证内存执行时安装 `@gm-hz/dsh-workflow-dsh` 即可。
+
+在 DSH Host 中装配内存版服务：
+
+```ts
+import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+
+// Host 需要先提供 DSH 的 tools、subagents、approval 和 skills 服务。
+await ctx.plugin(DagWorkflow)
+```
+
+插件会发布四个 Cordis service：
+
+| Service | 用途 |
+| --- | --- |
+| `ctx.workflowNodes` | 注册并解析版本化节点 |
+| `ctx.workflowTemplates` | draft、CAS 更新、diff、校验和发布 |
+| `ctx.workflowRuns` | 事件日志与 checkpoint |
+| `ctx.dagWorkflowEngine` | 启动、恢复和取消运行 |
+
+内存 Provider 适合开发和测试。生产环境先挂载 SQLite Provider，再让主插件复用外部服务：
+
+```ts
+import {
+  WorkflowNodeRegistryService,
+} from '@gm-hz/dsh-workflow-dsh'
+import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+import {
+  SqliteWorkflowRunsProvider,
+  SqliteWorkflowTemplatesProvider,
+} from '@gm-hz/dsh-workflow-sqlite'
+
+const database = { path: './data/workflows.db' }
+
+await ctx.plugin(WorkflowNodeRegistryService)
+await ctx.plugin(SqliteWorkflowTemplatesProvider, database)
+await ctx.plugin(SqliteWorkflowRunsProvider, database)
+await ctx.plugin(DagWorkflow, {
+  catalog: 'external',
+  runStore: 'external',
+})
+```
+
+## 使用方式
+
+### 1. 让 Agent 生成 Workflow
+
+主插件会向 DSH 注册 `workflow-builder` Skill，以及下面八个受 DSH 策略保护的工具：
+
+```text
+workflow_nodes_list
+workflow_draft_create
+workflow_draft_read
+workflow_draft_update
+workflow_validate
+workflow_diff
+workflow_publish
+workflow_run
+```
+
+可以直接对 Agent 表达目标，例如：
+
+> 创建一个“研究主题 → 两路独立调研 → 汇总报告 → 人工确认”的 workflow。先展示校验结果和 diff，得到我确认后再发布，并运行发布的精确 revision。
+
+Skill 引导 Agent 按 `查询节点 → 生成拓扑 → 创建 draft → 校验 → diff → 发布 → 运行` 的顺序工作。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
+
+### 2. 从代码执行
+
+```ts
+const published = ctx.workflowTemplates.getPublished('research-report', 1)
+const run = ctx.dagWorkflowEngine.start({
+  template: published.template,
+  inputs: { topic: 'DSH plugin architecture' },
+  parent: agent, // 发起运行并拥有权限的真实 DSH Agent
+})
+
+const result = await run.result
+await run.dispose()
+
+if (result.status === 'completed') {
+  console.log(result.outputs)
+}
+```
+
+`result` 会以 `completed`、`failed`、`cancelled` 或 `paused` 收敛。调用方持有 run，并应在读取结果后 `dispose()`。
+
+恢复一个持久化运行：
+
+```ts
+const resumed = ctx.dagWorkflowEngine.resume({
+  runId,
+  parent: agent,
+  unknownNodeResolutions: {
+    charge: 'retry', // 也可以显式选择 'fail'
+  },
+})
+
+const result = await resumed.result
+await resumed.dispose()
+```
+
+### 3. 启用 Canvas Studio
+
+Canvas 是独立插件。它要求 Host 提供 fail-closed 授权函数，从 Host 自己的 session 状态解析真实 Agent：
+
+```ts
+import * as WorkflowCanvas from '@gm-hz/dsh-workflow-canvas'
+
+await ctx.plugin(WorkflowCanvas, {
+  authorize: async ({ sessionId, action, resourceId }) => {
+    const agent = resolveAgentTheCallerMayUse(sessionId, action, resourceId)
+    if (agent === undefined) return undefined
+    return { subject: currentUserId(), agent }
+  },
+})
+```
+
+包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 支持节点和边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
+
+其他 DSH Client 插件也可以打开同一个 overlay：
+
+```ts
+ctx.workflowCanvasUi.open({
+  templateId: 'research-report',
+  runId: 'dag-…',
+  nodeId: 'summarize',
+})
+```
+
+## 扩展节点
+
+节点定义通过 `ctx.workflowNodes` 注册，返回 disposer，并随 Cordis scope 自动卸载：
+
+```ts
+ctx.effect(() => ctx.workflowNodes.register({
+  type: 'acme.review',
+  version: 1,
+  title: 'Review',
+  description: 'Run an internal review step.',
+  role: 'regular',
+  configSchema: { type: 'object', additionalProperties: false },
+  inputSchema: { type: 'object' },
+  outputSchema: { type: 'object' },
+  outputPorts: ['default'],
+  requiredOutputPorts: ['default'],
+  capabilities: [],
+  retry: 'safe',
+  async execute(context) {
+    return { outputs: { accepted: true, input: context.inputs } }
+  },
+}))
+```
+
+模板中使用 `acme.review@1`。如需自定义 Canvas 外观，Client 插件可额外注册同一 `uses` 对应的 React renderer；未注册时仍可使用通用节点编辑器。
+
+## 可靠性与安全边界
+
+- draft 使用 revision CAS，published revision 不可变；运行发布版本时必须指定精确 revision。
+- `core.subworkflow@1` 和 `core.foreach@1` 只调用固定 published revision，并设置继承深度上限。
+- secret binding 只保存引用；原值通过 Host 的 scoped resolver 进入瞬时节点输入，若流入节点输出则拒绝持久化。
+- 自动恢复只处理 `running + ownerRef + 可重新解析的 Agent`；paused 或无 authority 的 run 保持不动。
+- Canvas 所有读写和运行 RPC 都经过 Host 授权，未提供 `authorize` 时插件拒绝启动。
+- 模板、输入、binding 和输出在执行/存储边界进行 lossless JSON materialize 与深冻结。
+
+生产部署前请阅读 [安全与恢复边界](docs/security.md)。
+
+## 包与文档
+
+| 包 | 职责 |
+| --- | --- |
+| [`@gm-hz/dsh-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
+| [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
+| [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
+| [`@gm-hz/dsh-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint Provider |
+| [`@gm-hz/dsh-workflow-canvas`](packages/canvas/README.md) | 授权 RPC、DSH Client manifest、XYFlow Studio |
 
 - [总体架构](docs/architecture.md)
-- [源码对照与取舍](docs/source-findings.md)
-- [Workflow Template v1 语义](spec/workflow-template-v1.md)
-- [示例模板](examples/research-report.workflow.yaml)
-- [v0.1 可运行 Tool 示例](examples/tool-echo.workflow.yaml)
-- [参考仓库版本与检出方式](ref_project/README.md)
-- [实现状态与完成审计](docs/implementation-status.md)
-- [安全与恢复边界](docs/security.md)
+- [源码对照与设计取舍](docs/source-findings.md)
+- [Workflow Template v1 规范](spec/workflow-template-v1.md)
+- [参考项目版本](ref_project/README.md)
+- [实现与测试审计](docs/implementation-status.md)
 
-## 包
+## 开发
 
-- `@gm-hz/dsh-workflow-core`：协议、编译器、调度器、核心节点和 RunStore contract。
-- `@gm-hz/dsh-workflow-catalog`：draft CAS、diff、不可变 published revision。
-- `@gm-hz/dsh-workflow-dsh`：Cordis services、DSH capability adapters、Agent tools 与 Skill。
-- `@gm-hz/dsh-workflow-sqlite`：SQLite catalog/run/checkpoint providers 与 v1→v3 migration。
-- `@gm-hz/dsh-workflow-canvas`：Typert Host/Client Remote 与 Canvas Studio。
+```bash
+pnpm build       # 构建所有包
+pnpm typecheck   # 类型检查
+pnpm test        # 运行测试
+pnpm check       # 完整校验
+```
 
 ## License
 

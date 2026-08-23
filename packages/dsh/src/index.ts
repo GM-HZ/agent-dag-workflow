@@ -13,9 +13,20 @@ export const name = 'dsh-dag-workflow'
 export const inject = ['tools', 'subagents', 'approval', 'skills']
 
 export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}): Promise<void> {
-  await ctx.plugin(WorkflowNodeRegistryService)
-  if ((config.catalog ?? 'memory') === 'memory') await ctx.plugin(InMemoryWorkflowTemplatesProvider)
-  if ((config.runStore ?? 'memory') === 'memory') await ctx.plugin(InMemoryWorkflowRunsProvider)
+  if (ctx.get('workflowNodes') === undefined) await ctx.plugin(WorkflowNodeRegistryService)
+
+  if ((config.catalog ?? 'memory') === 'memory') {
+    if (ctx.get('workflowTemplates') === undefined) await ctx.plugin(InMemoryWorkflowTemplatesProvider)
+  } else if (ctx.get('workflowTemplates') === undefined) {
+    throw new Error("catalog: 'external' requires a workflowTemplates service to be installed before dsh-dag-workflow")
+  }
+
+  if ((config.runStore ?? 'memory') === 'memory') {
+    if (ctx.get('workflowRuns') === undefined) await ctx.plugin(InMemoryWorkflowRunsProvider)
+  } else if (ctx.get('workflowRuns') === undefined) {
+    throw new Error("runStore: 'external' requires a workflowRuns service to be installed before dsh-dag-workflow")
+  }
+
   await ctx.plugin(DagWorkflowEngineProvider, config)
   if (config.recovery !== undefined) await ctx.plugin(WorkflowRecoveryCoordinatorProvider, config)
   await ctx.plugin(WorkflowAuthoringProvider)

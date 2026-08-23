@@ -312,6 +312,36 @@ async function mountRuntime(ctx: Context): Promise<void> {
 }
 
 describe('DSH Cordis plugin', () => {
+  it('reuses caller-owned registry, catalog, and run store services', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    const nodesPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowNodeRegistryService)
+    const templatesPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowTemplatesProvider)
+    const runsPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowRunsProvider)
+    const registry = ctx.workflowNodes.registry
+    const draft = ctx.workflowTemplates.createDraft(childTemplate('external-services'))
+
+    const plugin = await ctx.plugin(DshWorkflowPlugin, { catalog: 'external', runStore: 'external' })
+
+    expect(ctx.workflowNodes.registry).toBe(registry)
+    expect(ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
+    const run = ctx.dagWorkflowEngine.start({
+      template: childTemplate('external-run'),
+      inputs: { message: 'persisted' },
+      parent: { session: new StubSession() },
+    })
+    expect(await run.result).toMatchObject({ status: 'completed', outputs: { value: 'persisted' } })
+    await run.dispose()
+    await plugin.dispose()
+    expect(ctx.workflowNodes.registry).toBe(registry)
+    expect(ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
+    expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+
+    await runsPlugin.dispose()
+    await templatesPlugin.dispose()
+    await nodesPlugin.dispose()
+  })
+
   it('publishes services and executes dsh.tool with the owning Agent', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
