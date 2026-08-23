@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow",
+  "name": "@gm-hz/dsh-dag-workflow",
   "version": "0.1.0",
   "description": "Installable DSH bundle for durable DAG workflows, Agent authoring, SQLite runs, and Canvas Studio",
   "type": "module",

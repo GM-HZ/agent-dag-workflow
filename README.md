@@ -73,7 +73,7 @@ spec:
 要求 Node.js 22.19+。将完整 Workflow bundle 安装到 DSH Web profile：
 
 ```bash
-dsh plugin --profile web add @gm-hz/dsh-workflow
+dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 ```
 
 该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-workflow/workflows.db`。
@@ -257,7 +257,7 @@ ctx.effect(() => ctx.workflowNodes.register({
 
 | 包 | 职责 |
 | --- | --- |
-| [`@gm-hz/dsh-workflow`](packages/bundle/README.md) | 可由 `dsh plugin add` 安装的完整 bundle，默认启用 SQLite 和 Canvas |
+| [`@gm-hz/dsh-dag-workflow`](packages/bundle/README.md) | 可由 `dsh plugin add` 安装的完整 bundle，默认启用 SQLite 和 Canvas |
 | [`@gm-hz/dsh-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
 | [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
 | [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |

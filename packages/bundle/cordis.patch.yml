@@ -1,6 +1,6 @@
 - insert:
-    - id: gm-hz-dsh-workflow
-      name: '@gm-hz/dsh-workflow'
+    - id: gm-hz-dsh-dag-workflow
+      name: '@gm-hz/dsh-dag-workflow'
       config:
         databasePath: !!js dshHomePath('dsh-workflow/workflows.db')
 
