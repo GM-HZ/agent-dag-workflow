@@ -128,17 +128,21 @@ export type WorkflowNodeStatus =
   | 'failed'
   | 'cancelled'
   | 'skipped'
+  | 'needs_attention'
 
 export type WorkflowEdgeStatus = 'unknown' | 'taken' | 'skipped'
 
 export type WorkflowEvent =
   | { readonly seq: number; readonly type: 'run.started'; readonly runId: string }
+  | { readonly seq: number; readonly type: 'run.resumed'; readonly runId: string }
   | { readonly seq: number; readonly type: 'run.completed'; readonly runId: string }
   | { readonly seq: number; readonly type: 'run.failed'; readonly runId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'run.cancelled'; readonly runId: string; readonly reason: string }
-  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.completed' | 'node.skipped'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'run.paused'; readonly runId: string; readonly reason: string }
+  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
   | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'edge.taken' | 'edge.skipped'; readonly runId: string; readonly edgeId: string }
+  | { readonly seq: number; readonly type: 'checkpoint.committed'; readonly runId: string; readonly checkpointSeq: number }
 
 export type WorkflowEventInput = WorkflowEvent extends infer Event
   ? Event extends WorkflowEvent
@@ -156,12 +160,13 @@ export interface WorkflowRunSuccess {
 }
 
 export interface WorkflowRunFailure {
-  readonly status: 'failed' | 'cancelled'
+  readonly status: 'failed' | 'cancelled' | 'paused'
   readonly runId: string
   readonly error: string
   readonly nodeStates: Readonly<Record<string, WorkflowNodeStatus>>
   readonly edgeStates: Readonly<Record<string, WorkflowEdgeStatus>>
   readonly events: readonly WorkflowEvent[]
+  readonly needsAttention?: readonly string[]
 }
 
 export type WorkflowRunResult = WorkflowRunSuccess | WorkflowRunFailure
@@ -179,4 +184,47 @@ export interface WorkflowStartRequest {
   readonly owner?: unknown
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
+}
+
+export interface WorkflowResumeRequest {
+  readonly runId: string
+  readonly owner?: unknown
+  readonly signal?: AbortSignal
+  readonly onEvent?: (event: WorkflowEvent) => void
+  readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
+}
+
+export type PersistedWorkflowRunStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'
+
+export interface WorkflowRunCheckpoint {
+  readonly version: 1
+  readonly runId: string
+  readonly semanticHash: string
+  readonly seq: number
+  readonly status: PersistedWorkflowRunStatus
+  readonly nodeStates: Readonly<Record<string, WorkflowNodeStatus>>
+  readonly edgeStates: Readonly<Record<string, WorkflowEdgeStatus>>
+  readonly nodeOutputs: Readonly<Record<string, JsonObject>>
+  readonly ready: readonly string[]
+  readonly nodeRuns: number
+  readonly updatedAt: number
+  readonly resultOutputs?: JsonObject
+  readonly error?: string
+}
+
+export interface WorkflowRunRecord {
+  readonly runId: string
+  readonly template: WorkflowTemplate
+  readonly semanticHash: string
+  readonly inputs: JsonObject
+  readonly createdAt: number
+  readonly checkpoint: WorkflowRunCheckpoint
+  readonly events: readonly WorkflowEvent[]
+}
+
+export interface WorkflowRunStore {
+  createRun(record: WorkflowRunRecord): void
+  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void
+  loadRun(runId: string): WorkflowRunRecord | undefined
+  listRecoverableRuns(): readonly WorkflowRunRecord[]
 }

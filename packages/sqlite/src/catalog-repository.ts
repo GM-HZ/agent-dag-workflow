@@ -1,4 +1,4 @@
-import { DatabaseSync, type SQLOutputValue } from 'node:sqlite'
+import { type DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import type { MaterializedWorkflowTemplate, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
 import { parseWorkflowTemplate, stableJsonStringify } from '@gm-hz/dsh-workflow-core'
 import {
@@ -8,29 +8,15 @@ import {
   type WorkflowCatalogSummary,
   type WorkflowDraft,
 } from '@gm-hz/dsh-workflow-catalog'
+import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
-export const SQLITE_SCHEMA_VERSION = 1
-export const SQLITE_APPLICATION_ID = 1_146_308_695
-
-export interface SqliteWorkflowCatalogOptions {
-  readonly path: string
-  readonly busyTimeoutMs?: number
-}
+export type SqliteWorkflowCatalogOptions = SqliteWorkflowOptions
 
 export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepository {
   private readonly db: DatabaseSync
 
   constructor(options: SqliteWorkflowCatalogOptions) {
-    if (typeof options.path !== 'string' || options.path.length === 0) throw new Error('SQLite path must be a non-empty string')
-    const timeout = options.busyTimeoutMs ?? 5_000
-    if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2_147_483_647) throw new Error('busyTimeoutMs must be a non-negative SQLite millisecond integer')
-    this.db = new DatabaseSync(options.path, { timeout })
-    try {
-      this.configure(options.path, timeout)
-    } catch (error: unknown) {
-      this.db.close()
-      throw error
-    }
+    this.db = openWorkflowDatabase(options)
   }
 
   close(): void {
@@ -38,7 +24,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
   }
 
   createDraft(materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
-    return this.transaction(() => {
+    return transaction(this.db, () => {
       const id = materialized.template.metadata.id
       if (this.readDraft(id) !== undefined) throw new WorkflowCatalogError('CATALOG_ALREADY_EXISTS', `workflow draft already exists: ${id}`)
       this.db.prepare(`INSERT INTO workflow_drafts
@@ -56,7 +42,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
   }
 
   updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
-    return this.transaction(() => {
+    return transaction(this.db, () => {
       const result = this.db.prepare(`UPDATE workflow_drafts SET
         revision = revision + 1, template_json = ?, content_hash = ?, semantic_hash = ?, updated_at = ?
         WHERE id = ? AND revision = ?`)
@@ -67,7 +53,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
   }
 
   publishDraft(id: string, expectedDraftRevision: number, now: number): PublishedWorkflowRevision {
-    return this.transaction(() => {
+    return transaction(this.db, () => {
       const draft = this.readDraft(id)
       if (draft === undefined) throw new WorkflowCatalogError('CATALOG_NOT_FOUND', `workflow draft not found: ${id}`)
       if (draft.revision !== expectedDraftRevision) throw revisionConflict(id, expectedDraftRevision, draft.revision)
@@ -105,62 +91,6 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
         updatedAt: integerColumn(record, 'updated_at'),
       })
     })
-  }
-
-  private configure(path: string, timeout: number): void {
-    this.db.exec('PRAGMA trusted_schema = OFF; PRAGMA foreign_keys = ON; PRAGMA mmap_size = 0; PRAGMA synchronous = FULL;')
-    this.db.exec(`PRAGMA busy_timeout = ${timeout}`)
-    if (path !== ':memory:') this.db.exec('PRAGMA journal_mode = WAL;')
-    this.transaction(() => {
-      const version = integerColumn(this.db.prepare('PRAGMA user_version').get(), 'user_version')
-      const applicationId = integerColumn(this.db.prepare('PRAGMA application_id').get(), 'application_id')
-      const objectCount = integerColumn(this.db.prepare(`SELECT COUNT(*) AS value FROM sqlite_schema
-        WHERE name NOT LIKE 'sqlite_%'`).get(), 'value')
-      if (version === 0 && applicationId === 0 && objectCount === 0) {
-        this.db.exec(`
-          CREATE TABLE workflow_drafts (
-            id TEXT PRIMARY KEY,
-            revision INTEGER NOT NULL CHECK (revision >= 1),
-            template_json TEXT NOT NULL,
-            content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
-            semantic_hash TEXT NOT NULL CHECK (length(semantic_hash) = 64),
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
-          ) STRICT;
-          CREATE TABLE workflow_revisions (
-            id TEXT NOT NULL,
-            revision INTEGER NOT NULL CHECK (revision >= 1),
-            source_draft_revision INTEGER NOT NULL CHECK (source_draft_revision >= 1),
-            template_json TEXT NOT NULL,
-            content_hash TEXT NOT NULL CHECK (length(content_hash) = 64),
-            semantic_hash TEXT NOT NULL CHECK (length(semantic_hash) = 64),
-            published_at INTEGER NOT NULL,
-            PRIMARY KEY (id, revision)
-          ) STRICT;
-          PRAGMA application_id = ${SQLITE_APPLICATION_ID};
-          PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};
-        `)
-        return
-      }
-      if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
-        throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
-      }
-      const names = this.db.prepare(`SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all()
-        .map(row => stringColumn(rowRecord(row), 'name'))
-      if (names.join(',') !== 'workflow_drafts,workflow_revisions') throw new Error('workflow database required schema objects do not match this build')
-    })
-  }
-
-  private transaction<T>(operation: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const result = operation()
-      this.db.exec('COMMIT')
-      return result
-    } catch (error: unknown) {
-      try { this.db.exec('ROLLBACK') } catch { /* retain original failure */ }
-      throw error
-    }
   }
 
   private throwMissingOrConflict(id: string, expected: number): never {

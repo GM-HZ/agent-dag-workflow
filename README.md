@@ -2,7 +2,7 @@
 
 基于 DeepSeek Harness（DSH）插件体系构建可生成、可执行、可恢复、可视化的 DAG Workflow。
 
-当前仓库已经进入 Phase 0 实现阶段。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
+当前仓库已经完成基础内核、DSH 装配、Template Catalog 和第一版持久化恢复。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
 
 ## v0.1 已实现
 
@@ -14,6 +14,7 @@
 - 窄接口 DSH Tool adapter，Host 侧可把调用接入 `ctx.tools.execute()`。
 - DSH Cordis 插件包 [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md)，提供真实 `ctx.workflowNodes`、`ctx.dagWorkflowEngine`、Session 摘要与卸载收敛。
 - Template Catalog 包 [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) 与 [Node SQLite provider](packages/sqlite/README.md)，提供 draft CAS、发布校验和不可变 revision。
+- 内存与 SQLite Run Store，提供顺序事件日志、原子 checkpoint、崩溃恢复、未知副作用暂停和显式恢复决策。
 - 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
 
 ```bash
@@ -41,10 +42,10 @@ pnpm check
 
 ## 建议实施顺序
 
-1. 接入 DSH Cordis Service Definition/Provider，把 `dsh.tool@1` 绑定到真实 `ctx.tools.execute()`。
-2. 接入独立的运行事件存储与 checkpoint，再增加 `agent/foreach/subworkflow/human_approval`。
-3. 提供 Agent 工具与 `workflow-builder` 引导 skill，形成“规划 -> 构建 -> 校验 -> 预览 diff -> 发布”的生成闭环。
-4. 最后接 Canvas；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
+1. 增加 `agent/foreach/subworkflow/human_approval` 及其可恢复 checkpoint 语义。
+2. 提供 Agent 工具与 `workflow-builder` 引导 skill，形成“规划 -> 构建 -> 校验 -> 预览 diff -> 发布”的生成闭环。
+3. 接入 Canvas Host RPC 与 Client overlay；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
+4. 在完整 Harness composition 中跑兼容、安全和端到端门禁。
 
 ## License
 

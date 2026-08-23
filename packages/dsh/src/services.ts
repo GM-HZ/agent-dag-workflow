@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import {
   DagWorkflowEngine as CoreDagWorkflowEngine,
+  InMemoryWorkflowRunStore,
   WorkflowExecutionError,
   WorkflowNodeRegistry,
   compileWorkflowOrThrow,
@@ -9,6 +10,9 @@ import {
   type WorkflowNodeDefinition,
   type WorkflowNodeDisposer,
   type WorkflowRun,
+  type WorkflowRunCheckpoint,
+  type WorkflowRunRecord,
+  type WorkflowRunStore,
 } from '@gm-hz/dsh-workflow-core'
 import {
   InMemoryWorkflowCatalogRepository,
@@ -26,6 +30,7 @@ import type {
   DagWorkflowRunEndData,
   DagWorkflowRunStartData,
   DshAgentLike,
+  DshDagWorkflowResumeRequest,
   DshDagWorkflowStartRequest,
   DshToolRuntimeLike,
   DshWorkflowPluginConfig,
@@ -35,6 +40,7 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     workflowNodes: WorkflowNodeRegistryService
     workflowTemplates: WorkflowTemplatesService
+    workflowRuns: WorkflowRunsService
     dagWorkflowEngine: DagWorkflowEngineService
   }
 
@@ -72,6 +78,29 @@ export abstract class DagWorkflowEngineService extends Service {
   }
 
   abstract start(request: DshDagWorkflowStartRequest): WorkflowRun
+  abstract resume(request: DshDagWorkflowResumeRequest): WorkflowRun
+}
+
+export abstract class WorkflowRunsService extends Service implements WorkflowRunStore {
+  constructor(ctx: Context) {
+    super(ctx, 'workflowRuns')
+  }
+
+  abstract createRun(record: WorkflowRunRecord): void
+  abstract commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void
+  abstract loadRun(runId: string): WorkflowRunRecord | undefined
+  abstract listRecoverableRuns(): readonly WorkflowRunRecord[]
+}
+
+export class InMemoryWorkflowRunsProvider extends WorkflowRunsService {
+  private readonly store = new InMemoryWorkflowRunStore()
+
+  createRun(record: WorkflowRunRecord): void { this.store.createRun(record) }
+  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void {
+    this.store.commit(runId, expectedSeq, checkpoint, events)
+  }
+  loadRun(runId: string): WorkflowRunRecord | undefined { return this.store.loadRun(runId) }
+  listRecoverableRuns(): readonly WorkflowRunRecord[] { return this.store.listRecoverableRuns() }
 }
 
 export abstract class WorkflowTemplatesService extends Service {
@@ -118,7 +147,7 @@ export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplat
 }
 
 export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
-  static inject = ['tools', 'workflowNodes']
+  static inject = ['tools', 'workflowNodes', 'workflowRuns']
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Set<WorkflowRun>()
@@ -147,7 +176,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
           return result.value
         },
       },
-    })
+    }, { runStore: ctx.workflowRuns })
     ctx.effect(() => async () => {
       const runs = [...this.active]
       for (const run of runs) run.cancel('dag workflow provider disposed')
@@ -160,32 +189,30 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const compiled = compileWorkflowOrThrow(request.template, this.ctx.workflowNodes.registry)
-    let recordingEnabled = this.recordSessionEvents
-    const observe = (event: WorkflowEvent): void => {
-      if (recordingEnabled) {
-        try {
-          appendSessionSummary(parent, event, request.template.metadata.id, compiled.semanticHash)
-        } catch (error: unknown) {
-          recordingEnabled = false
-          this.ctx.logger.warn(`dsh-dag-workflow: disabled Session recording: ${renderError(error)}`)
-        }
-      }
-      try {
-        this.ctx.emit('dag-workflow/event', event, parent)
-      } catch (error: unknown) {
-        this.ctx.logger.warn(`dsh-dag-workflow: event listener failed: ${renderError(error)}`)
-      }
-      try {
-        request.onEvent?.(event)
-      } catch (error: unknown) {
-        this.ctx.logger.warn(`dsh-dag-workflow: request observer failed: ${renderError(error)}`)
-      }
-    }
+    const observe = createRunObserver(this.ctx, parent, request.template.metadata.id, compiled.semanticHash, this.recordSessionEvents, request.onEvent)
     const run = this.engine.start({
       template: request.template,
       inputs: request.inputs,
       owner: parent,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      onEvent: observe,
+    })
+    this.active.add(run)
+    void run.result.then(() => { this.active.delete(run) })
+    return run
+  }
+
+  resume(request: DshDagWorkflowResumeRequest): WorkflowRun {
+    const parent = request.parent
+    if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
+    const record = this.ctx.workflowRuns.loadRun(request.runId)
+    if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
+    const observe = createRunObserver(this.ctx, parent, record.template.metadata.id, record.semanticHash, this.recordSessionEvents, request.onEvent)
+    const run = this.engine.resume({
+      runId: request.runId,
+      owner: parent,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
       onEvent: observe,
     })
     this.active.add(run)
@@ -206,6 +233,9 @@ function appendSessionSummary(
       parent.session.append('dsh-dag-workflow/run-start', data)
       return
     }
+    case 'run.resumed':
+      parent.session.append('dsh-dag-workflow/run-resume', { runId: event.runId })
+      return
     case 'node.started': {
       const data: DagWorkflowNodeStartData = { runId: event.runId, nodeId: event.nodeId }
       parent.session.append('dsh-dag-workflow/node-start', data)
@@ -217,6 +247,16 @@ function appendSessionSummary(
         runId: event.runId,
         nodeId: event.nodeId,
         status: event.type === 'node.completed' ? 'completed' : 'skipped',
+      }
+      parent.session.append('dsh-dag-workflow/node-end', data)
+      return
+    }
+    case 'node.cancelled':
+    case 'node.needs-attention': {
+      const data: DagWorkflowNodeEndData = {
+        runId: event.runId,
+        nodeId: event.nodeId,
+        status: event.type === 'node.cancelled' ? 'cancelled' : 'needs_attention',
       }
       parent.session.append('dsh-dag-workflow/node-end', data)
       return
@@ -246,8 +286,40 @@ function appendSessionSummary(
       parent.session.append('dsh-dag-workflow/run-end', data)
       return
     }
+    case 'run.paused': {
+      const data: DagWorkflowRunEndData = { runId: event.runId, status: 'paused', error: event.reason }
+      parent.session.append('dsh-dag-workflow/run-end', data)
+      return
+    }
     default:
       return
+  }
+}
+
+function createRunObserver(
+  ctx: Context,
+  parent: DshAgentLike,
+  templateId: string,
+  semanticHash: string,
+  recordSessionEvents: boolean,
+  requestObserver?: (event: WorkflowEvent) => void,
+): (event: WorkflowEvent) => void {
+  let recordingEnabled = recordSessionEvents
+  return event => {
+    if (recordingEnabled) {
+      try {
+        appendSessionSummary(parent, event, templateId, semanticHash)
+      } catch (error: unknown) {
+        recordingEnabled = false
+        ctx.logger.warn(`dsh-dag-workflow: disabled Session recording: ${renderError(error)}`)
+      }
+    }
+    try { ctx.emit('dag-workflow/event', event, parent) } catch (error: unknown) {
+      ctx.logger.warn(`dsh-dag-workflow: event listener failed: ${renderError(error)}`)
+    }
+    try { requestObserver?.(event) } catch (error: unknown) {
+      ctx.logger.warn(`dsh-dag-workflow: request observer failed: ${renderError(error)}`)
+    }
   }
 }
 

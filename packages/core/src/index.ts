@@ -17,4 +17,6 @@ export {
 export { nodeDefinitionKey, WorkflowNodeRegistry } from './registry.js'
 export type { WorkflowNodeDisposer } from './registry.js'
 export { parseWorkflowTemplate, WORKFLOW_TEMPLATE_SCHEMA } from './schema.js'
+export { InMemoryWorkflowRunStore, snapshotRunCheckpoint, validateRunStoreCommit, WorkflowRunStoreError } from './run-store.js'
+export type { WorkflowRunStoreErrorCode } from './run-store.js'
 export type * from './types.js'

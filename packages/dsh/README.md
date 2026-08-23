@@ -4,6 +4,7 @@
 
 - `ctx.workflowNodes`：可处置的 Workflow 节点注册服务。
 - `ctx.workflowTemplates`：默认内存 Catalog provider；生产环境可替换为 SQLite provider。
+- `ctx.workflowRuns`：默认内存 Run Store provider；生产环境可替换为 SQLite provider。
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
 - `dsh-dag-workflow/*` Session 摘要事件：用于重放顶层 run/node 状态。
@@ -16,7 +17,7 @@ import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
 await ctx.plugin(DagWorkflow)
 ```
 
-传入 `{ catalog: 'external' }` 可跳过默认内存 Catalog，并显式装配 `SqliteWorkflowTemplatesProvider`。
+传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存 provider，并显式装配 `SqliteWorkflowTemplatesProvider` 与 `SqliteWorkflowRunsProvider`。
 
 插件声明 `inject = ['tools']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`，并传入发起运行的 owning Agent、caller-owned signal 和 run/node 派生 call id。
 
@@ -29,6 +30,12 @@ const run = ctx.dagWorkflowEngine.start({
 
 const result = await run.result
 await run.dispose()
+
+const recovered = ctx.dagWorkflowEngine.resume({
+  runId: run.id,
+  parent: agent,
+  unknownNodeResolutions: { call: 'retry' },
+})
 ```
 
 `parent` 在公共类型上接受任意 object，以兼容 DSH 尚未同步发布的 Agent 类型版本；运行边界会验证它确实暴露可追加的 Session。Provider 对 Tools/Agent 使用窄结构桥接，唯一硬 peer dependency 是与当前 Harness 一致的 `@deepseek-ai/cordis@^4.0.1`。

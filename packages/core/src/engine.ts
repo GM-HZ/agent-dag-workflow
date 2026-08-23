@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto'
 import type { CompiledWorkflow, CompiledWorkflowNode } from './compiler.js'
 import { compileWorkflowOrThrow } from './compiler.js'
 import { WorkflowExecutionError } from './errors.js'
-import type { WorkflowNodeRegistry } from './registry.js'
 import { isJsonObject, snapshotJsonObject, snapshotJsonValue } from './json.js'
+import type { WorkflowNodeRegistry } from './registry.js'
 import type {
   JsonObject,
   JsonValue,
+  PersistedWorkflowRunStatus,
   WorkflowBinding,
   WorkflowEdgeStatus,
   WorkflowEvent,
@@ -14,9 +15,13 @@ import type {
   WorkflowNodeExecutionResult,
   WorkflowNodeServices,
   WorkflowNodeStatus,
+  WorkflowResumeRequest,
   WorkflowRun,
+  WorkflowRunCheckpoint,
   WorkflowRunFailure,
+  WorkflowRunRecord,
   WorkflowRunResult,
+  WorkflowRunStore,
   WorkflowRunSuccess,
   WorkflowStartRequest,
 } from './types.js'
@@ -35,6 +40,24 @@ interface NodeCompletionFailure {
 
 type NodeCompletion = NodeCompletionSuccess | NodeCompletionFailure
 
+interface RuntimeState {
+  readonly nodeStates: Map<string, WorkflowNodeStatus>
+  readonly edgeStates: Map<string, WorkflowEdgeStatus>
+  readonly nodeOutputs: Map<string, JsonObject>
+  readonly ready: string[]
+  readonly events: WorkflowEvent[]
+  nodeRuns: number
+  seq: number
+  status: PersistedWorkflowRunStatus
+  error?: string
+  resultOutputs?: JsonObject
+}
+
+export interface DagWorkflowEngineOptions {
+  readonly runStore?: WorkflowRunStore
+  readonly now?: () => number
+}
+
 const DEFAULT_POLICIES = {
   maxConcurrentNodes: 4,
   maxNodeRuns: 100,
@@ -45,42 +68,154 @@ const DEFAULT_POLICIES = {
 export class DagWorkflowEngine {
   readonly #registry: WorkflowNodeRegistry
   readonly #services: WorkflowNodeServices
+  readonly #runStore: WorkflowRunStore | undefined
+  readonly #now: () => number
 
-  constructor(registry: WorkflowNodeRegistry, services: WorkflowNodeServices = {}) {
+  constructor(registry: WorkflowNodeRegistry, services: WorkflowNodeServices = {}, options: DagWorkflowEngineOptions = {}) {
     this.#registry = registry
     this.#services = services
+    this.#runStore = options.runStore
+    this.#now = options.now ?? Date.now
   }
 
   start(request: WorkflowStartRequest): WorkflowRun {
     const workflow = compileWorkflowOrThrow(request.template, this.#registry)
-    const inputErrors = workflow.validateWorkflowInputs(request.inputs)
-    if (inputErrors.length > 0) {
-      throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
-    }
+    const inputs = snapshotJsonObject(request.inputs)
+    const inputErrors = workflow.validateWorkflowInputs(inputs)
+    if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
 
     const id = `dag-${randomUUID()}`
+    const state = createInitialState(workflow)
+    const createdAt = this.#now()
+    this.#runStore?.createRun({
+      runId: id,
+      template: workflow.template,
+      semanticHash: workflow.semanticHash,
+      inputs,
+      createdAt,
+      checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
+      events: [],
+    })
+    return this.#startOwnedRun({
+      id,
+      createdAt,
+      workflow,
+      inputs,
+      state,
+      owner: request.owner,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+      initialEvents: [{ type: 'run.started' }, { type: 'node.ready', nodeId: workflow.startNodeId }],
+      initializeStart: true,
+    })
+  }
+
+  resume(request: WorkflowResumeRequest): WorkflowRun {
+    if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'resume requires a WorkflowRunStore')
+    const record = this.#runStore.loadRun(request.runId)
+    if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
+    const workflow = compileWorkflowOrThrow(record.template, this.#registry)
+    if (workflow.semanticHash !== record.semanticHash || workflow.semanticHash !== record.checkpoint.semanticHash) {
+      throw new WorkflowExecutionError('CHECKPOINT_TEMPLATE_MISMATCH', 'checkpoint semantic hash does not match the stored template')
+    }
+    const state = restoreState(record, workflow)
+    if (state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled') {
+      return terminalRun(record.runId, state)
+    }
+
+    const attentionEvents: WorkflowEventInput[] = []
+    const explicitFailures: string[] = []
+    for (const [nodeId, status] of state.nodeStates) {
+      if (status !== 'running' && status !== 'needs_attention') continue
+      const resolution = request.unknownNodeResolutions?.[nodeId]
+      const definition = workflow.nodes.get(nodeId)!.definition
+      if (resolution === 'fail') {
+        state.nodeStates.set(nodeId, 'failed')
+        explicitFailures.push(nodeId)
+      } else if (resolution === 'retry' || (status === 'running' && definition.retry !== 'never')) {
+        state.nodeStates.set(nodeId, 'ready')
+        if (!state.ready.includes(nodeId)) state.ready.push(nodeId)
+        attentionEvents.push({ type: 'node.ready', nodeId })
+      } else {
+        state.nodeStates.set(nodeId, 'needs_attention')
+        if (status !== 'needs_attention') attentionEvents.push({ type: 'node.needs-attention', nodeId })
+      }
+    }
+    sortReady(state.ready, workflow)
+
+    if (explicitFailures.length > 0) {
+      state.status = 'failed'
+      state.error = `operator marked unknown nodes failed: ${explicitFailures.join(', ')}`
+      const events: WorkflowEventInput[] = [
+        ...explicitFailures.map(nodeId => ({ type: 'node.failed' as const, nodeId, error: state.error! })),
+        { type: 'run.failed', error: state.error },
+      ]
+      this.#commit(record.runId, workflow, state, events, request.onEvent, request.owner)
+      return terminalRun(record.runId, state)
+    }
+
+    const needsAttention = attentionNodeIds(state)
+    if (needsAttention.length > 0) {
+      state.status = 'paused'
+      state.error = `nodes require an explicit retry/fail decision: ${needsAttention.join(', ')}`
+      if (attentionEvents.length > 0 || record.checkpoint.status !== 'paused') {
+        this.#commit(record.runId, workflow, state, [
+          ...attentionEvents,
+          { type: 'run.paused', reason: state.error },
+        ], request.onEvent, request.owner)
+      }
+      return terminalRun(record.runId, state)
+    }
+
+    state.status = 'running'
+    delete state.error
+    return this.#startOwnedRun({
+      id: record.runId,
+      createdAt: record.createdAt,
+      workflow,
+      inputs: record.inputs,
+      state,
+      owner: request.owner,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+      initialEvents: [{ type: 'run.resumed' }, ...attentionEvents],
+      initializeStart: false,
+    })
+  }
+
+  #startOwnedRun(options: {
+    readonly id: string
+    readonly createdAt: number
+    readonly workflow: CompiledWorkflow
+    readonly inputs: JsonObject
+    readonly state: RuntimeState
+    readonly owner: unknown
+    readonly signal?: AbortSignal
+    readonly onEvent?: (event: WorkflowEvent) => void
+    readonly initialEvents: readonly WorkflowEventInput[]
+    readonly initializeStart: boolean
+  }): WorkflowRun {
     const controller = new AbortController()
     let cancelReason = 'cancelled'
     const abortFromCaller = () => {
-      cancelReason = renderAbortReason(request.signal?.reason, 'caller cancelled')
-      controller.abort(request.signal?.reason)
+      cancelReason = renderAbortReason(options.signal?.reason, 'caller cancelled')
+      controller.abort(options.signal?.reason)
     }
-    if (request.signal?.aborted === true) abortFromCaller()
-    else request.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    if (options.signal?.aborted === true) abortFromCaller()
+    else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
-    const result = this.#execute(id, workflow, snapshotJsonObject(request.inputs), request.owner, controller, () => cancelReason, request.onEvent)
-      .catch((error: unknown): WorkflowRunFailure => ({
-        status: 'failed',
-        runId: id,
-        error: renderError(error),
-        nodeStates: {},
-        edgeStates: {},
-        events: [],
-      }))
-      .finally(() => request.signal?.removeEventListener('abort', abortFromCaller))
+    const result = this.#execute({
+      ...options,
+      controller,
+      cancelReason: () => cancelReason,
+    }).catch((error: unknown): WorkflowRunFailure => {
+      options.state.status = 'failed'
+      options.state.error = renderError(error)
+      return failureResult(options.id, options.state)
+    }).finally(() => options.signal?.removeEventListener('abort', abortFromCaller))
 
     return {
-      id,
+      id: options.id,
       result,
       cancel(reason?: string) {
         if (controller.signal.aborted) return
@@ -97,65 +232,68 @@ export class DagWorkflowEngine {
     }
   }
 
-  async #execute(
-    runId: string,
-    workflow: CompiledWorkflow,
-    workflowInputs: JsonObject,
-    owner: unknown,
-    controller: AbortController,
-    cancelReason: () => string,
-    onEvent?: (event: WorkflowEvent) => void,
-  ): Promise<WorkflowRunResult> {
-    const nodeStates = new Map<string, WorkflowNodeStatus>([...workflow.nodes.keys()].map(id => [id, 'pending']))
-    const edgeStates = new Map<string, WorkflowEdgeStatus>([...workflow.edges.keys()].map(id => [id, 'unknown']))
-    const nodeOutputs = new Map<string, JsonObject>()
-    const events: WorkflowEvent[] = []
+  async #execute(options: {
+    readonly id: string
+    readonly createdAt: number
+    readonly workflow: CompiledWorkflow
+    readonly inputs: JsonObject
+    readonly state: RuntimeState
+    readonly owner: unknown
+    readonly controller: AbortController
+    readonly cancelReason: () => string
+    readonly onEvent?: (event: WorkflowEvent) => void
+    readonly initialEvents: readonly WorkflowEventInput[]
+    readonly initializeStart: boolean
+  }): Promise<WorkflowRunResult> {
+    const { id: runId, workflow, inputs: workflowInputs, state, owner, controller, onEvent } = options
     const services = this.#services
-    let seq = 0
-    let deadlineExceeded = false
-    let nodeRuns = 0
-    const policies = { ...DEFAULT_POLICIES, ...workflow.template.spec.policies }
-    const emit = (event: WorkflowEventInput): void => {
-      const complete = { ...event, seq: ++seq, runId } as WorkflowEvent
-      events.push(complete)
-      try {
-        onEvent?.(complete)
-      } catch {
-        // Observers cannot affect execution.
-      }
+    const commit = (events: readonly WorkflowEventInput[]): void => {
+      this.#commit(runId, workflow, state, events, onEvent, owner)
     }
+    const policies = { ...DEFAULT_POLICIES, ...workflow.template.spec.policies }
+    let deadlineExceeded = false
+    const active = new Map<string, Promise<NodeCompletion>>()
+    if (options.initializeStart) {
+      state.nodeStates.set(workflow.startNodeId, 'ready')
+      state.ready.push(workflow.startNodeId)
+    }
+    commit(options.initialEvents)
 
-    const deadline = setTimeout(() => {
+    const remainingDurationMs = Math.max(0, policies.maxDurationMs - Math.max(0, this.#now() - options.createdAt))
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    if (remainingDurationMs === 0) {
       deadlineExceeded = true
       controller.abort('workflow duration exceeded')
-    }, policies.maxDurationMs)
-
-    emit({ type: 'run.started' })
-    const ready: string[] = [workflow.startNodeId]
-    nodeStates.set(workflow.startNodeId, 'ready')
-    emit({ type: 'node.ready', nodeId: workflow.startNodeId })
-    const active = new Map<string, Promise<NodeCompletion>>()
+    } else {
+      deadline = setTimeout(() => {
+        deadlineExceeded = true
+        controller.abort('workflow duration exceeded')
+      }, remainingDurationMs)
+    }
 
     try {
-      while (ready.length > 0 || active.size > 0) {
+      while (state.ready.length > 0 || active.size > 0) {
         if (controller.signal.aborted && active.size === 0) {
-          return deadlineExceeded
-            ? failedResult('workflow duration exceeded')
-            : cancelledResult(cancelReason())
+          return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded)
         }
 
-        while (!controller.signal.aborted && ready.length > 0 && active.size < policies.maxConcurrentNodes) {
-          if (++nodeRuns > policies.maxNodeRuns) {
-            const error = 'workflow exceeded maxNodeRuns'
-            controller.abort(error)
-            await settleActiveAsCancelled(active, nodeStates)
-            return failedResult(error)
+        const launch: { readonly nodeId: string; readonly node: CompiledWorkflowNode }[] = []
+        while (!controller.signal.aborted && state.ready.length > 0 && active.size + launch.length < policies.maxConcurrentNodes) {
+          if (state.nodeRuns + 1 > policies.maxNodeRuns) {
+            controller.abort('workflow exceeded maxNodeRuns')
+            await settleActive(active)
+            return finishFailure('workflow exceeded maxNodeRuns')
           }
-          const nodeId = ready.shift()!
-          const node = workflow.nodes.get(nodeId)!
-          nodeStates.set(nodeId, 'running')
-          emit({ type: 'node.started', nodeId })
-          active.set(nodeId, this.#executeNode(runId, node, workflowInputs, nodeOutputs, owner, controller.signal, policies.maxOutputBytes))
+          const nodeId = state.ready.shift()!
+          state.nodeRuns++
+          state.nodeStates.set(nodeId, 'running')
+          launch.push({ nodeId, node: workflow.nodes.get(nodeId)! })
+        }
+        if (launch.length > 0) {
+          commit(launch.map(item => ({ type: 'node.started', nodeId: item.nodeId })))
+          for (const item of launch) {
+            active.set(item.nodeId, this.#executeNode(runId, item.node, workflowInputs, state.nodeOutputs, owner, controller.signal, policies.maxOutputBytes))
+          }
         }
 
         if (active.size === 0) continue
@@ -163,136 +301,162 @@ export class DagWorkflowEngine {
         active.delete(completion.nodeId)
         if (!completion.ok) {
           if (controller.signal.aborted) {
-            nodeStates.set(completion.nodeId, 'cancelled')
-            await settleActiveAsCancelled(active, nodeStates)
-            return deadlineExceeded
-              ? failedResult('workflow duration exceeded')
-              : cancelledResult(cancelReason())
+            state.nodeStates.set(completion.nodeId, 'cancelled')
+            const cancelled = await settleActive(active)
+            return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded, [completion.nodeId, ...cancelled])
           }
           const error = renderError(completion.error)
-          nodeStates.set(completion.nodeId, 'failed')
-          emit({ type: 'node.failed', nodeId: completion.nodeId, error })
+          state.nodeStates.set(completion.nodeId, 'failed')
           controller.abort(`node ${completion.nodeId} failed`)
-          await settleActiveAsCancelled(active, nodeStates)
-          return failedResult(error)
+          const cancelled = await settleActive(active)
+          return finishFailure(error, completion.nodeId, cancelled)
         }
 
-        nodeStates.set(completion.nodeId, 'succeeded')
-        nodeOutputs.set(completion.nodeId, completion.result.outputs)
-        emit({ type: 'node.completed', nodeId: completion.nodeId })
-        settleOutgoingEdges(completion.nodeId, completion.result.selectedPorts ?? ['success'])
+        state.nodeStates.set(completion.nodeId, 'succeeded')
+        state.nodeOutputs.set(completion.nodeId, completion.result.outputs)
+        const events: WorkflowEventInput[] = [{ type: 'node.completed', nodeId: completion.nodeId }]
+        settleOutgoingEdges(completion.nodeId, completion.result.selectedPorts ?? ['success'], events)
+        commit(events)
       }
 
-      const unresolved = [...nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running')
-      if (unresolved.length > 0) return failedResult(`scheduler stopped with unresolved nodes: ${unresolved.map(([id]) => id).join(', ')}`)
+      const unresolved = [...state.nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running')
+      if (unresolved.length > 0) return finishFailure(`scheduler stopped with unresolved nodes: ${unresolved.map(([id]) => id).join(', ')}`)
 
       const outputs = snapshotJsonObject(await resolveBindings(workflow.template.spec.outputs, undefined))
       const outputErrors = workflow.validateWorkflowOutputs(outputs)
-      if (outputErrors.length > 0) return failedResult(`workflow output is invalid: ${outputErrors.join('; ')}`)
+      if (outputErrors.length > 0) return finishFailure(`workflow output is invalid: ${outputErrors.join('; ')}`)
       assertOutputSize(outputs, policies.maxOutputBytes, 'workflow result')
-      emit({ type: 'run.completed' })
-      return successResult(outputs)
+      state.status = 'completed'
+      state.resultOutputs = outputs
+      delete state.error
+      commit([{ type: 'run.completed' }])
+      return successResult(runId, state)
     } catch (error: unknown) {
       if (controller.signal.aborted) {
-        return deadlineExceeded
-          ? failedResult('workflow duration exceeded')
-          : cancelledResult(cancelReason())
+        return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded)
       }
-      return failedResult(renderError(error))
+      state.status = 'failed'
+      state.error = renderError(error)
+      return failureResult(runId, state)
     } finally {
-      clearTimeout(deadline)
+      if (deadline !== undefined) clearTimeout(deadline)
     }
 
-    function settleOutgoingEdges(nodeId: string, selectedPorts: readonly string[]): void {
+    async function settleActive(pending: ReadonlyMap<string, Promise<NodeCompletion>>): Promise<string[]> {
+      await Promise.allSettled(pending.values())
+      const cancelled: string[] = []
+      for (const nodeId of pending.keys()) {
+        if (state.nodeStates.get(nodeId) === 'running') {
+          state.nodeStates.set(nodeId, 'cancelled')
+          cancelled.push(nodeId)
+        }
+      }
+      return cancelled
+    }
+
+    function finishFailure(error: string, failedNodeId?: string, cancelled: readonly string[] = []): WorkflowRunFailure {
+      state.status = 'failed'
+      state.error = error
+      const events: WorkflowEventInput[] = [
+        ...(failedNodeId === undefined ? [] : [{ type: 'node.failed' as const, nodeId: failedNodeId, error }]),
+        ...cancelled.map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
+        { type: 'run.failed', error },
+      ]
+      commit(events)
+      return failureResult(runId, state)
+    }
+
+    function finishCancellation(reason: string, asFailure: boolean, explicit: readonly string[] = []): WorkflowRunFailure {
+      const cancelled = new Set(explicit)
+      for (const [nodeId, status] of state.nodeStates) {
+        if (status === 'pending' || status === 'ready' || status === 'running') {
+          state.nodeStates.set(nodeId, 'cancelled')
+          cancelled.add(nodeId)
+        }
+      }
+      state.status = asFailure ? 'failed' : 'cancelled'
+      state.error = reason
+      commit([
+        ...[...cancelled].map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
+        asFailure ? { type: 'run.failed', error: reason } : { type: 'run.cancelled', reason },
+      ])
+      return failureResult(runId, state)
+    }
+
+    function settleOutgoingEdges(nodeId: string, selectedPorts: readonly string[], events: WorkflowEventInput[]): void {
       const node = workflow.nodes.get(nodeId)!
       const selected = new Set(selectedPorts)
       for (const edge of node.outgoing) {
         const taken = selected.has(edge.sourcePort ?? 'success')
-        edgeStates.set(edge.id, taken ? 'taken' : 'skipped')
-        emit({ type: taken ? 'edge.taken' : 'edge.skipped', edgeId: edge.id })
+        state.edgeStates.set(edge.id, taken ? 'taken' : 'skipped')
+        events.push({ type: taken ? 'edge.taken' : 'edge.skipped', edgeId: edge.id })
       }
-      for (const target of new Set(node.outgoing.map(edge => edge.target))) reconcileNode(target)
+      for (const target of new Set(node.outgoing.map(edge => edge.target))) reconcileNode(target, events)
     }
 
-    function reconcileNode(nodeId: string): void {
-      if (nodeStates.get(nodeId) !== 'pending') return
+    function reconcileNode(nodeId: string, events: WorkflowEventInput[]): void {
+      if (state.nodeStates.get(nodeId) !== 'pending') return
       const node = workflow.nodes.get(nodeId)!
-      const statuses = node.incoming.map(edge => edgeStates.get(edge.id)!)
+      const statuses = node.incoming.map(edge => state.edgeStates.get(edge.id)!)
       if (statuses.some(status => status === 'unknown')) return
       if (statuses.some(status => status === 'taken')) {
-        nodeStates.set(nodeId, 'ready')
-        ready.push(nodeId)
-        ready.sort((left, right) => workflow.order.indexOf(left) - workflow.order.indexOf(right))
-        emit({ type: 'node.ready', nodeId })
+        state.nodeStates.set(nodeId, 'ready')
+        state.ready.push(nodeId)
+        sortReady(state.ready, workflow)
+        events.push({ type: 'node.ready', nodeId })
         return
       }
-      nodeStates.set(nodeId, 'skipped')
-      emit({ type: 'node.skipped', nodeId })
+      state.nodeStates.set(nodeId, 'skipped')
+      events.push({ type: 'node.skipped', nodeId })
       for (const edge of node.outgoing) {
-        edgeStates.set(edge.id, 'skipped')
-        emit({ type: 'edge.skipped', edgeId: edge.id })
+        state.edgeStates.set(edge.id, 'skipped')
+        events.push({ type: 'edge.skipped', edgeId: edge.id })
       }
-      for (const target of new Set(node.outgoing.map(edge => edge.target))) reconcileNode(target)
+      for (const target of new Set(node.outgoing.map(edge => edge.target))) reconcileNode(target, events)
     }
 
     async function resolveBindings(bindings: Readonly<Record<string, WorkflowBinding>>, nodeId: string | undefined): Promise<JsonObject> {
       const result: JsonObject = {}
-      for (const [name, binding] of Object.entries(bindings)) {
-        result[name] = await resolveBinding(binding, nodeId)
-      }
+      for (const [name, binding] of Object.entries(bindings)) result[name] = await resolveBinding(binding, nodeId)
       return result
     }
 
     async function resolveBinding(binding: WorkflowBinding, nodeId: string | undefined): Promise<JsonValue> {
       if ('literal' in binding) return snapshotJsonValue(binding.literal)
       if ('input' in binding) {
-        if (!(binding.input in workflowInputs)) throw new WorkflowExecutionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, nodeId === undefined ? undefined : { nodeId })
+        if (!(binding.input in workflowInputs)) throw executionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, nodeId)
         return snapshotJsonValue(workflowInputs[binding.input]!)
       }
       if ('secret' in binding) {
         if (nodeId === undefined) throw new WorkflowExecutionError('SECRET_OUTPUT_FORBIDDEN', 'workflow outputs cannot contain secret bindings')
-        const secrets = services.secrets
-        if (secrets === undefined) throw new WorkflowExecutionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, { nodeId })
-        return secrets.resolve(binding.secret.ref, { runId, nodeId, signal: controller.signal })
+        if (services.secrets === undefined) throw executionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, nodeId)
+        return services.secrets.resolve(binding.secret.ref, { runId, nodeId, signal: controller.signal })
       }
-      const source = nodeOutputs.get(binding.output.node)
-      if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, nodeId === undefined ? undefined : { nodeId })
+      const source = state.nodeOutputs.get(binding.output.node)
+      if (source === undefined) throw executionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, nodeId)
       return snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
     }
+  }
 
-    function successResult(outputs: JsonObject): WorkflowRunSuccess {
-      return {
-        status: 'completed',
-        runId,
-        outputs,
-        nodeStates: Object.fromEntries(nodeStates),
-        edgeStates: Object.fromEntries(edgeStates),
-        events: [...events],
-      }
-    }
-
-    function failedResult(error: string): WorkflowRunFailure {
-      emit({ type: 'run.failed', error })
-      return {
-        status: 'failed',
-        runId,
-        error,
-        nodeStates: Object.fromEntries(nodeStates),
-        edgeStates: Object.fromEntries(edgeStates),
-        events: [...events],
-      }
-    }
-
-    function cancelledResult(reason: string): WorkflowRunFailure {
-      emit({ type: 'run.cancelled', reason })
-      return {
-        status: 'cancelled',
-        runId,
-        error: reason,
-        nodeStates: Object.fromEntries(nodeStates),
-        edgeStates: Object.fromEntries(edgeStates),
-        events: [...events],
-      }
+  #commit(
+    runId: string,
+    workflow: CompiledWorkflow,
+    state: RuntimeState,
+    inputs: readonly WorkflowEventInput[],
+    onEvent: ((event: WorkflowEvent) => void) | undefined,
+    _owner: unknown,
+  ): void {
+    if (inputs.length === 0) return
+    let nextSeq = state.seq
+    const events = inputs.map(input => ({ ...input, runId, seq: ++nextSeq }) as WorkflowEvent)
+    const checkpointSeq = ++nextSeq
+    events.push({ type: 'checkpoint.committed', runId, seq: checkpointSeq, checkpointSeq })
+    const checkpoint = checkpointOf(runId, workflow.semanticHash, state, this.#now(), nextSeq)
+    this.#runStore?.commit(runId, state.seq, checkpoint, events)
+    state.seq = nextSeq
+    state.events.push(...events)
+    for (const event of events) {
+      try { onEvent?.(event) } catch { /* observers cannot affect execution */ }
     }
   }
 
@@ -333,12 +497,115 @@ export class DagWorkflowEngine {
       if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
         throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
       }
-      assertOutputSize(result.outputs, maxOutputBytes, `node ${node.template.id} output`)
+      assertOutputSize(outputs, maxOutputBytes, `node ${node.template.id} output`)
       return { nodeId: node.template.id, ok: true, result }
     } catch (error: unknown) {
       return { nodeId: node.template.id, ok: false, error }
     }
   }
+}
+
+function createInitialState(workflow: CompiledWorkflow): RuntimeState {
+  return {
+    nodeStates: new Map([...workflow.nodes.keys()].map(id => [id, 'pending'] as const)),
+    edgeStates: new Map([...workflow.edges.keys()].map(id => [id, 'unknown'] as const)),
+    nodeOutputs: new Map(),
+    ready: [],
+    events: [],
+    nodeRuns: 0,
+    seq: 0,
+    status: 'running',
+  }
+}
+
+function restoreState(record: WorkflowRunRecord, workflow: CompiledWorkflow): RuntimeState {
+  const checkpoint = record.checkpoint
+  const nodeIds = [...workflow.nodes.keys()].sort()
+  const edgeIds = [...workflow.edges.keys()].sort()
+  if (Object.keys(checkpoint.nodeStates).sort().join('\0') !== nodeIds.join('\0')
+    || Object.keys(checkpoint.edgeStates).sort().join('\0') !== edgeIds.join('\0')
+    || checkpoint.seq !== (record.events.at(-1)?.seq ?? 0)) {
+    throw new WorkflowExecutionError('CHECKPOINT_INVALID', 'checkpoint graph keys or event sequence do not match the stored run')
+  }
+  const state: RuntimeState = {
+    nodeStates: new Map(Object.entries(checkpoint.nodeStates)),
+    edgeStates: new Map(Object.entries(checkpoint.edgeStates)),
+    nodeOutputs: new Map(Object.entries(checkpoint.nodeOutputs)),
+    ready: [...checkpoint.ready],
+    events: [...record.events],
+    nodeRuns: checkpoint.nodeRuns,
+    seq: checkpoint.seq,
+    status: checkpoint.status,
+    ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
+    ...(checkpoint.resultOutputs === undefined ? {} : { resultOutputs: checkpoint.resultOutputs }),
+  }
+  for (const nodeId of state.ready) {
+    if (state.nodeStates.get(nodeId) !== 'ready') throw new WorkflowExecutionError('CHECKPOINT_INVALID', `ready queue contains non-ready node ${nodeId}`)
+  }
+  return state
+}
+
+function checkpointOf(
+  runId: string,
+  semanticHash: string,
+  state: RuntimeState,
+  updatedAt: number,
+  seq: number,
+): WorkflowRunCheckpoint {
+  return snapshotJsonValue({
+    version: 1,
+    runId,
+    semanticHash,
+    seq,
+    status: state.status,
+    nodeStates: Object.fromEntries(state.nodeStates),
+    edgeStates: Object.fromEntries(state.edgeStates),
+    nodeOutputs: Object.fromEntries(state.nodeOutputs),
+    ready: state.ready,
+    nodeRuns: state.nodeRuns,
+    updatedAt,
+    ...(state.resultOutputs === undefined ? {} : { resultOutputs: state.resultOutputs }),
+    ...(state.error === undefined ? {} : { error: state.error }),
+  }) as unknown as WorkflowRunCheckpoint
+}
+
+function terminalRun(runId: string, state: RuntimeState): WorkflowRun {
+  const result = Promise.resolve(state.status === 'completed' ? successResult(runId, state) : failureResult(runId, state))
+  return { id: runId, result, cancel() {}, async dispose() { await result } }
+}
+
+function successResult(runId: string, state: RuntimeState): WorkflowRunSuccess {
+  if (state.resultOutputs === undefined) throw new WorkflowExecutionError('CHECKPOINT_INVALID', 'completed run is missing result outputs')
+  return {
+    status: 'completed',
+    runId,
+    outputs: state.resultOutputs,
+    nodeStates: Object.fromEntries(state.nodeStates),
+    edgeStates: Object.fromEntries(state.edgeStates),
+    events: [...state.events],
+  }
+}
+
+function failureResult(runId: string, state: RuntimeState): WorkflowRunFailure {
+  const status = state.status === 'paused' ? 'paused' : state.status === 'cancelled' ? 'cancelled' : 'failed'
+  const needsAttention = attentionNodeIds(state)
+  return {
+    status,
+    runId,
+    error: state.error ?? status,
+    nodeStates: Object.fromEntries(state.nodeStates),
+    edgeStates: Object.fromEntries(state.edgeStates),
+    events: [...state.events],
+    ...(needsAttention.length === 0 ? {} : { needsAttention }),
+  }
+}
+
+function attentionNodeIds(state: RuntimeState): string[] {
+  return [...state.nodeStates].filter(([, status]) => status === 'needs_attention').map(([id]) => id).sort()
+}
+
+function sortReady(ready: string[], workflow: CompiledWorkflow): void {
+  ready.sort((left, right) => workflow.order.indexOf(left) - workflow.order.indexOf(right))
 }
 
 async function resolveNodeInputs(
@@ -382,14 +649,8 @@ function readPath(root: JsonValue, path: readonly (string | number)[], sourceNod
   return value
 }
 
-async function settleActiveAsCancelled(
-  active: ReadonlyMap<string, Promise<NodeCompletion>>,
-  states: Map<string, WorkflowNodeStatus>,
-): Promise<void> {
-  await Promise.allSettled(active.values())
-  for (const nodeId of active.keys()) {
-    if (states.get(nodeId) === 'running') states.set(nodeId, 'cancelled')
-  }
+function executionError(code: string, message: string, nodeId: string | undefined): WorkflowExecutionError {
+  return new WorkflowExecutionError(code, message, nodeId === undefined ? undefined : { nodeId })
 }
 
 function assertOutputSize(value: JsonValue, maxBytes: number, label: string): void {
@@ -398,8 +659,7 @@ function assertOutputSize(value: JsonValue, maxBytes: number, label: string): vo
 }
 
 function renderAbortReason(reason: unknown, fallback: string): string {
-  if (reason === undefined) return fallback
-  return renderError(reason)
+  return reason === undefined ? fallback : renderError(reason)
 }
 
 function renderError(error: unknown): string {

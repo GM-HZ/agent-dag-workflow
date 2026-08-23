@@ -109,12 +109,17 @@ describe('DSH Cordis plugin', () => {
       'dsh-dag-workflow/run-end',
     ])
     expect(session.events[0]?.data).toEqual(expect.objectContaining({ templateId: 'dsh-plugin-test', semanticHash: expect.any(String) }))
+    expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+    const replayed = await ctx.dagWorkflowEngine.resume({ runId: run.id, parent }).result
+    expect(replayed).toMatchObject({ status: 'completed', outputs: { answer: 'hello' } })
+    expect(tools.requests).toHaveLength(1)
 
     await run.dispose()
     await plugin.dispose()
     expect(ctx.get('dagWorkflowEngine')).toBeUndefined()
     expect(ctx.get('workflowNodes')).toBeUndefined()
     expect(ctx.get('workflowTemplates')).toBeUndefined()
+    expect(ctx.get('workflowRuns')).toBeUndefined()
   })
 
   it('contains Session recording and request observer failures', async () => {

@@ -2,6 +2,7 @@ import type {
   JsonObject,
   JsonValue,
   WorkflowEvent,
+  WorkflowResumeRequest,
   WorkflowRun,
   WorkflowStartRequest,
   WorkflowTemplate,
@@ -39,11 +40,17 @@ export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, '
 
 export interface DshDagWorkflowEngine {
   start(request: DshDagWorkflowStartRequest): WorkflowRun
+  resume(request: DshDagWorkflowResumeRequest): WorkflowRun
+}
+
+export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest, 'owner'> {
+  readonly parent: object
 }
 
 export interface DshWorkflowPluginConfig {
   readonly recordSessionEvents?: boolean
   readonly catalog?: 'memory' | 'external'
+  readonly runStore?: 'memory' | 'external'
 }
 
 export interface DagWorkflowRunStartData {
@@ -60,14 +67,18 @@ export interface DagWorkflowNodeStartData {
 export interface DagWorkflowNodeEndData {
   readonly runId: string
   readonly nodeId: string
-  readonly status: 'completed' | 'failed' | 'skipped'
+  readonly status: 'completed' | 'failed' | 'skipped' | 'cancelled' | 'needs_attention'
   readonly error?: string
 }
 
 export interface DagWorkflowRunEndData {
   readonly runId: string
-  readonly status: 'completed' | 'failed' | 'cancelled'
+  readonly status: 'completed' | 'failed' | 'cancelled' | 'paused'
   readonly error?: string
+}
+
+export interface DagWorkflowRunResumeData {
+  readonly runId: string
 }
 
 export type DshDagWorkflowEvent = WorkflowEvent
