@@ -77,6 +77,7 @@ export interface WorkflowToolRequest {
   readonly name: string
   readonly input: JsonObject
   readonly signal: AbortSignal
+  readonly owner?: unknown
 }
 
 export interface WorkflowToolGateway {
@@ -100,6 +101,7 @@ export interface WorkflowNodeExecutionContext {
   readonly config: JsonObject
   readonly signal: AbortSignal
   readonly services: WorkflowNodeServices
+  readonly owner?: unknown
 }
 
 export interface WorkflowNodeDefinition {
@@ -174,6 +176,7 @@ export interface WorkflowRun {
 export interface WorkflowStartRequest {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
+  readonly owner?: unknown
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }

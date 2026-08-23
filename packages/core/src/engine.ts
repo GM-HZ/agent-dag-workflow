@@ -68,7 +68,7 @@ export class DagWorkflowEngine {
     if (request.signal?.aborted === true) abortFromCaller()
     else request.signal?.addEventListener('abort', abortFromCaller, { once: true })
 
-    const result = this.#execute(id, workflow, snapshotObject(request.inputs), controller, () => cancelReason, request.onEvent)
+    const result = this.#execute(id, workflow, snapshotObject(request.inputs), request.owner, controller, () => cancelReason, request.onEvent)
       .catch((error: unknown): WorkflowRunFailure => ({
         status: 'failed',
         runId: id,
@@ -101,6 +101,7 @@ export class DagWorkflowEngine {
     runId: string,
     workflow: CompiledWorkflow,
     workflowInputs: JsonObject,
+    owner: unknown,
     controller: AbortController,
     cancelReason: () => string,
     onEvent?: (event: WorkflowEvent) => void,
@@ -154,7 +155,7 @@ export class DagWorkflowEngine {
           const node = workflow.nodes.get(nodeId)!
           nodeStates.set(nodeId, 'running')
           emit({ type: 'node.started', nodeId })
-          active.set(nodeId, this.#executeNode(runId, node, workflowInputs, nodeOutputs, controller.signal, policies.maxOutputBytes))
+          active.set(nodeId, this.#executeNode(runId, node, workflowInputs, nodeOutputs, owner, controller.signal, policies.maxOutputBytes))
         }
 
         if (active.size === 0) continue
@@ -300,6 +301,7 @@ export class DagWorkflowEngine {
     node: CompiledWorkflowNode,
     workflowInputs: JsonObject,
     nodeOutputs: ReadonlyMap<string, JsonObject>,
+    owner: unknown,
     runSignal: AbortSignal,
     maxOutputBytes: number,
   ): Promise<NodeCompletion> {
@@ -318,6 +320,7 @@ export class DagWorkflowEngine {
         config: node.template.with,
         signal: timeoutSignal,
         services: this.#services,
+        ...(owner === undefined ? {} : { owner }),
       })
       const outputErrors = node.validateOutputs(result.outputs)
       if (outputErrors.length > 0) throw new WorkflowExecutionError('NODE_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })

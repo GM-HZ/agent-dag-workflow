@@ -8,10 +8,10 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "pnpm --filter @gm-hz/dsh-workflow-core build",
-    "check": "pnpm typecheck && pnpm test && pnpm build",
-    "test": "pnpm --filter @gm-hz/dsh-workflow-core test",
-    "typecheck": "pnpm --filter @gm-hz/dsh-workflow-core typecheck"
+    "build": "pnpm -r --if-present build",
+    "check": "pnpm build && pnpm typecheck && pnpm test",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

@@ -112,6 +112,7 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
       name,
       input: context.inputs,
       signal: context.signal,
+      ...(context.owner === undefined ? {} : { owner: context.owner }),
     })
     return { outputs: { result: value } }
   },

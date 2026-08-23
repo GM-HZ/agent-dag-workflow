@@ -6,6 +6,7 @@ export interface DshToolExecutionInput {
   readonly name: string
   readonly arguments: JsonObject
   readonly signal: AbortSignal
+  readonly owner?: unknown
 }
 
 export type DshToolExecutionResult =
@@ -27,6 +28,7 @@ export function createDshToolGateway(execute: DshToolExecute): WorkflowToolGatew
         name: request.name,
         arguments: request.input,
         signal: request.signal,
+        ...(request.owner === undefined ? {} : { owner: request.owner }),
       })
       if (result.isError) {
         throw new WorkflowExecutionError('DSH_TOOL_FAILED', renderToolError(result.error), { nodeId: request.nodeId })

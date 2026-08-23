@@ -12,6 +12,7 @@
 - 有界并发内存调度器、`unknown/taken/skipped` 边状态、分支 skip propagation、取消和运行事件。
 - `core.start@1`、`core.end@1`、`core.condition@1`、`dsh.tool@1`。
 - 窄接口 DSH Tool adapter，Host 侧可把调用接入 `ctx.tools.execute()`。
+- DSH Cordis 插件包 [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md)，提供真实 `ctx.workflowNodes`、`ctx.dagWorkflowEngine`、Session 摘要与卸载收敛。
 
 ```bash
 pnpm install
@@ -34,6 +35,7 @@ pnpm check
 - [示例模板](examples/research-report.workflow.yaml)
 - [v0.1 可运行 Tool 示例](examples/tool-echo.workflow.yaml)
 - [参考仓库版本与检出方式](ref_project/README.md)
+- [实现状态与完成审计](docs/implementation-status.md)
 
 ## 建议实施顺序
 
