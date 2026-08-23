@@ -8,7 +8,7 @@ import {
 import type { DshWorkflowPluginConfig } from './types.js'
 
 export const name = 'dsh-dag-workflow'
-export const inject = ['tools']
+export const inject = ['tools', 'subagents', 'approval']
 
 export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}): Promise<void> {
   await ctx.plugin(WorkflowNodeRegistryService)

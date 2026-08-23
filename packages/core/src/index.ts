@@ -8,8 +8,10 @@ export { materializeWorkflowTemplate } from './hash.js'
 export type { MaterializedWorkflowTemplate } from './hash.js'
 export { isJsonObject, LosslessJsonError, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 export {
+  agentNodeDefinition,
   conditionNodeDefinition,
   endNodeDefinition,
+  humanApprovalNodeDefinition,
   registerCoreNodes,
   startNodeDefinition,
   toolNodeDefinition,

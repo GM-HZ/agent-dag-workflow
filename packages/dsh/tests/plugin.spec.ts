@@ -2,11 +2,49 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import type { JsonValue, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
 import { describe, expect, it, vi } from 'vitest'
 import * as DshWorkflowPlugin from '../src/index.js'
-import type { DshAgentLike, DshToolRuntimeInput, DshToolRuntimeResult } from '../src/index.js'
+import type {
+  DshAgentLike,
+  DshApprovalRuntimeLike,
+  DshSubagentRuntimeLike,
+  DshToolRuntimeInput,
+  DshToolRuntimeResult,
+} from '../src/index.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     tools: StubToolRuntime
+    subagents: StubSubagentRuntime
+    approval: StubApprovalRuntime
+  }
+}
+
+class StubSubagentRuntime extends Service implements DshSubagentRuntimeLike {
+  readonly requests: Parameters<DshSubagentRuntimeLike['start']>[] = []
+
+  constructor(ctx: Context) {
+    super(ctx, 'subagents')
+  }
+
+  async start(...args: Parameters<DshSubagentRuntimeLike['start']>): ReturnType<DshSubagentRuntimeLike['start']> {
+    this.requests.push(args)
+    return {
+      id: 'child-1',
+      result: Promise.resolve({ output: [{ type: 'text', text: 'child answer' }], structured: { answer: 'child answer' }, stopReason: 'completed' }),
+      async dispose() {},
+    }
+  }
+}
+
+class StubApprovalRuntime extends Service implements DshApprovalRuntimeLike {
+  readonly requests: Parameters<DshApprovalRuntimeLike['request']>[0][] = []
+
+  constructor(ctx: Context) {
+    super(ctx, 'approval')
+  }
+
+  async request(input: Parameters<DshApprovalRuntimeLike['request']>[0]): ReturnType<DshApprovalRuntimeLike['request']> {
+    this.requests.push(input)
+    return 'allowed-once'
   }
 }
 
@@ -69,10 +107,72 @@ function template(): WorkflowTemplate {
   }
 }
 
+function agentApprovalTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'agent-approval-test', name: 'Agent approval test' },
+    spec: {
+      inputSchema: { type: 'object', additionalProperties: false },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['answer', 'approved'],
+        properties: { answer: { type: 'string' }, approved: { type: 'boolean' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'delegate',
+          uses: 'dsh.agent@1',
+          with: {
+            provider: 'spawn',
+            prompt: 'Produce the answer.',
+            label: 'workflow child',
+            outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
+          },
+          inputs: { topic: { literal: 'DSH' } },
+        },
+        {
+          id: 'approve',
+          uses: 'dsh.human-approval@1',
+          with: { action: 'publish-report', reason: 'Approve the generated report.' },
+          inputs: { answer: { output: { node: 'delegate', path: ['structured', 'answer'] } } },
+        },
+        {
+          id: 'end',
+          uses: 'core.end@1',
+          with: {},
+          inputs: {
+            answer: { output: { node: 'delegate', path: ['structured', 'answer'] } },
+            approved: { output: { node: 'approve', path: ['approved'] } },
+          },
+        },
+      ],
+      edges: [
+        { id: 'start-delegate', source: 'start', target: 'delegate' },
+        { id: 'delegate-approve', source: 'delegate', target: 'approve' },
+        { id: 'approve-end-yes', source: 'approve', target: 'end', sourcePort: 'approved' },
+        { id: 'approve-end-no', source: 'approve', target: 'end', sourcePort: 'rejected' },
+      ],
+      outputs: {
+        answer: { output: { node: 'end', path: ['answer'] } },
+        approved: { output: { node: 'end', path: ['approved'] } },
+      },
+    },
+  }
+}
+
+async function mountRuntime(ctx: Context): Promise<void> {
+  await ctx.plugin(StubToolRuntime)
+  await ctx.plugin(StubSubagentRuntime)
+  await ctx.plugin(StubApprovalRuntime)
+}
+
 describe('DSH Cordis plugin', () => {
   it('publishes services and executes dsh.tool with the owning Agent', async () => {
     const ctx = new Context()
-    await ctx.plugin(StubToolRuntime)
+    await mountRuntime(ctx)
     const tools = ctx.tools
     const plugin = await ctx.plugin(DshWorkflowPlugin)
     const session = new StubSession()
@@ -92,6 +192,8 @@ describe('DSH Cordis plugin', () => {
       'core.condition@1',
       'core.end@1',
       'core.start@1',
+      'dsh.agent@1',
+      'dsh.human-approval@1',
       'dsh.tool@1',
     ])
     const draft = ctx.workflowTemplates.createDraft(template())
@@ -124,7 +226,7 @@ describe('DSH Cordis plugin', () => {
 
   it('contains Session recording and request observer failures', async () => {
     const ctx = new Context()
-    await ctx.plugin(StubToolRuntime)
+    await mountRuntime(ctx)
     await ctx.plugin(DshWorkflowPlugin)
     const session = new StubSession()
     session.fail = true
@@ -144,7 +246,7 @@ describe('DSH Cordis plugin', () => {
 
   it('cancels and drains active runs when the plugin is disposed', async () => {
     const ctx = new Context()
-    await ctx.plugin(StubToolRuntime)
+    await mountRuntime(ctx)
     const tools = ctx.tools
     tools.handler = input => new Promise<JsonValue>((_resolve, reject) => {
       input.signal.addEventListener('abort', () => { reject(new Error(String(input.signal.reason))) }, { once: true })
@@ -158,5 +260,34 @@ describe('DSH Cordis plugin', () => {
 
     expect(result.status).toBe('cancelled')
     expect(result).toMatchObject({ error: 'dag workflow provider disposed' })
+  })
+
+  it('routes agent and approval nodes through their DSH capability seams', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    await ctx.plugin(DshWorkflowPlugin)
+    const parent: DshAgentLike = { session: new StubSession() }
+
+    const result = await ctx.dagWorkflowEngine.start({ template: agentApprovalTemplate(), inputs: {}, parent }).result
+
+    expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'child answer', approved: true } })
+    expect(ctx.subagents.requests).toHaveLength(1)
+    expect(ctx.subagents.requests[0]).toEqual([
+      'spawn',
+      expect.objectContaining({
+        parent,
+        label: 'workflow child',
+        prompt: [{ type: 'text', text: expect.stringContaining('"topic":"DSH"') }],
+      }),
+    ])
+    expect(ctx.approval.requests).toHaveLength(1)
+    expect(ctx.approval.requests[0]).toEqual(expect.objectContaining({
+      agent: parent,
+      toolName: 'publish-report',
+      callId: expect.stringMatching(/:approve:approval$/),
+      reason: expect.stringContaining('child answer'),
+    }))
+    const record = ctx.workflowRuns.loadRun(result.runId)
+    expect(record?.events).toContainEqual(expect.objectContaining({ type: 'node.waiting', nodeId: 'approve' }))
   })
 })

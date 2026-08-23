@@ -88,9 +88,50 @@ export interface WorkflowSecretGateway {
   resolve(ref: string, context: { readonly runId: string; readonly nodeId: string; readonly signal: AbortSignal }): Promise<JsonValue>
 }
 
+export interface WorkflowAgentRequest {
+  readonly runId: string
+  readonly nodeId: string
+  readonly provider: string
+  readonly prompt: string
+  readonly label?: string
+  readonly outputSchema?: JsonSchema
+  readonly maxDepth?: number
+  readonly signal: AbortSignal
+  readonly owner?: unknown
+}
+
+export interface WorkflowAgentResult {
+  readonly runId: string
+  readonly content: readonly JsonValue[]
+  readonly structured?: JsonValue
+}
+
+export interface WorkflowAgentGateway {
+  execute(request: WorkflowAgentRequest): Promise<WorkflowAgentResult>
+}
+
+export type WorkflowApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+export interface WorkflowApprovalRequest {
+  readonly runId: string
+  readonly nodeId: string
+  readonly token: string
+  readonly action: string
+  readonly reason: string
+  readonly details: JsonObject
+  readonly signal: AbortSignal
+  readonly owner?: unknown
+}
+
+export interface WorkflowApprovalGateway {
+  request(request: WorkflowApprovalRequest): Promise<WorkflowApprovalOutcome>
+}
+
 export interface WorkflowNodeServices {
   readonly tools?: WorkflowToolGateway
   readonly secrets?: WorkflowSecretGateway
+  readonly agents?: WorkflowAgentGateway
+  readonly approvals?: WorkflowApprovalGateway
 }
 
 export interface WorkflowNodeExecutionContext {
@@ -117,6 +158,7 @@ export interface WorkflowNodeDefinition {
   readonly requiredOutputPorts?: readonly string[]
   readonly capabilities: readonly string[]
   readonly retry: NodeRetryMode
+  readonly execution?: 'activity' | 'human-wait'
   execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult>
 }
 
@@ -124,6 +166,7 @@ export type WorkflowNodeStatus =
   | 'pending'
   | 'ready'
   | 'running'
+  | 'waiting'
   | 'succeeded'
   | 'failed'
   | 'cancelled'
@@ -139,7 +182,7 @@ export type WorkflowEvent =
   | { readonly seq: number; readonly type: 'run.failed'; readonly runId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'run.cancelled'; readonly runId: string; readonly reason: string }
   | { readonly seq: number; readonly type: 'run.paused'; readonly runId: string; readonly reason: string }
-  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
   | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'edge.taken' | 'edge.skipped'; readonly runId: string; readonly edgeId: string }
   | { readonly seq: number; readonly type: 'checkpoint.committed'; readonly runId: string; readonly checkpointSeq: number }

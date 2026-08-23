@@ -15,6 +15,7 @@
 - DSH Cordis 插件包 [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md)，提供真实 `ctx.workflowNodes`、`ctx.dagWorkflowEngine`、Session 摘要与卸载收敛。
 - Template Catalog 包 [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) 与 [Node SQLite provider](packages/sqlite/README.md)，提供 draft CAS、发布校验和不可变 revision。
 - 内存与 SQLite Run Store，提供顺序事件日志、原子 checkpoint、崩溃恢复、未知副作用暂停和显式恢复决策。
+- `dsh.agent@1` 与 `dsh.human-approval@1`，分别严格经过 `ctx.subagents` 与 `ctx.approval`；人工等待先提交 checkpoint 再发问。
 - 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
 
 ```bash

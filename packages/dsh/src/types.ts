@@ -16,6 +16,40 @@ export interface DshAgentLike {
   readonly session: DshSessionLike
 }
 
+export interface DshSubagentRunLike {
+  readonly id: string
+  readonly result: Promise<{
+    readonly output: readonly JsonValue[]
+    readonly structured?: unknown
+    readonly diagnostic?: string
+    readonly stopReason: string
+  }>
+  dispose(): Promise<void>
+}
+
+export interface DshSubagentRuntimeLike {
+  start(provider: string, request: {
+    readonly label?: string
+    readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
+    readonly parent: DshAgentLike
+    readonly signal: AbortSignal
+    readonly outputSchema?: Readonly<Record<string, unknown>>
+    readonly maxDepth?: number
+  }): Promise<DshSubagentRunLike>
+}
+
+export type DshApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+
+export interface DshApprovalRuntimeLike {
+  request(request: {
+    readonly agent: DshAgentLike
+    readonly toolName: string
+    readonly callId: string
+    readonly reason: string
+    readonly signal: AbortSignal
+  }): Promise<DshApprovalOutcome>
+}
+
 export interface DshToolRuntimeInput {
   readonly callId: string
   readonly name: string
@@ -69,6 +103,11 @@ export interface DagWorkflowNodeEndData {
   readonly nodeId: string
   readonly status: 'completed' | 'failed' | 'skipped' | 'cancelled' | 'needs_attention'
   readonly error?: string
+}
+
+export interface DagWorkflowNodeWaitData {
+  readonly runId: string
+  readonly nodeId: string
 }
 
 export interface DagWorkflowRunEndData {

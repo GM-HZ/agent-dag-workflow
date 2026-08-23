@@ -6,6 +6,8 @@ import {
   WorkflowNodeRegistry,
   compileWorkflowOrThrow,
   registerCoreNodes,
+  snapshotJsonValue,
+  stableJsonStringify,
   type WorkflowEvent,
   type WorkflowNodeDefinition,
   type WorkflowNodeDisposer,
@@ -27,12 +29,15 @@ import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-workflow-c
 import type {
   DagWorkflowNodeEndData,
   DagWorkflowNodeStartData,
+  DagWorkflowNodeWaitData,
   DagWorkflowRunEndData,
   DagWorkflowRunStartData,
   DshAgentLike,
   DshDagWorkflowResumeRequest,
   DshDagWorkflowStartRequest,
   DshToolRuntimeLike,
+  DshSubagentRuntimeLike,
+  DshApprovalRuntimeLike,
   DshWorkflowPluginConfig,
 } from './types.js'
 
@@ -49,7 +54,11 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-type DshRuntimeContext = Context & { readonly tools: DshToolRuntimeLike }
+type DshRuntimeContext = Context & {
+  readonly tools: DshToolRuntimeLike
+  readonly subagents: DshSubagentRuntimeLike
+  readonly approval: DshApprovalRuntimeLike
+}
 
 export class WorkflowNodeRegistryService extends Service {
   readonly registry = new WorkflowNodeRegistry()
@@ -147,7 +156,7 @@ export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplat
 }
 
 export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
-  static inject = ['tools', 'workflowNodes', 'workflowRuns']
+  static inject = ['tools', 'subagents', 'approval', 'workflowNodes', 'workflowRuns']
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Set<WorkflowRun>()
@@ -155,7 +164,8 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
 
   constructor(ctx: Context, config: DshWorkflowPluginConfig = {}) {
     super(ctx)
-    const tools = (ctx as DshRuntimeContext).tools
+    const runtime = ctx as DshRuntimeContext
+    const tools = runtime.tools
     this.recordSessionEvents = config.recordSessionEvents ?? true
     this.engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
       tools: {
@@ -174,6 +184,69 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
             throw new WorkflowExecutionError('DSH_TOOL_FAILED', renderError(result.error), { nodeId: request.nodeId })
           }
           return result.value
+        },
+      },
+      agents: {
+        execute: async request => {
+          if (!isDshAgentLike(request.owner)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.agent requires the owning DSH Agent', { nodeId: request.nodeId })
+          }
+          const run = await runtime.subagents.start(request.provider, {
+            prompt: [{ type: 'text', text: request.prompt }],
+            parent: request.owner,
+            signal: request.signal,
+            ...(request.label === undefined ? {} : { label: request.label }),
+            ...(request.outputSchema === undefined ? {} : { outputSchema: request.outputSchema }),
+            ...(request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth }),
+          })
+          let execution: Awaited<typeof run.result> | undefined
+          let executionError: unknown
+          try {
+            execution = await run.result
+          } catch (error: unknown) {
+            executionError = error
+          }
+          let disposalError: unknown
+          try {
+            await run.dispose()
+          } catch (error: unknown) {
+            disposalError = error
+          }
+          if (executionError !== undefined || disposalError !== undefined) {
+            const errors = [executionError, disposalError].filter(error => error !== undefined)
+            throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'subagent execution and disposal failed')
+          }
+          if (execution === undefined) throw new Error('subagent result was not available')
+          if (execution.stopReason !== 'completed') {
+            const diagnostic = execution.diagnostic === undefined ? '' : `: ${execution.diagnostic}`
+            throw new WorkflowExecutionError('DSH_AGENT_FAILED', `subagent stopped with ${execution.stopReason}${diagnostic}`, { nodeId: request.nodeId })
+          }
+          const contentValue = snapshotJsonValue(execution.output)
+          if (!Array.isArray(contentValue)) throw new Error('subagent output was not a JSON array')
+          const content = contentValue as readonly import('@gm-hz/dsh-workflow-core').JsonValue[]
+          const structured = execution.structured === undefined ? undefined : snapshotJsonValue(execution.structured)
+          return {
+            runId: run.id,
+            content,
+            ...(structured === undefined ? {} : { structured }),
+          }
+        },
+      },
+      approvals: {
+        request: async request => {
+          if (!isDshAgentLike(request.owner)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.human-approval requires the owning DSH Agent', { nodeId: request.nodeId })
+          }
+          const details = Object.keys(request.details).length === 0
+            ? ''
+            : `\nWorkflow details: ${stableJsonStringify(request.details)}`
+          return runtime.approval.request({
+            agent: request.owner,
+            toolName: request.action,
+            callId: request.token,
+            reason: `${request.reason}${details}`,
+            signal: request.signal,
+          })
         },
       },
     }, { runStore: ctx.workflowRuns })
@@ -239,6 +312,11 @@ function appendSessionSummary(
     case 'node.started': {
       const data: DagWorkflowNodeStartData = { runId: event.runId, nodeId: event.nodeId }
       parent.session.append('dsh-dag-workflow/node-start', data)
+      return
+    }
+    case 'node.waiting': {
+      const data: DagWorkflowNodeWaitData = { runId: event.runId, nodeId: event.nodeId }
+      parent.session.append('dsh-dag-workflow/node-wait', data)
       return
     }
     case 'node.completed':

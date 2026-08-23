@@ -126,13 +126,13 @@ export class DagWorkflowEngine {
     const attentionEvents: WorkflowEventInput[] = []
     const explicitFailures: string[] = []
     for (const [nodeId, status] of state.nodeStates) {
-      if (status !== 'running' && status !== 'needs_attention') continue
+      if (status !== 'running' && status !== 'waiting' && status !== 'needs_attention') continue
       const resolution = request.unknownNodeResolutions?.[nodeId]
       const definition = workflow.nodes.get(nodeId)!.definition
       if (resolution === 'fail') {
         state.nodeStates.set(nodeId, 'failed')
         explicitFailures.push(nodeId)
-      } else if (resolution === 'retry' || (status === 'running' && definition.retry !== 'never')) {
+      } else if (resolution === 'retry' || ((status === 'running' || status === 'waiting') && definition.retry !== 'never')) {
         state.nodeStates.set(nodeId, 'ready')
         if (!state.ready.includes(nodeId)) state.ready.push(nodeId)
         attentionEvents.push({ type: 'node.ready', nodeId })
@@ -285,12 +285,15 @@ export class DagWorkflowEngine {
             return finishFailure('workflow exceeded maxNodeRuns')
           }
           const nodeId = state.ready.shift()!
+          const node = workflow.nodes.get(nodeId)!
           state.nodeRuns++
-          state.nodeStates.set(nodeId, 'running')
-          launch.push({ nodeId, node: workflow.nodes.get(nodeId)! })
+          state.nodeStates.set(nodeId, node.definition.execution === 'human-wait' ? 'waiting' : 'running')
+          launch.push({ nodeId, node })
         }
         if (launch.length > 0) {
-          commit(launch.map(item => ({ type: 'node.started', nodeId: item.nodeId })))
+          commit(launch.flatMap(item => item.node.definition.execution === 'human-wait'
+            ? [{ type: 'node.started' as const, nodeId: item.nodeId }, { type: 'node.waiting' as const, nodeId: item.nodeId }]
+            : [{ type: 'node.started' as const, nodeId: item.nodeId }]))
           for (const item of launch) {
             active.set(item.nodeId, this.#executeNode(runId, item.node, workflowInputs, state.nodeOutputs, owner, controller.signal, policies.maxOutputBytes))
           }
@@ -319,7 +322,7 @@ export class DagWorkflowEngine {
         commit(events)
       }
 
-      const unresolved = [...state.nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running')
+      const unresolved = [...state.nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running' || status === 'waiting')
       if (unresolved.length > 0) return finishFailure(`scheduler stopped with unresolved nodes: ${unresolved.map(([id]) => id).join(', ')}`)
 
       const outputs = snapshotJsonObject(await resolveBindings(workflow.template.spec.outputs, undefined))
@@ -346,7 +349,7 @@ export class DagWorkflowEngine {
       await Promise.allSettled(pending.values())
       const cancelled: string[] = []
       for (const nodeId of pending.keys()) {
-        if (state.nodeStates.get(nodeId) === 'running') {
+        if (state.nodeStates.get(nodeId) === 'running' || state.nodeStates.get(nodeId) === 'waiting') {
           state.nodeStates.set(nodeId, 'cancelled')
           cancelled.push(nodeId)
         }

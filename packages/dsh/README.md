@@ -19,7 +19,7 @@ await ctx.plugin(DagWorkflow)
 
 传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存 provider，并显式装配 `SqliteWorkflowTemplatesProvider` 与 `SqliteWorkflowRunsProvider`。
 
-插件声明 `inject = ['tools']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`，并传入发起运行的 owning Agent、caller-owned signal 和 run/node 派生 call id。
+插件声明 `inject = ['tools', 'subagents', 'approval']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`dsh.agent@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`dsh.human-approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
 ```ts
 const run = ctx.dagWorkflowEngine.start({

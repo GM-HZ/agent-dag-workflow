@@ -8,6 +8,7 @@ import {
   type JsonValue,
   type WorkflowRunCheckpoint,
   type WorkflowToolRequest,
+  type WorkflowTemplate,
 } from '../src/index.js'
 import { toolWorkflowTemplate } from './fixtures.js'
 
@@ -38,6 +39,44 @@ function tools(onCall?: () => void) {
     async execute(request: WorkflowToolRequest): Promise<JsonValue> {
       onCall?.()
       return { echo: request.input.message ?? null }
+    },
+  }
+}
+
+function approvalWorkflowTemplate(): WorkflowTemplate {
+  return {
+    apiVersion: 'dsh.workflow/v1alpha1',
+    kind: 'WorkflowTemplate',
+    metadata: { id: 'approval-flow', name: 'Approval flow' },
+    spec: {
+      inputSchema: { type: 'object', additionalProperties: false },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['approved'],
+        properties: { approved: { type: 'boolean' } },
+      },
+      nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+        {
+          id: 'approval',
+          uses: 'dsh.human-approval@1',
+          with: { action: 'publish', reason: 'Publish this artifact?' },
+          inputs: { artifact: { literal: 'report' } },
+        },
+        {
+          id: 'end',
+          uses: 'core.end@1',
+          with: {},
+          inputs: { approved: { output: { node: 'approval', path: ['approved'] } } },
+        },
+      ],
+      edges: [
+        { id: 'start-approval', source: 'start', target: 'approval' },
+        { id: 'approval-end-yes', source: 'approval', target: 'end', sourcePort: 'approved' },
+        { id: 'approval-end-no', source: 'approval', target: 'end', sourcePort: 'rejected' },
+      ],
+      outputs: { approved: { output: { node: 'end', path: ['approved'] } } },
     },
   }
 }
@@ -130,5 +169,27 @@ describe('workflow run store and recovery', () => {
     expect(result).toMatchObject({ status: 'failed', error: 'workflow duration exceeded' })
     expect(toolCalls).toBe(0)
     expect(store.loadRun(first.id)?.checkpoint.status).toBe('failed')
+  })
+
+  it('commits a waiting checkpoint before calling the approval gateway', async () => {
+    const store = new InMemoryWorkflowRunStore()
+    let durableStatusAtRequest: string | undefined
+    let waitingEventWasDurable = false
+    const engine = new DagWorkflowEngine(registry(), {
+      approvals: {
+        async request(request) {
+          const record = store.loadRun(request.runId)
+          durableStatusAtRequest = record?.checkpoint.nodeStates[request.nodeId]
+          waitingEventWasDurable = record?.events.some(event => event.type === 'node.waiting' && event.nodeId === request.nodeId) ?? false
+          return 'allowed-once'
+        },
+      },
+    }, { runStore: store })
+
+    const result = await engine.start({ template: approvalWorkflowTemplate(), inputs: {} }).result
+
+    expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
+    expect(durableStatusAtRequest).toBe('waiting')
+    expect(waitingEventWasDurable).toBe(true)
   })
 })
