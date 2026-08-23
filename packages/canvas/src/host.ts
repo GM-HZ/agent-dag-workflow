@@ -42,7 +42,7 @@ declare module '@deepseek-ai/cordis' {
 export class WorkflowCanvasGateway extends TypertRemoteService {
   static inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine', 'agents']
 
-  constructor(ctx: Context, private readonly config: WorkflowCanvasConfig) {
+  constructor(ctx: Context, private readonly config: WorkflowCanvasConfig = {}) {
     super(ctx, 'workflowCanvas')
   }
 

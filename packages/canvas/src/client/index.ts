@@ -41,26 +41,30 @@ interface WorkflowCanvasClientContext {
   readonly sessions: { readonly list: SnapshotStore<{ readonly current?: string }> }
   readonly reflect: { provide(name: string, value: unknown): Promise<void> | (() => Promise<void>) }
   effect(effect: () => (() => void) | Promise<() => Promise<void>>, label: string): void
+  inject(
+    services: readonly string[],
+    callback: (scope: WorkflowCanvasClientContext) => void,
+  ): unknown
 }
 
 export const name = 'dsh-workflow-canvas-client'
 export const inject = ['slots', 'sessions', 'remote']
 
-export function apply(ctx: WorkflowCanvasClientContext): void {
+export async function apply(ctx: WorkflowCanvasClientContext): Promise<void> {
   const controller = new WorkflowCanvasUiController()
   ctx.effect(() => {
     const disposal = ctx.reflect.provide('workflowCanvasUi', controller)
     return () => { if (typeof disposal === 'function') void disposal() }
   }, 'dsh-workflow-canvas: UI controller')
-  ctx.effect(async () => ctx.remote.$mount(workflowCanvasRemote), 'dsh-workflow-canvas: mount Remote contribution')
-  ctx.slots.inject('shell.overlay', () => {
-    ctx.slots.register({
+  await ctx.remote.$mount(workflowCanvasRemote)
+  ctx.inject(['slots', 'sessions', 'remote.workflowCanvas'], (scope) => {
+    scope.slots.inject('shell.overlay', () => scope.slots.register({
       name: 'shell.overlay',
       id: 'dsh-workflow-canvas',
       order: 80,
       label: 'Workflow Signal Studio',
-      inject: () => ({ remote: ctx.remote.workflowCanvas, sessions: ctx.sessions.list, controller }),
-    }, WorkflowCanvasOverlay)
+      inject: () => ({ remote: scope.remote.workflowCanvas, sessions: scope.sessions.list, controller }),
+    }, WorkflowCanvasOverlay))
   })
 }
 

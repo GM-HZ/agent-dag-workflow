@@ -87,6 +87,30 @@ pnpm install
 pnpm check
 ```
 
+发布前也可以直接把当前 workspace 链接到本机 DSH，不需要先上传 npm：
+
+```bash
+pnpm build
+dsh plugin --profile web add \
+  "$PWD/packages/core" \
+  "$PWD/packages/catalog" \
+  "$PWD/packages/dsh" \
+  "$PWD/packages/sqlite" \
+  "$PWD/packages/canvas" \
+  "$PWD/packages/bundle"
+dsh web
+```
+
+打开任意顶层会话后，页面右下角会出现 `◇ FLOW`。本仓库提供了一个可直接执行的风险分流模板 [approval-gate.workflow.json](examples/approval-gate.workflow.json)：`riskScore > 70` 走 `true` 边，否则走 `false` 边，两路汇合并输出类型稳定的 `{ request, highRisk }`。
+
+先单独验证模板和 DAG Engine：
+
+```bash
+pnpm demo
+```
+
+也可以将同一组本地包链接到本机 `headless` profile，再让真实 DSH Agent 创建、校验、发布和运行该模板。Web 与 Headless profile 默认共用 `$DSH_HOME/dsh-workflow/workflows.db`，因此 Agent 创建的模板会直接出现在 Canvas 的 OPEN 列表中。
+
 需要定制存储或 Canvas authority 时，也可以只安装子包并在 DSH Host 中手动装配。最小内存版只需要 `@gm-hz/dsh-dag-workflow-host`：
 
 ```ts

@@ -10,6 +10,7 @@
   "scripts": {
     "build": "pnpm -r --if-present build",
     "check": "pnpm build && pnpm typecheck && pnpm test",
+    "demo": "pnpm build && node examples/run-approval-gate.mjs",
     "test": "pnpm -r --if-present test",
     "typecheck": "pnpm -r --if-present typecheck"
   },
@@ -17,5 +18,17 @@
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
-  }
+  },
+  "description": "Persistent DAG workflows and visual authoring for DeepSeek Harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GM-HZ/dsh-workflow.git"
+  },
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dag", "workflow", "canvas"],
+  "author": "GM-HZ",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/GM-HZ/dsh-workflow/issues"
+  },
+  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme"
 }

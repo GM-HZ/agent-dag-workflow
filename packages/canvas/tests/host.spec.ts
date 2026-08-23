@@ -91,6 +91,18 @@ async function runtime(): Promise<Context> {
 }
 
 describe('workflow canvas Host gateway', () => {
+  it('uses the local-profile authorization boundary when the gateway receives no config', async () => {
+    const ctx = await runtime()
+    const agent = { id: 'session-default-config', session: new Session() }
+    ctx.agents.register(agent.id, agent)
+
+    await ctx.plugin(CanvasPlugin.WorkflowCanvasGateway)
+
+    await expect(ctx.workflowCanvas.nodes(agent.id)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ uses: 'core.start@1' })]),
+    )
+  })
+
   it('uses the resolved Agent scope by default and supports stricter policy denial', async () => {
     const ctx = await runtime()
     const agent = { id: 'session-1', session: new Session() }

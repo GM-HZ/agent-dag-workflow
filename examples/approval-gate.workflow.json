@@ -1,0 +1,78 @@
+{
+  "apiVersion": "dsh.workflow/v1alpha1",
+  "kind": "WorkflowTemplate",
+  "metadata": {
+    "id": "approval-gate-demo",
+    "name": "Risk approval gate",
+    "description": "A deterministic branch that classifies a request by risk score and joins both routes into one typed result."
+  },
+  "spec": {
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "riskScore"],
+      "properties": {
+        "request": { "type": "string" },
+        "riskScore": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request", "highRisk"],
+      "properties": {
+        "request": { "type": "string" },
+        "highRisk": { "type": "boolean" }
+      }
+    },
+    "nodes": [
+      {
+        "id": "start",
+        "uses": "core.start@1",
+        "with": {},
+        "inputs": {}
+      },
+      {
+        "id": "risk-gate",
+        "uses": "core.condition@1",
+        "title": "Risk score > 70?",
+        "with": { "operator": "gt" },
+        "inputs": {
+          "left": { "input": "riskScore" },
+          "right": { "literal": 70 }
+        }
+      },
+      {
+        "id": "end",
+        "uses": "core.end@1",
+        "with": {},
+        "inputs": {
+          "request": { "input": "request" },
+          "highRisk": { "output": { "node": "risk-gate", "path": ["result"] } }
+        }
+      }
+    ],
+    "edges": [
+      { "id": "start-to-risk", "source": "start", "target": "risk-gate" },
+      { "id": "high-risk-route", "source": "risk-gate", "sourcePort": "true", "target": "end" },
+      { "id": "normal-route", "source": "risk-gate", "sourcePort": "false", "target": "end" }
+    ],
+    "outputs": {
+      "request": { "output": { "node": "end", "path": ["request"] } },
+      "highRisk": { "output": { "node": "end", "path": ["highRisk"] } }
+    },
+    "policies": {
+      "maxConcurrentNodes": 2,
+      "maxNodeRuns": 8,
+      "maxDurationMs": 5000,
+      "maxOutputBytes": 10000
+    }
+  },
+  "layout": {
+    "nodes": {
+      "start": { "x": 40, "y": 180 },
+      "risk-gate": { "x": 360, "y": 180 },
+      "end": { "x": 720, "y": 180 }
+    }
+  }
+}
