@@ -2,7 +2,7 @@
 
 基于 DeepSeek Harness（DSH）插件体系构建可生成、可执行、可恢复、可视化的 DAG Workflow。
 
-当前仓库已经完成基础内核、DSH 装配、Template Catalog 和第一版持久化恢复。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
+当前仓库已经完成首版内核、DSH 装配、Template Catalog、持久化恢复、生成 Skill 和 Canvas Studio。目标不是把 Coze Studio 或 Dify 嵌入 DSH，而是吸收它们的图语义、生成链路和 Canvas 经验，形成 DSH 原生能力：节点调用继续经过 DSH 的 tool、subagent、approval、session、sandbox 与 UI 插件边界。
 
 ## v0.1 已实现
 
@@ -18,6 +18,10 @@
 - `dsh.agent@1` 与 `dsh.human-approval@1`，分别严格经过 `ctx.subagents` 与 `ctx.approval`；人工等待先提交 checkpoint 再发问。
 - `core.subworkflow@1` 与 `core.foreach@1`，只调用固定 published revision；确定性 child invocation、item container frame 与继承深度上限支持崩溃恢复。
 - 八个受策略保护的 `workflow_*` Agent tools 与随包发布的 `workflow-builder` Skill，形成 topology → draft CAS → validate → diff → publish → exact-revision run 闭环。
+- Canvas 包 [`@gm-hz/dsh-workflow-canvas`](packages/canvas/README.md)：12 个 Typert Remote 端点、Host fail-closed authority、DSH `shell.overlay` 浮动入口与全屏 XYFlow Studio。
+- Canvas 直接编辑唯一 `WorkflowTemplate`，支持 provider palette、schema config form、edge/node 编辑、diagnostics、CAS save、diff、publish、draft test run、持久 trace 与 unknown-side-effect resume 决策。
+- 可选 Host restart coordinator 通过持久 `ownerRef` 重新取得真实 Agent；没有 authority、paused 或无 owner 的 run 保持不动。
+- secret binding 只经 scoped resolver 进入瞬时节点输入；原值出现在节点输出时拒绝持久化。
 - 所有模板、输入、binding 和节点输出进入执行/存储前经过 lossless JSON materialize + 深冻结。
 
 ```bash
@@ -42,11 +46,15 @@ pnpm check
 - [v0.1 可运行 Tool 示例](examples/tool-echo.workflow.yaml)
 - [参考仓库版本与检出方式](ref_project/README.md)
 - [实现状态与完成审计](docs/implementation-status.md)
+- [安全与恢复边界](docs/security.md)
 
-## 建议实施顺序
+## 包
 
-1. 接入 Canvas Host RPC 与 Client overlay；Canvas 只编辑和投影同一份模板，不拥有第二套运行 DSL。
-2. 在完整 Harness composition 中跑兼容、安全和端到端门禁。
+- `@gm-hz/dsh-workflow-core`：协议、编译器、调度器、核心节点和 RunStore contract。
+- `@gm-hz/dsh-workflow-catalog`：draft CAS、diff、不可变 published revision。
+- `@gm-hz/dsh-workflow-dsh`：Cordis services、DSH capability adapters、Agent tools 与 Skill。
+- `@gm-hz/dsh-workflow-sqlite`：SQLite catalog/run/checkpoint providers 与 v1→v3 migration。
+- `@gm-hz/dsh-workflow-canvas`：Typert Host/Client Remote 与 Canvas Studio。
 
 ## License
 

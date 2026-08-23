@@ -85,7 +85,12 @@ export interface WorkflowToolGateway {
 }
 
 export interface WorkflowSecretGateway {
-  resolve(ref: string, context: { readonly runId: string; readonly nodeId: string; readonly signal: AbortSignal }): Promise<JsonValue>
+  resolve(ref: string, context: {
+    readonly runId: string
+    readonly nodeId: string
+    readonly signal: AbortSignal
+    readonly owner?: unknown
+  }): Promise<JsonValue>
 }
 
 export interface WorkflowAgentRequest {
@@ -253,6 +258,8 @@ export interface WorkflowStartRequest {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
   readonly owner?: unknown
+  /** Serializable Host-owned identity used only to reacquire owner authority after restart. */
+  readonly ownerRef?: string
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
@@ -298,6 +305,7 @@ export interface WorkflowRunRecord {
   readonly template: WorkflowTemplate
   readonly semanticHash: string
   readonly inputs: JsonObject
+  readonly ownerRef?: string
   readonly createdAt: number
   readonly checkpoint: WorkflowRunCheckpoint
   readonly events: readonly WorkflowEvent[]

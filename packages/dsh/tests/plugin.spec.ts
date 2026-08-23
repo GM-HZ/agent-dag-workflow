@@ -1,5 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { JsonValue, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+import type { JsonValue, WorkflowRunRecord, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
 import { describe, expect, it, vi } from 'vitest'
 import * as DshWorkflowPlugin from '../src/index.js'
 import type {
@@ -519,5 +519,68 @@ describe('DSH Cordis plugin', () => {
       outputs: { value: 'from tool' },
     })
     await expect(call('workflow_run', { id: 'tool-authored', template: authored, inputs: {} })).rejects.toThrow(/exactly one/)
+  })
+
+  it('resolves secret bindings through a scoped Host callback and persists only the owner reference', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    ctx.tools.handler = async () => ({ isError: false, value: { echo: 'credential accepted' } })
+    const parent: DshAgentLike = { session: new StubSession() }
+    const resolveSecret = vi.fn(async () => 'resolved-in-memory')
+    await ctx.plugin(DshWorkflowPlugin, {
+      resolveSecret,
+      recovery: {
+        reference: value => value === parent ? 'session:secret-owner' : 'session:other',
+        async resolve() { return parent },
+      },
+    })
+    const base = template()
+    const secretTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: base.spec.nodes.map(node => node.id === 'echo'
+          ? { ...node, inputs: { message: { secret: { ref: 'credential:report-api' } } } }
+          : node),
+      },
+    } as WorkflowTemplate
+
+    const result = await ctx.dagWorkflowEngine.start({ template: secretTemplate, inputs: { message: 'unused' }, parent }).result
+
+    expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'credential accepted' } })
+    expect(resolveSecret).toHaveBeenCalledWith(expect.objectContaining({
+      ref: 'credential:report-api', nodeId: 'echo', parent,
+    }))
+    const record = ctx.workflowRuns.loadRun(result.runId)
+    expect(record?.ownerRef).toBe('session:secret-owner')
+    expect(JSON.stringify(record)).not.toContain('resolved-in-memory')
+  })
+
+  it('auto-recovers only running records with a resolvable Host-owned Agent reference', async () => {
+    const parent: DshAgentLike = { session: new StubSession() }
+    const resume = vi.fn(() => ({
+      id: 'run-owned', result: Promise.resolve({ status: 'completed' }), cancel() {}, async dispose() {},
+    }))
+    const warn = vi.fn()
+    const records = [
+      { runId: 'run-owned', ownerRef: 'session:1', checkpoint: { status: 'running' } },
+      { runId: 'run-unowned', checkpoint: { status: 'running' } },
+      { runId: 'run-paused', ownerRef: 'session:1', checkpoint: { status: 'paused' } },
+    ] as unknown as readonly WorkflowRunRecord[]
+    const fake = {
+      workflowRuns: { listRecoverableRuns: () => records },
+      dagWorkflowEngine: { resume },
+      logger: { warn },
+    } as unknown as Context
+    const resolve = vi.fn(async (ownerRef: string) => ownerRef === 'session:1' ? parent : undefined)
+
+    const started = await DshWorkflowPlugin.recoverPersistedWorkflowRuns(fake, {
+      reference: () => 'session:1', resolve,
+    }, new AbortController().signal)
+
+    expect(started).toEqual(['run-owned'])
+    expect(resume).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-owned', parent }))
+    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('run-unowned'))
   })
 })

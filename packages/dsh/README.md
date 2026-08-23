@@ -20,6 +20,22 @@ await ctx.plugin(DagWorkflow)
 
 传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存 provider，并显式装配 `SqliteWorkflowTemplatesProvider` 与 `SqliteWorkflowRunsProvider`。
 
+生产环境可以同时配置 scoped secret bridge 与自动恢复 authority：
+
+```ts
+await ctx.plugin(DagWorkflow, {
+  catalog: 'external',
+  runStore: 'external',
+  resolveSecret: ({ ref, parent, signal }) => credentials.resolve(ref, { agent: parent, signal }),
+  recovery: {
+    reference: parent => sessionIdOf(parent),
+    resolve: (ownerRef, { signal }) => agents.resolveSession(ownerRef, signal),
+  },
+})
+```
+
+`reference` 只返回可持久化的查找键；Agent object 永不进入数据库。启动协调器只恢复 `running + ownerRef + valid Agent`，paused run 等待操作者。secret 原值只进入瞬时节点输入，若节点输出包含原值则拒绝 checkpoint。
+
 插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`dsh.tool@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`dsh.agent@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`dsh.human-approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
 `core.subworkflow@1` 与 `core.foreach@1` 还会读取 `ctx.workflowTemplates` 中的精确 published revision。每个 child 是同一 `ctx.workflowRuns` 中的确定性 run；子流程暂停时父流程进入 `paused/needs_attention`，不会把未知副作用误报成普通失败。

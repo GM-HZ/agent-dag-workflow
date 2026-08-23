@@ -82,7 +82,7 @@ interface WorkflowNodeDefinition {
   readonly outputSchema: JsonSchema
   readonly capabilities: readonly string[]
   readonly retry: 'never' | 'safe' | 'idempotent'
-  createExecutor(context: NodeRunContext): WorkflowNodeExecutor
+  execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult>
 }
 ```
 
@@ -176,11 +176,11 @@ running after crash ----> needs_attention | ready(retry-safe)
 最小 run event：
 
 - `run.started / run.completed / run.failed / run.cancelled / run.paused`
-- `node.ready / node.started / node.output / node.completed / node.failed / node.waiting / node.skipped`
+- `node.ready / node.started / node.progress / node.completed / node.failed / node.waiting / node.skipped / node.needs-attention`
 - `edge.taken / edge.skipped`
 - `checkpoint.committed`
 
-每个事件包含 run-local 单调 `seq`。checkpoint 至少保存模板 revision/hash、变量池、节点/边状态、ready/deferred queue、attempt、container frame、pause reason。人工节点进入 waiting 前必须先提交 checkpoint。
+每个事件包含 run-local 单调 `seq`。checkpoint 保存模板/hash、节点输出与进度、节点/边状态、ready queue、node run count、container frame、depth ceiling 与 pause reason。v1 每个节点一次正常尝试；崩溃后的 retry 由 provider `retry` 声明与 operator decision 控制。人工节点进入 waiting 前必须先提交 checkpoint。
 
 ## 5. 首批节点
 
@@ -233,26 +233,18 @@ Client 节点 renderer 也是 effect 注册并可卸载。Host 返回 node type 
 
 ## 8. 插件/包拆分
 
-建议独立 monorepo，不直接修改 DSH 上游：
+首版采用独立 monorepo，不修改 DSH 上游；共同演进的 definition/provider 被合并为五个公开包：
 
 ```text
 packages/
-  workflow-node/              # ctx.workflowNodes Service Definition
-  workflow-template/          # ctx.workflowTemplates Service Definition
-  workflow-engine/            # ctx.dagWorkflowEngine Service Definition
-  workflow-store-sqlite/      # template revisions, run events, checkpoints
-  workflow-engine-local/      # persistent ready-queue scheduler provider
-  workflow-nodes-core/        # start/end/condition/foreach/subworkflow
-  workflow-nodes-dsh/         # tool/agent/human-approval adapters
-  tool-workflow-dag/          # model-facing Consumer tools
-  client-ui-workflow-canvas/  # dual-face Remote + Canvas
-  client-ui-workflow-run/     # durable Session summary renderer
-  bundle-workflow/            # cordis patch/bundle
-skills/
-  workflow-builder/SKILL.md
+  core/       # protocol/compiler/scheduler/core nodes/run-store contract
+  catalog/    # draft CAS/diff/published revisions
+  dsh/        # Cordis services, DSH nodes, Agent tools, bundled Skill
+  sqlite/     # template/run SQLite providers and migrations
+  canvas/     # Typert Remote, shell overlay, XYFlow Studio
 ```
 
-Service Definition、Provider、Consumer 分包，只有共同演进时才合并。所有注册都通过 Cordis effect，并测试 dispose 后注册项消失。
+所有注册都通过 Cordis effect，并测试 dispose 后注册项消失。Canvas Client 另暴露 renderer registry 与 `workflowCanvasUi` navigation controller，供第三方节点和 Session renderer 扩展。
 
 ## 9. 交付阶段
 

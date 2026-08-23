@@ -9,6 +9,7 @@ import type {
   WorkflowNodeDefinition,
   WorkflowNodeTemplate,
   WorkflowTemplate,
+  JsonSchema,
 } from './types.js'
 import { WorkflowCompileError } from './errors.js'
 
@@ -133,9 +134,29 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
   if (order.length === nodesById.size) {
     const ancestors = computeAncestors(order, incoming)
     for (const [nodeId, node] of nodesById) {
-      validateBindings(node.inputs, nodeId, nodesById, ancestors, diagnostics, ['spec', 'nodes', template.spec.nodes.indexOf(node), 'inputs'])
+      validateBindings(
+        node.inputs,
+        nodeId,
+        nodesById,
+        definitions,
+        ancestors,
+        template.spec.inputSchema,
+        definitions.get(nodeId)?.inputSchema,
+        diagnostics,
+        ['spec', 'nodes', template.spec.nodes.indexOf(node), 'inputs'],
+      )
     }
-    validateBindings(template.spec.outputs, undefined, nodesById, undefined, diagnostics, ['spec', 'outputs'])
+    validateBindings(
+      template.spec.outputs,
+      undefined,
+      nodesById,
+      definitions,
+      undefined,
+      template.spec.inputSchema,
+      template.spec.outputSchema,
+      diagnostics,
+      ['spec', 'outputs'],
+    )
     for (const [name, binding] of Object.entries(template.spec.outputs)) {
       if (!('output' in binding)) {
         diagnostics.push(diagnostic('WORKFLOW_OUTPUT_BINDING_INVALID', 'workflow output must reference an end node output', undefined, ['spec', 'outputs', name]))
@@ -200,21 +221,146 @@ function validateBindings(
   bindings: Readonly<Record<string, WorkflowBinding>>,
   consumerNodeId: string | undefined,
   nodes: ReadonlyMap<string, WorkflowNodeTemplate>,
+  definitions: ReadonlyMap<string, WorkflowNodeDefinition>,
   ancestors: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  workflowInputSchema: JsonSchema,
+  targetSchema: JsonSchema | undefined,
   diagnostics: WorkflowDiagnostic[],
   basePath: readonly (string | number)[],
 ): void {
-  for (const [name, binding] of Object.entries(bindings)) {
-    if (!('output' in binding)) continue
-    const sourceId = binding.output.node
-    if (!nodes.has(sourceId)) {
-      diagnostics.push(diagnostic('UNKNOWN_BINDING_NODE', `binding references unknown node: ${sourceId}`, consumerNodeId, [...basePath, name, 'output', 'node']))
-      continue
-    }
-    if (consumerNodeId !== undefined && !ancestors?.get(consumerNodeId)?.has(sourceId)) {
-      diagnostics.push(diagnostic('BINDING_NOT_UPSTREAM', `binding source ${sourceId} is not a strict upstream node`, consumerNodeId, [...basePath, name]))
+  for (const required of requiredProperties(targetSchema)) {
+    if (!(required in bindings)) {
+      diagnostics.push(diagnostic(
+        'REQUIRED_BINDING_MISSING',
+        `required input/output binding is missing: ${required}`,
+        consumerNodeId,
+        [...basePath, required],
+      ))
     }
   }
+  for (const [name, binding] of Object.entries(bindings)) {
+    const target = propertySchema(targetSchema, name)
+    if (target.forbidden) {
+      diagnostics.push(diagnostic('UNKNOWN_TARGET_BINDING', `target schema does not declare property: ${name}`, consumerNodeId, [...basePath, name]))
+    }
+    if ('literal' in binding) {
+      if (target.schema !== undefined) {
+        try {
+          const errors = compileJsonValidator(target.schema, `binding ${name} target schema`)(binding.literal)
+          for (const message of errors) diagnostics.push(diagnostic('BINDING_LITERAL_INVALID', message, consumerNodeId, [...basePath, name, 'literal']))
+        } catch (error: unknown) {
+          diagnostics.push(diagnostic('TARGET_SCHEMA_INVALID', renderError(error), consumerNodeId, [...basePath, name]))
+        }
+      }
+      continue
+    }
+    if ('secret' in binding) continue
+
+    let sourceSchema: JsonSchema | undefined
+    if ('input' in binding) {
+      const source = propertySchema(workflowInputSchema, binding.input)
+      if (source.forbidden) {
+        diagnostics.push(diagnostic('UNKNOWN_WORKFLOW_INPUT', `binding references unknown workflow input: ${binding.input}`, consumerNodeId, [...basePath, name, 'input']))
+      }
+      sourceSchema = source.schema
+    } else {
+      const sourceId = binding.output.node
+      if (!nodes.has(sourceId)) {
+        diagnostics.push(diagnostic('UNKNOWN_BINDING_NODE', `binding references unknown node: ${sourceId}`, consumerNodeId, [...basePath, name, 'output', 'node']))
+        continue
+      }
+      if (consumerNodeId !== undefined && !ancestors?.get(consumerNodeId)?.has(sourceId)) {
+        diagnostics.push(diagnostic('BINDING_NOT_UPSTREAM', `binding source ${sourceId} is not a strict upstream node`, consumerNodeId, [...basePath, name]))
+      }
+      const resolved = schemaAtPath(definitions.get(sourceId)?.outputSchema, binding.output.path)
+      if (resolved.error !== undefined) {
+        diagnostics.push(diagnostic('BINDING_OUTPUT_PATH_INVALID', resolved.error, consumerNodeId, [...basePath, name, 'output', 'path']))
+      }
+      sourceSchema = resolved.schema
+    }
+    if (sourceSchema !== undefined && target.schema !== undefined && !schemasMayOverlap(sourceSchema, target.schema)) {
+      diagnostics.push(diagnostic(
+        'BINDING_TYPE_MISMATCH',
+        `binding ${name} source type ${renderSchemaTypes(sourceSchema)} is incompatible with target type ${renderSchemaTypes(target.schema)}`,
+        consumerNodeId,
+        [...basePath, name],
+      ))
+    }
+  }
+}
+
+function requiredProperties(schema: JsonSchema | undefined): readonly string[] {
+  return Array.isArray(schema?.required) ? schema.required.filter((value): value is string => typeof value === 'string') : []
+}
+
+function propertySchema(schema: JsonSchema | undefined, name: string): { readonly schema?: JsonSchema; readonly forbidden: boolean } {
+  if (schema === undefined) return { forbidden: false }
+  const properties = isRecord(schema.properties) ? schema.properties : undefined
+  const value = properties?.[name]
+  if (isRecord(value)) return { schema: value, forbidden: false }
+  if (schema.additionalProperties === false) return { forbidden: true }
+  if (isRecord(schema.additionalProperties)) return { schema: schema.additionalProperties, forbidden: false }
+  return { forbidden: false }
+}
+
+function schemaAtPath(schema: JsonSchema | undefined, path: readonly (string | number)[]): { readonly schema?: JsonSchema; readonly error?: string } {
+  let current = schema
+  for (const segment of path) {
+    if (current === undefined || Object.keys(current).length === 0) return {}
+    if (typeof segment === 'string') {
+      const property = propertySchema(current, segment)
+      if (property.forbidden) return { error: `output schema has no property ${segment}` }
+      current = property.schema
+    } else {
+      const types = schemaTypes(current)
+      if (types !== undefined && !types.has('array')) return { error: `output schema is not an array at index ${segment}` }
+      if (Array.isArray(current.items)) {
+        const item = current.items[segment]
+        if (item === undefined) return { error: `output tuple schema has no index ${segment}` }
+        current = isRecord(item) ? item : undefined
+      } else {
+        current = isRecord(current.items) ? current.items : undefined
+      }
+    }
+  }
+  return current === undefined ? {} : { schema: current }
+}
+
+function schemasMayOverlap(source: JsonSchema, target: JsonSchema): boolean {
+  const sourceTypes = schemaTypes(source)
+  const targetTypes = schemaTypes(target)
+  if (sourceTypes === undefined || targetTypes === undefined) return true
+  for (const sourceType of sourceTypes) {
+    for (const targetType of targetTypes) {
+      if (sourceType === targetType || (sourceType === 'integer' && targetType === 'number')) return true
+    }
+  }
+  return false
+}
+
+function schemaTypes(schema: JsonSchema): ReadonlySet<string> | undefined {
+  const authored = schema.type
+  if (typeof authored === 'string') return new Set([authored])
+  if (Array.isArray(authored) && authored.every(value => typeof value === 'string')) return new Set(authored)
+  if ('const' in schema) return new Set([jsonType(schema.const)])
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) return new Set(schema.enum.map(jsonType))
+  return undefined
+}
+
+function renderSchemaTypes(schema: JsonSchema): string {
+  return [...(schemaTypes(schema) ?? ['unknown'])].sort().join('|')
+}
+
+function jsonType(value: unknown): string {
+  if (value === null) return 'null'
+  if (Array.isArray(value)) return 'array'
+  if (typeof value === 'number' && Number.isInteger(value)) return 'integer'
+  if (typeof value === 'object') return 'object'
+  return typeof value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function topologicalOrder(

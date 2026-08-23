@@ -33,13 +33,14 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     transaction(this.db, () => {
       if (this.exists(record.runId)) throw new WorkflowRunStoreError('RUN_ALREADY_EXISTS', `workflow run already exists: ${record.runId}`)
       this.db.prepare(`INSERT INTO workflow_runs
-        (run_id, template_json, semantic_hash, inputs_json, created_at, checkpoint_json, checkpoint_seq, status, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)`)
+        (run_id, template_json, semantic_hash, inputs_json, owner_ref, created_at, checkpoint_json, checkpoint_seq, status, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
         .run(
           record.runId,
           encode(record.template as unknown as JsonValue),
           record.semanticHash,
           encode(record.inputs),
+          record.ownerRef ?? null,
           record.createdAt,
           encode(record.checkpoint as unknown as JsonValue),
           record.checkpoint.status,
@@ -65,10 +66,11 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
   }
 
   loadRun(runId: string): WorkflowRunRecord | undefined {
-    const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, inputs_json, created_at, checkpoint_json
+    const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, inputs_json, owner_ref, created_at, checkpoint_json
       FROM workflow_runs WHERE run_id = ?`).get(runId)
     if (row === undefined) return undefined
     const record = rowRecord(row)
+    const ownerRef = nullableStringColumn(record, 'owner_ref')
     const events = this.db.prepare('SELECT event_json FROM workflow_run_events WHERE run_id = ? ORDER BY seq').all(runId)
       .map(value => decode(stringColumn(rowRecord(value), 'event_json')) as unknown as WorkflowEvent)
     const result: WorkflowRunRecord = {
@@ -76,6 +78,7 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
       template: parseWorkflowTemplate(stringColumn(record, 'template_json')),
       semanticHash: stringColumn(record, 'semantic_hash'),
       inputs: decode(stringColumn(record, 'inputs_json')) as import('@gm-hz/dsh-workflow-core').JsonObject,
+      ...(ownerRef === undefined ? {} : { ownerRef }),
       createdAt: integerColumn(record, 'created_at'),
       checkpoint: decode(stringColumn(record, 'checkpoint_json')) as unknown as WorkflowRunCheckpoint,
       events,
@@ -109,6 +112,13 @@ function rowRecord(value: unknown): Record<string, SQLOutputValue> {
 function stringColumn(row: Record<string, SQLOutputValue>, name: string): string {
   const value = row[name]
   if (typeof value !== 'string') throw new Error(`SQLite column ${name} is not text`)
+  return value
+}
+
+function nullableStringColumn(row: Record<string, SQLOutputValue>, name: string): string | undefined {
+  const value = row[name]
+  if (value === null) return undefined
+  if (typeof value !== 'string') throw new Error(`SQLite column ${name} is not nullable text`)
   return value
 }
 

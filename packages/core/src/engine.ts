@@ -157,6 +157,7 @@ export class DagWorkflowEngine {
       template: workflow.template,
       semanticHash: workflow.semanticHash,
       inputs,
+      ...(request.ownerRef === undefined ? {} : { ownerRef: request.ownerRef }),
       createdAt,
       checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
       events: [],
@@ -547,7 +548,12 @@ export class DagWorkflowEngine {
       if ('secret' in binding) {
         if (nodeId === undefined) throw new WorkflowExecutionError('SECRET_OUTPUT_FORBIDDEN', 'workflow outputs cannot contain secret bindings')
         if (services.secrets === undefined) throw executionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, nodeId)
-        return services.secrets.resolve(binding.secret.ref, { runId, nodeId, signal: controller.signal })
+        return services.secrets.resolve(binding.secret.ref, {
+          runId,
+          nodeId,
+          signal: controller.signal,
+          ...(owner === undefined ? {} : { owner }),
+        })
       }
       const source = state.nodeOutputs.get(binding.output.node)
       if (source === undefined) throw executionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, nodeId)
@@ -589,7 +595,8 @@ export class DagWorkflowEngine {
     checkpointProgress: (progress: JsonValue) => void,
   ): Promise<NodeCompletion> {
     try {
-      const inputs = snapshotJsonObject(await resolveNodeInputs(node, workflowInputs, state.nodeOutputs, runId, runSignal, this.#services))
+      const resolvedInputs = await resolveNodeInputs(node, workflowInputs, state.nodeOutputs, runId, runSignal, this.#services, owner)
+      const inputs = snapshotJsonObject(resolvedInputs.inputs)
       const inputErrors = node.validateInputs(inputs)
       if (inputErrors.length > 0) throw new WorkflowExecutionError('NODE_INPUT_INVALID', inputErrors.join('; '), { nodeId: node.template.id })
       const timeoutSignal = node.template.policy?.timeoutMs === undefined
@@ -610,6 +617,9 @@ export class DagWorkflowEngine {
         ...(owner === undefined ? {} : { owner }),
       })
       const outputs = snapshotJsonObject(rawResult.outputs)
+      if (resolvedInputs.secrets.some(secret => containsSecret(outputs, secret))) {
+        throw new WorkflowExecutionError('SECRET_OUTPUT_LEAK', 'node output contains a resolved secret value and cannot be persisted', { nodeId: node.template.id })
+      }
       const result: WorkflowNodeExecutionResult = {
         outputs,
         ...(rawResult.selectedPorts === undefined ? {} : { selectedPorts: Object.freeze([...rawResult.selectedPorts]) }),
@@ -757,8 +767,10 @@ async function resolveNodeInputs(
   runId: string,
   signal: AbortSignal,
   services: WorkflowNodeServices,
-): Promise<JsonObject> {
+  owner: unknown,
+): Promise<{ readonly inputs: JsonObject; readonly secrets: readonly JsonValue[] }> {
   const result: JsonObject = {}
+  const secrets: JsonValue[] = []
   for (const [name, binding] of Object.entries(node.template.inputs)) {
     if ('literal' in binding) result[name] = snapshotJsonValue(binding.literal)
     else if ('input' in binding) {
@@ -766,14 +778,34 @@ async function resolveNodeInputs(
       result[name] = snapshotJsonValue(workflowInputs[binding.input]!)
     } else if ('secret' in binding) {
       if (services.secrets === undefined) throw new WorkflowExecutionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, { nodeId: node.template.id })
-      result[name] = await services.secrets.resolve(binding.secret.ref, { runId, nodeId: node.template.id, signal })
+      const secret = snapshotJsonValue(await services.secrets.resolve(binding.secret.ref, {
+        runId,
+        nodeId: node.template.id,
+        signal,
+        ...(owner === undefined ? {} : { owner }),
+      }))
+      secrets.push(secret)
+      result[name] = secret
     } else {
       const source = nodeOutputs.get(binding.output.node)
       if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, { nodeId: node.template.id })
       result[name] = snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
     }
   }
-  return result
+  return { inputs: result, secrets }
+}
+
+function containsSecret(value: JsonValue, secret: JsonValue): boolean {
+  if (typeof secret === 'string' && secret.length > 0) return containsString(value, secret)
+  if (secret === null || typeof secret !== 'object') return value === secret
+  return stableJsonStringify(value).includes(stableJsonStringify(secret))
+}
+
+function containsString(value: JsonValue, secret: string): boolean {
+  if (typeof value === 'string') return value.includes(secret)
+  if (Array.isArray(value)) return value.some(item => containsString(item, secret))
+  if (value !== null && typeof value === 'object') return Object.values(value).some(item => containsString(item, secret))
+  return false
 }
 
 function readPath(root: JsonValue, path: readonly (string | number)[], sourceNodeId: string): JsonValue {

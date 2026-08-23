@@ -197,12 +197,13 @@ describe('SQLite workflow catalog repository', () => {
     const path = dbPath()
     const firstStore = new SqliteWorkflowRunStore({ path })
     const engine = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: firstStore })
-    const run = engine.start({ template: toolTemplate(), inputs: { message: 'sqlite-run' } })
+    const run = engine.start({ template: toolTemplate(), inputs: { message: 'sqlite-run' }, ownerRef: 'session:sqlite-run' })
     expect((await run.result).status).toBe('completed')
     expect(firstStore.loadRun(run.id)?.checkpoint).toMatchObject({ status: 'completed', resultOutputs: { answer: 'sqlite-run' } })
     firstStore.close()
 
     const reopened = new SqliteWorkflowRunStore({ path })
+    expect(reopened.loadRun(run.id)?.ownerRef).toBe('session:sqlite-run')
     const replay = await new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: reopened }).resume({ runId: run.id }).result
     expect(replay).toMatchObject({ status: 'completed', outputs: { answer: 'sqlite-run' } })
     expect(reopened.loadRun(run.id)?.events.at(-1)).toMatchObject({ type: 'checkpoint.committed' })
@@ -233,12 +234,25 @@ describe('SQLite workflow catalog repository', () => {
     finalStore.close()
   })
 
-  it('migrates the catalog-only v1 schema to run-store v2', () => {
+  it('migrates the catalog-only v1 schema to the current run-store schema', () => {
     const path = dbPath()
     const initialized = new SqliteWorkflowCatalogRepository({ path })
     initialized.close()
     const old = new DatabaseSync(path)
     old.exec('DROP TABLE workflow_run_events; DROP TABLE workflow_runs; PRAGMA user_version = 1;')
+    old.close()
+
+    const migrated = new SqliteWorkflowRunStore({ path })
+    expect(migrated.listRecoverableRuns()).toEqual([])
+    migrated.close()
+  })
+
+  it('migrates v2 run rows by adding nullable recovery ownership', () => {
+    const path = dbPath()
+    const initialized = new SqliteWorkflowRunStore({ path })
+    initialized.close()
+    const old = new DatabaseSync(path)
+    old.exec('ALTER TABLE workflow_runs DROP COLUMN owner_ref; PRAGMA user_version = 2;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })

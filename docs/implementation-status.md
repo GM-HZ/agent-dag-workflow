@@ -4,21 +4,21 @@
 
 | 能力 | 状态 | 当前证据 | 未完成项 |
 |---|---|---|---|
-| Template v1alpha1 envelope/binding/layout | 部分完成 | `packages/core/src/types.ts`、`schema.ts`、lossless JSON snapshot | schema migration、类型兼容推导 |
+| Template v1alpha1 envelope/binding/layout | 完成 | `types.ts`、`schema.ts`、lossless JSON、必填 binding/workflow input/output path/可判定 schema type diagnostics | v1alpha1 无前代版本；未来版本必须新增显式 migration |
 | 节点注册与插件卸载 | 完成 | `registry.ts`、compiler lease 测试、Cordis registry service 测试 | 后续只需扩充节点类型 |
 | 编译诊断、DAG、上游 binding、端口、终态路径 | 完成 | `compiler.ts`、compiler/catalog tests，含固定 revision 存在性、依赖环、继承深度校验 | 无 |
 | 内存调度、condition/join/skip、取消、caps | 完成 | `engine.ts`、`engine.spec.ts` | 持久事务与恢复由下一项承接 |
 | `start/end/tool/condition` | 完成 | `nodes.ts` 与核心/DSH 集成测试 | 无 |
 | DSH Cordis `ctx.workflowNodes/ctx.dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、`plugin.spec.ts` | 加入正式 DSH bundle patch |
 | 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
-| Session 摘要与实时事件 | 完成 | run/node Session event 与 observer containment 测试 | UI projection 尚未实现 |
+| Session 摘要与实时事件 | 完成 | run/node Session event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | 无 |
 | Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis provider | 无 |
-| Run event store、checkpoint、crash recovery | 部分完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、总时长/深度继承测试 | Host 自动恢复协调器 |
+| Run event store、checkpoint、crash recovery | 完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、ownerRef 与 Host 自动恢复协调器 | 无 |
 | `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
 | Agent CRUD/validate/diff/publish/run tools | 完成 | 8 个 `workflow_*` tools；scope-visible node/tool schemas、CAS、显式 revision run 集成测试 | 无 |
 | `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
-| Canvas Host RPC 与 Client overlay | 未开始 | 总体架构 §7 | 编辑、校验、diff、trace、renderer registry |
-| 安全/权限/secret/idempotency review | 部分完成 | tool policy 路径、secret reference、单次执行约束 | 持久化与扩展节点实现后完整审计 |
+| Canvas Host RPC 与 Client overlay | 完成 | `packages/canvas`：12 Remote descriptors、shell overlay、XYFlow、schema form、diagnostics、CAS/diff/publish/run/trace/resume、renderer registry、navigation controller | 无 |
+| 安全/权限/secret/idempotency review | 完成 | fail-closed Canvas authority、真实 Agent reacquire、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
 | CI、构建、包内容、MIT | 完成 | `.github/workflows/ci.yml`、pack 检查、LICENSE | 发布前 provenance/SBOM 可选 |
 
 ## Cordis 兼容性审阅结论
@@ -39,3 +39,12 @@
 6. 人工节点调用 approval seam 前先提交 `waiting` checkpoint；稳定 workflow call id 关联同一节点，崩溃恢复可安全地重新进入询问流程。
 7. subworkflow/foreach 的 child run id 由稳定 invocation id 派生；父进程丢失完成回执时只读取同一个 terminal child，不重放其副作用。
 8. foreach 的每个 item frame 保存 `pending/running/completed + child run id + outputs`；祖先 subworkflow depth ceiling 随 child checkpoint 持久化，后代不能重新放宽。
+9. 自动恢复只处理 `running + ownerRef`；Host resolver 不能返回有效 Agent 时保留原 checkpoint，`paused` 必须由操作者恢复。
+
+## Canvas 兼容性审阅结论
+
+1. Host 使用官方 Typert protocol 与生成器，生成 12 个带 Zod wire codec 的 Remote descriptor；Client 自行 `$mount` contribution。
+2. `shell.overlay` 是 additive list slot，不替换 DSH `root`/conversation/details owner。
+3. 浏览器不传 Agent object；每个 RPC 都先执行 Host `authorize(sessionId, action, resourceId)`，运行时 Agent 只能由该回调返回。
+4. Canvas 只在 `layout.canvas.positions` 写坐标；node/edge/config/binding 始终是同一份 `WorkflowTemplate`。
+5. 真实 Chromium 已验证 1200×744 和 900×700、节点选择、palette 新增与最终 0 console error/warning。

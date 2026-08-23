@@ -1,6 +1,6 @@
 # Workflow Template v1 语义
 
-状态：`v1alpha1` 设计草案。
+状态：`v1alpha1` 已实现；未知 `apiVersion/kind` fail closed，不做静默 migration。
 
 ## Envelope
 
@@ -122,12 +122,11 @@ policies:
 
 ```yaml
 layout:
-  engine: xyflow
-  viewport: { x: 0, y: 0, zoom: 0.9 }
-  nodes:
-    start: { x: 0, y: 120 }
-    collect: { x: 320, y: 120 }
-    summarize: { x: 640, y: 120 }
+  canvas:
+    positions:
+      start: { x: 0, y: 120 }
+      collect: { x: 320, y: 120 }
+      summarize: { x: 640, y: 120 }
 ```
 
 `layout` 不参与 semantic hash，也不进入 executable IR。未知 layout 字段按 layout schema/version 处理，不能影响运行结果。
@@ -150,7 +149,7 @@ layout:
 2. ID、edge、start/end、DAG 与 container topology 检查。
 3. `uses` 精确解析与 node provider availability 检查。
 4. Node config/input/output schema 检查。
-5. Binding 上游性、field path 与类型兼容检查。
+5. Binding 必填项、workflow input、上游性、field path 与可静态判定的 JSON Schema 类型兼容检查；不确定的开放 schema 保留到运行时 validator。
 6. Branch port 完整性与每条成功路径 output 可物化检查。
 7. Subworkflow revision 存在、依赖无环、深度上限检查。
 8. Secret reference 可解析性检查，但不读取或保存 secret value。

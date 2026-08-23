@@ -6,6 +6,7 @@ import {
   WorkflowNodeRegistry,
   type DshToolExecutionInput,
   type WorkflowToolRequest,
+  type WorkflowTemplate,
 } from '../src/index.js'
 import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
 
@@ -73,5 +74,29 @@ describe('DAG workflow engine', () => {
     await expect(gateway.execute({ runId: 'run-1', nodeId: 'node-1', name: 'search', input: { q: 'dsh' }, signal }))
       .resolves.toEqual({ received: { q: 'dsh' } })
     expect(execute).toHaveBeenCalledWith({ callId: 'run-1:node-1', name: 'search', arguments: { q: 'dsh' }, signal })
+  })
+
+  it('keeps resolved secrets transient and rejects node outputs that leak them', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    const template = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: base.spec.nodes.map(node => node.id === 'call'
+          ? { ...node, inputs: { message: { secret: { ref: 'credential:test' } } } }
+          : node),
+      },
+    } as WorkflowTemplate
+    const engine = new DagWorkflowEngine(registry, {
+      secrets: { async resolve() { return 'top-secret-value' } },
+      tools: { async execute(request) { return { echoed: request.input.message ?? null } } },
+    })
+
+    const result = await engine.start({ template, inputs: { message: 'unused' } }).result
+
+    expect(result).toMatchObject({ status: 'failed', error: 'node output contains a resolved secret value and cannot be persisted' })
+    expect(JSON.stringify(result)).not.toContain('top-secret-value')
   })
 })

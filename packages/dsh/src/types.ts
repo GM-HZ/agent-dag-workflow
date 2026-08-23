@@ -102,7 +102,7 @@ export interface DshSkillRuntimeLike {
   }): () => void
 }
 
-export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'owner'> {
+export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'owner' | 'ownerRef'> {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
   readonly parent: object
@@ -121,6 +121,22 @@ export interface DshWorkflowPluginConfig {
   readonly recordSessionEvents?: boolean
   readonly catalog?: 'memory' | 'external'
   readonly runStore?: 'memory' | 'external'
+  /** Optional scoped credential bridge. Secret values must never be logged or persisted by this callback. */
+  readonly resolveSecret?: (request: {
+    readonly ref: string
+    readonly runId: string
+    readonly nodeId: string
+    readonly signal: AbortSignal
+    readonly parent: DshAgentLike
+  }) => Promise<JsonValue>
+  /** Optional restart coordinator. Both callbacks must use Host-owned session/Agent state. */
+  readonly recovery?: {
+    readonly reference: (parent: DshAgentLike) => string
+    readonly resolve: (ownerRef: string, context: {
+      readonly runId: string
+      readonly signal: AbortSignal
+    }) => Promise<DshAgentLike | undefined>
+  }
 }
 
 export interface DagWorkflowRunStartData {
