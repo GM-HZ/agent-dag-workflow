@@ -40,16 +40,16 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-canvas": "workspace:^",
-    "@gm-hz/dsh-workflow-dsh": "workspace:^",
-    "@gm-hz/dsh-workflow-sqlite": "workspace:^"
+    "@gm-hz/dsh-dag-workflow-canvas": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-host": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-sqlite": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
-    "@gm-hz/dsh-workflow-core": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^",
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"

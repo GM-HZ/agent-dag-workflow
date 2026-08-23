@@ -1,4 +1,4 @@
-import { registerCoreNodes, WorkflowNodeRegistry, type WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+import { registerCoreNodes, WorkflowNodeRegistry, type WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import { describe, expect, it } from 'vitest'
 import {
   diffWorkflowTemplates,

@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow-catalog",
+  "name": "@gm-hz/dsh-dag-workflow-catalog",
   "version": "0.1.0",
   "description": "Draft, CAS, validation and immutable revision catalog for DSH workflows",
   "type": "module",
@@ -26,7 +26,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-core": "workspace:^"
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

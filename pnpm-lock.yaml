@@ -20,20 +20,20 @@ importers:
 
   packages/bundle:
     dependencies:
-      '@gm-hz/dsh-workflow-canvas':
+      '@gm-hz/dsh-dag-workflow-canvas':
         specifier: workspace:^
         version: link:../canvas
-      '@gm-hz/dsh-workflow-dsh':
+      '@gm-hz/dsh-dag-workflow-host':
         specifier: workspace:^
         version: link:../dsh
-      '@gm-hz/dsh-workflow-sqlite':
+      '@gm-hz/dsh-dag-workflow-sqlite':
         specifier: workspace:^
         version: link:../sqlite
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.1
         version: 4.0.1
-      '@gm-hz/dsh-workflow-core':
+      '@gm-hz/dsh-dag-workflow-core':
         specifier: workspace:^
         version: link:../core
       '@types/node':
@@ -51,13 +51,13 @@ importers:
       '@deepseek-ai/dsh-typert-protocol':
         specifier: ^0.1.1-rc.2
         version: 0.1.1-rc.2(@deepseek-ai/cordis@4.0.1)(@deepseek-ai/dsh-invariants@0.1.1-rc.2(@deepseek-ai/cordis@4.0.1))
-      '@gm-hz/dsh-workflow-catalog':
+      '@gm-hz/dsh-dag-workflow-catalog':
         specifier: workspace:^
         version: link:../catalog
-      '@gm-hz/dsh-workflow-core':
+      '@gm-hz/dsh-dag-workflow-core':
         specifier: workspace:^
         version: link:../core
-      '@gm-hz/dsh-workflow-dsh':
+      '@gm-hz/dsh-dag-workflow-host':
         specifier: workspace:^
         version: link:../dsh
       '@xyflow/react':
@@ -100,7 +100,7 @@ importers:
 
   packages/catalog:
     dependencies:
-      '@gm-hz/dsh-workflow-core':
+      '@gm-hz/dsh-dag-workflow-core':
         specifier: workspace:^
         version: link:../core
     devDependencies:
@@ -135,10 +135,10 @@ importers:
 
   packages/dsh:
     dependencies:
-      '@gm-hz/dsh-workflow-catalog':
+      '@gm-hz/dsh-dag-workflow-catalog':
         specifier: workspace:^
         version: link:../catalog
-      '@gm-hz/dsh-workflow-core':
+      '@gm-hz/dsh-dag-workflow-core':
         specifier: workspace:^
         version: link:../core
     devDependencies:
@@ -157,13 +157,13 @@ importers:
 
   packages/sqlite:
     dependencies:
-      '@gm-hz/dsh-workflow-catalog':
+      '@gm-hz/dsh-dag-workflow-catalog':
         specifier: workspace:^
         version: link:../catalog
-      '@gm-hz/dsh-workflow-core':
+      '@gm-hz/dsh-dag-workflow-core':
         specifier: workspace:^
         version: link:../core
-      '@gm-hz/dsh-workflow-dsh':
+      '@gm-hz/dsh-dag-workflow-host':
         specifier: workspace:^
         version: link:../dsh
     devDependencies:

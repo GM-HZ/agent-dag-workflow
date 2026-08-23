@@ -8,7 +8,7 @@ import {
   type JsonObject,
   type JsonValue,
   type WorkflowTemplate,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 import type {
   DshAgentLike,
   DshSkillRuntimeLike,

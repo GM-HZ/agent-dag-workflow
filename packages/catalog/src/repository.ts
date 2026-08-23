@@ -1,4 +1,4 @@
-import type { MaterializedWorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+import type { MaterializedWorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import { WorkflowCatalogError, type PublishedWorkflowRevision, type WorkflowCatalogSummary, type WorkflowDraft } from './types.js'
 
 export interface WorkflowCatalogRepository {

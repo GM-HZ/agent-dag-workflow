@@ -10,7 +10,7 @@ import {
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
   type WorkflowRunStore,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
 export type SqliteWorkflowRunStoreOptions = SqliteWorkflowOptions
@@ -77,7 +77,7 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
       runId: stringColumn(record, 'run_id'),
       template: parseWorkflowTemplate(stringColumn(record, 'template_json')),
       semanticHash: stringColumn(record, 'semantic_hash'),
-      inputs: decode(stringColumn(record, 'inputs_json')) as import('@gm-hz/dsh-workflow-core').JsonObject,
+      inputs: decode(stringColumn(record, 'inputs_json')) as import('@gm-hz/dsh-dag-workflow-core').JsonObject,
       ...(ownerRef === undefined ? {} : { ownerRef }),
       createdAt: integerColumn(record, 'created_at'),
       checkpoint: decode(stringColumn(record, 'checkpoint_json')) as unknown as WorkflowRunCheckpoint,

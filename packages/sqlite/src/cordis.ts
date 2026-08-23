@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { RepositoryWorkflowTemplatesProvider } from '@gm-hz/dsh-workflow-dsh'
-import { WorkflowRunsService } from '@gm-hz/dsh-workflow-dsh'
-import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunRecord } from '@gm-hz/dsh-workflow-core'
+import { RepositoryWorkflowTemplatesProvider } from '@gm-hz/dsh-dag-workflow-host'
+import { WorkflowRunsService } from '@gm-hz/dsh-dag-workflow-host'
+import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunRecord } from '@gm-hz/dsh-dag-workflow-core'
 import { SqliteWorkflowCatalogRepository, type SqliteWorkflowCatalogOptions } from './catalog-repository.js'
 import { SqliteWorkflowRunStore, type SqliteWorkflowRunStoreOptions } from './run-store.js'
 

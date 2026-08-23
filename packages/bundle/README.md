@@ -6,7 +6,7 @@ Installable DeepSeek Harness bundle for durable DAG workflows, Agent authoring t
 dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 ```
 
-The bundle patch mounts the durable runtime and `@gm-hz/dsh-workflow-canvas`. Its default SQLite database is stored at `dshHomePath('dsh-workflow/workflows.db')`.
+The bundle patch mounts the durable runtime and `@gm-hz/dsh-dag-workflow-canvas`. Its default SQLite database is stored at `dshHomePath('dsh-workflow/workflows.db')`.
 
 The Canvas Remote accepts only live, top-level Agents from the Host registry. Its zero-config policy is intended for a local single-user profile; multi-user deployments must configure the Canvas plugin's user/workspace/action `authorize` policy directly.
 

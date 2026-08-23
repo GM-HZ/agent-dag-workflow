@@ -1,6 +1,6 @@
-# @gm-hz/dsh-workflow-dsh
+# @gm-hz/dsh-dag-workflow-host
 
-把 `@gm-hz/dsh-workflow-core` 装配成 DSH 原生 Cordis 服务。插件发布：
+把 `@gm-hz/dsh-dag-workflow-core` 装配成 DSH 原生 Cordis 服务。插件发布：
 
 - `ctx.workflowNodes`：可处置的 Workflow 节点注册服务。
 - `ctx.workflowTemplates`：默认内存 Catalog provider；生产环境可替换为 SQLite provider。
@@ -13,7 +13,7 @@
 ## 装配
 
 ```ts
-import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 
 await ctx.plugin(DagWorkflow)
 ```

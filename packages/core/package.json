@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow-core",
+  "name": "@gm-hz/dsh-dag-workflow-core",
   "version": "0.1.0",
   "description": "Plugin-extensible DAG workflow compiler and runtime for DeepSeek Harness",
   "type": "module",

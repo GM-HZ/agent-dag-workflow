@@ -1,4 +1,4 @@
-import type { DshAgentLike } from '@gm-hz/dsh-workflow-dsh'
+import type { DshAgentLike } from '@gm-hz/dsh-dag-workflow-host'
 
 export type CanvasJsonPrimitive = string | number | boolean | null
 export type CanvasJsonValue = CanvasJsonPrimitive | CanvasJsonObject | readonly CanvasJsonValue[]

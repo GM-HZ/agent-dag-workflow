@@ -5,8 +5,8 @@ describe('generated Typert Remote contribution', () => {
   it('publishes strict descriptors for the complete Canvas RPC surface', () => {
     const ids = workflowCanvasRemote.descriptors.map(descriptor => descriptor.id)
     expect(ids).toHaveLength(12)
-    expect(ids).toContain('@gm-hz/dsh-workflow-canvas#workflowCanvas/runDraft')
-    expect(ids).toContain('@gm-hz/dsh-workflow-canvas#workflowCanvas/trace')
+    expect(ids).toContain('@gm-hz/dsh-dag-workflow-canvas#workflowCanvas/runDraft')
+    expect(ids).toContain('@gm-hz/dsh-dag-workflow-canvas#workflowCanvas/trace')
     expect(workflowCanvasRemote.descriptors.find(descriptor => descriptor.id.endsWith('/run'))?.cancellation)
       .toEqual({ parameter: 'signal' })
   })

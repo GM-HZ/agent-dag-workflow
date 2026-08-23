@@ -1,4 +1,4 @@
-# @gm-hz/dsh-workflow-canvas
+# @gm-hz/dsh-dag-workflow-canvas
 
 Host-scoped Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1alpha1.
 
@@ -21,7 +21,7 @@ The package contributes its generated Typert Remote client and XYFlow editor thr
 Custom node visuals can be installed from a Client plugin:
 
 ```tsx
-import { workflowNodeRenderers } from '@gm-hz/dsh-workflow-canvas/client'
+import { workflowNodeRenderers } from '@gm-hz/dsh-dag-workflow-canvas/client'
 
 ctx.effect(() => workflowNodeRenderers.register('acme.review@1', ReviewNode))
 ```

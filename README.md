@@ -87,10 +87,10 @@ pnpm install
 pnpm check
 ```
 
-需要定制存储或 Canvas authority 时，也可以只安装子包并在 DSH Host 中手动装配。最小内存版只需要 `@gm-hz/dsh-workflow-dsh`：
+需要定制存储或 Canvas authority 时，也可以只安装子包并在 DSH Host 中手动装配。最小内存版只需要 `@gm-hz/dsh-dag-workflow-host`：
 
 ```ts
-import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 
 // Host 需要先提供 DSH 的 tools、subagents、approval 和 skills 服务。
 await ctx.plugin(DagWorkflow)
@@ -110,12 +110,12 @@ await ctx.plugin(DagWorkflow)
 ```ts
 import {
   WorkflowNodeRegistryService,
-} from '@gm-hz/dsh-workflow-dsh'
-import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+} from '@gm-hz/dsh-dag-workflow-host'
+import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import {
   SqliteWorkflowRunsProvider,
   SqliteWorkflowTemplatesProvider,
-} from '@gm-hz/dsh-workflow-sqlite'
+} from '@gm-hz/dsh-dag-workflow-sqlite'
 
 const database = { path: './data/workflows.db' }
 
@@ -191,7 +191,7 @@ await resumed.dispose()
 Canvas 是独立插件。所有 RPC 会先通过 Host 的实时 Agent registry 解析 `sessionId`，只接受仍附着在当前 Host 的顶层 Agent。多人或多租户部署应继续按用户、workspace、action/resource 增加授权策略：
 
 ```ts
-import * as WorkflowCanvas from '@gm-hz/dsh-workflow-canvas'
+import * as WorkflowCanvas from '@gm-hz/dsh-dag-workflow-canvas'
 
 await ctx.plugin(WorkflowCanvas, {
   authorize: async ({ sessionId, agent, action, resourceId }) => {
@@ -258,11 +258,11 @@ ctx.effect(() => ctx.workflowNodes.register({
 | 包 | 职责 |
 | --- | --- |
 | [`@gm-hz/dsh-dag-workflow`](packages/bundle/README.md) | 可由 `dsh plugin add` 安装的完整 bundle，默认启用 SQLite 和 Canvas |
-| [`@gm-hz/dsh-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
-| [`@gm-hz/dsh-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
-| [`@gm-hz/dsh-workflow-dsh`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
-| [`@gm-hz/dsh-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint Provider |
-| [`@gm-hz/dsh-workflow-canvas`](packages/canvas/README.md) | 授权 RPC、DSH Client manifest、XYFlow Studio |
+| [`@gm-hz/dsh-dag-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
+| [`@gm-hz/dsh-dag-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
+| [`@gm-hz/dsh-dag-workflow-host`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
+| [`@gm-hz/dsh-dag-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint Provider |
+| [`@gm-hz/dsh-dag-workflow-canvas`](packages/canvas/README.md) | 授权 RPC、DSH Client manifest、XYFlow Studio |
 
 - [总体架构](docs/architecture.md)
 - [源码对照与设计取舍](docs/source-findings.md)

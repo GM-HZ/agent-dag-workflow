@@ -5,7 +5,7 @@ import { WorkspaceTypertGenerator } from '@deepseek-ai/dsh-typert-generator'
 const root = resolve(import.meta.dirname, '../../..')
 const packageDir = resolve(root, 'packages/canvas')
 const [artifact] = new WorkspaceTypertGenerator(root).generate(
-  ['@gm-hz/dsh-workflow-canvas'],
+  ['@gm-hz/dsh-dag-workflow-canvas'],
   ['host'],
 )
 if (artifact === undefined || artifact.remote === undefined) {

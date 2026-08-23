@@ -5,4 +5,4 @@
         databasePath: !!js dshHomePath('dsh-workflow/workflows.db')
 
     - id: gm-hz-dsh-workflow-canvas
-      name: '@gm-hz/dsh-workflow-canvas'
+      name: '@gm-hz/dsh-dag-workflow-canvas'

@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow-canvas",
+  "name": "@gm-hz/dsh-dag-workflow-canvas",
   "version": "0.1.0",
   "description": "Authorized DSH Remote gateway and XYFlow visual studio for DAG workflows",
   "type": "module",
@@ -51,9 +51,9 @@
     "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-core": "workspace:^",
-    "@gm-hz/dsh-workflow-catalog": "workspace:^",
-    "@gm-hz/dsh-workflow-dsh": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-catalog": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-host": "workspace:^",
     "@xyflow/react": "^12.11.3",
     "zod": "^4.4.3"
   },

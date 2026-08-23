@@ -6,7 +6,7 @@ import {
   type WorkflowDiagnostic,
   type WorkflowNodeRegistry,
   type WorkflowTemplate,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 import type { WorkflowCatalogRepository } from './repository.js'
 import {
   WorkflowCatalogError,

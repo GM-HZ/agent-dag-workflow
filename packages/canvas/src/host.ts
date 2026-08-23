@@ -1,13 +1,13 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import type {} from '@gm-hz/dsh-workflow-dsh'
+import type {} from '@gm-hz/dsh-dag-workflow-host'
 import {
   snapshotJsonObject,
   snapshotJsonValue,
   type WorkflowRun,
   type WorkflowRunResult,
   type WorkflowTemplate,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 import type {
   CanvasCatalogSummary,
   CanvasDraftCreateRequest,

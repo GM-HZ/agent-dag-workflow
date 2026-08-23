@@ -6,7 +6,7 @@ import type {
   WorkflowRun,
   WorkflowStartRequest,
   WorkflowTemplate,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 
 export interface DshSessionLike {
   append(type: string, data: unknown): unknown

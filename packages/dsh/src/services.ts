@@ -16,7 +16,7 @@ import {
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
   type WorkflowRunStore,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 import {
   InMemoryWorkflowCatalogRepository,
   WorkflowTemplateCatalog,
@@ -25,8 +25,8 @@ import {
   type WorkflowCatalogSummary,
   type WorkflowDraft,
   type WorkflowTemplateDiff,
-} from '@gm-hz/dsh-workflow-catalog'
-import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-catalog'
+import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import type {
   DagWorkflowNodeEndData,
   DagWorkflowNodeStartData,
@@ -241,7 +241,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
           }
           const contentValue = snapshotJsonValue(execution.output)
           if (!Array.isArray(contentValue)) throw new Error('subagent output was not a JSON array')
-          const content = contentValue as readonly import('@gm-hz/dsh-workflow-core').JsonValue[]
+          const content = contentValue as readonly import('@gm-hz/dsh-dag-workflow-core').JsonValue[]
           const structured = execution.structured === undefined ? undefined : snapshotJsonValue(execution.structured)
           return {
             runId: run.id,

@@ -1,13 +1,13 @@
 import { type DatabaseSync, type SQLOutputValue } from 'node:sqlite'
-import type { MaterializedWorkflowTemplate, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
-import { parseWorkflowTemplate, stableJsonStringify } from '@gm-hz/dsh-workflow-core'
+import type { MaterializedWorkflowTemplate, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
+import { parseWorkflowTemplate, stableJsonStringify } from '@gm-hz/dsh-dag-workflow-core'
 import {
   WorkflowCatalogError,
   type PublishedWorkflowRevision,
   type WorkflowCatalogRepository,
   type WorkflowCatalogSummary,
   type WorkflowDraft,
-} from '@gm-hz/dsh-workflow-catalog'
+} from '@gm-hz/dsh-dag-workflow-catalog'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
 export type SqliteWorkflowCatalogOptions = SqliteWorkflowOptions
@@ -101,7 +101,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
 }
 
 function encodeTemplate(template: WorkflowTemplate): string {
-  return stableJsonStringify(template as unknown as import('@gm-hz/dsh-workflow-core').JsonValue)
+  return stableJsonStringify(template as unknown as import('@gm-hz/dsh-dag-workflow-core').JsonValue)
 }
 
 function decodeTemplate(value: string): WorkflowTemplate {

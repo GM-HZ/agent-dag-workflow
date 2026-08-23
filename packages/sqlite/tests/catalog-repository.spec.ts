@@ -14,9 +14,9 @@ import {
   type WorkflowRunStore,
   type WorkflowTemplate,
   type WorkflowToolRequest,
-} from '@gm-hz/dsh-workflow-core'
-import { WorkflowTemplateCatalog } from '@gm-hz/dsh-workflow-catalog'
-import { WorkflowNodeRegistryService } from '@gm-hz/dsh-workflow-dsh'
+} from '@gm-hz/dsh-dag-workflow-core'
+import { WorkflowTemplateCatalog } from '@gm-hz/dsh-dag-workflow-catalog'
+import { WorkflowNodeRegistryService } from '@gm-hz/dsh-dag-workflow-host'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SqliteWorkflowCatalogRepository,

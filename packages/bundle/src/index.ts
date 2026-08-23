@@ -1,14 +1,14 @@
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import * as DagWorkflow from '@gm-hz/dsh-workflow-dsh'
+import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import {
   WorkflowNodeRegistryService,
-} from '@gm-hz/dsh-workflow-dsh'
+} from '@gm-hz/dsh-dag-workflow-host'
 import {
   SqliteWorkflowRunsProvider,
   SqliteWorkflowTemplatesProvider,
-} from '@gm-hz/dsh-workflow-sqlite'
+} from '@gm-hz/dsh-dag-workflow-sqlite'
 
 export interface Config {
   /** SQLite file path. The DSH bundle patch supplies a durable path under DSH_HOME. */
@@ -41,4 +41,4 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   })
 }
 
-export type * from '@gm-hz/dsh-workflow-dsh'
+export type * from '@gm-hz/dsh-dag-workflow-host'

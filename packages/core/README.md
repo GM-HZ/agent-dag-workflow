@@ -1,4 +1,4 @@
-# @gm-hz/dsh-workflow-core
+# @gm-hz/dsh-dag-workflow-core
 
 DSH DAG Workflow 的无 UI 内核。提供插件化节点注册、模板编译诊断、DAG 调度、结构化 binding、运行事件、checkpoint 恢复以及 DSH Tool Runtime adapter。
 
@@ -12,7 +12,7 @@ import {
   parseWorkflowTemplate,
   registerCoreNodes,
   WorkflowNodeRegistry,
-} from '@gm-hz/dsh-workflow-core'
+} from '@gm-hz/dsh-dag-workflow-core'
 
 const registry = new WorkflowNodeRegistry()
 registerCoreNodes(registry)
@@ -51,6 +51,6 @@ const resumed = engine.resume({
 - Core 提供内存 Run Store 接口实现；生产持久化由 SQLite provider 提供。
 - 节点只执行一次；模板声明 `maxAttempts > 1` 会在编译期失败。
 - 取消和 timeout 是协作式的，节点实现必须观察 `AbortSignal`。
-- 生成 Skill 与 Canvas 分别由 `@gm-hz/dsh-workflow-dsh` 和 `@gm-hz/dsh-workflow-canvas` 提供，Core 不依赖 React/DSH Client。
+- 生成 Skill 与 Canvas 分别由 `@gm-hz/dsh-dag-workflow-host` 和 `@gm-hz/dsh-dag-workflow-canvas` 提供，Core 不依赖 React/DSH Client。
 
 这些限制对应总体架构中的 Phase 1-3，不会通过在 v0.1 中静默降级来伪装支持。

@@ -1,6 +1,6 @@
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
-import * as DshWorkflow from '@gm-hz/dsh-workflow-dsh'
+import type { WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
+import * as DshWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import type {
   DshApprovalRuntimeLike,
   DshSkillRuntimeLike,
@@ -8,7 +8,7 @@ import type {
   DshToolRuntimeInput,
   DshToolRuntimeResult,
   DshWorkflowToolDefinition,
-} from '@gm-hz/dsh-workflow-dsh'
+} from '@gm-hz/dsh-dag-workflow-host'
 import { describe, expect, it, vi } from 'vitest'
 import * as CanvasPlugin from '../lib/index.js'
 import type { CanvasWorkflowTemplate, WorkflowCanvasAction } from '../src/types.js'

@@ -1,4 +1,4 @@
-# @gm-hz/dsh-workflow-catalog
+# @gm-hz/dsh-dag-workflow-catalog
 
 Workflow Template 的 draft、乐观并发和不可变发布版本领域层。
 

@@ -1,4 +1,4 @@
-import workflowCanvasRemote from '@gm-hz/dsh-workflow-canvas/remote'
+import workflowCanvasRemote from '@gm-hz/dsh-dag-workflow-canvas/remote'
 import type { WorkflowCanvasRemoteNamespace } from './api.js'
 import { WorkflowCanvasUiController } from './controller.js'
 import { WorkflowCanvasOverlay, type SnapshotStore } from './overlay.js'

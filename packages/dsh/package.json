@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow-dsh",
+  "name": "@gm-hz/dsh-dag-workflow-host",
   "version": "0.1.0",
   "description": "Cordis service provider that integrates DSH with the DAG workflow core",
   "type": "module",
@@ -31,8 +31,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-catalog": "workspace:^",
-    "@gm-hz/dsh-workflow-core": "workspace:^"
+    "@gm-hz/dsh-dag-workflow-catalog": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"

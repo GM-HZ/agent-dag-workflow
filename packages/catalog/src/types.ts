@@ -1,4 +1,4 @@
-import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 
 export interface WorkflowDraft {
   readonly id: string

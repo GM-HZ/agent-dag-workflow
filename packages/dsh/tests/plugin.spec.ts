@@ -1,5 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { JsonValue, WorkflowRunRecord, WorkflowTemplate } from '@gm-hz/dsh-workflow-core'
+import type { JsonValue, WorkflowRunRecord, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import { describe, expect, it, vi } from 'vitest'
 import * as DshWorkflowPlugin from '../src/index.js'
 import type {

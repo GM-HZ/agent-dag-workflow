@@ -1,4 +1,4 @@
-# @gm-hz/dsh-workflow-sqlite
+# @gm-hz/dsh-dag-workflow-sqlite
 
 基于 Node `node:sqlite` 的 Host-only 持久化 provider。Template Catalog 与 Run event/checkpoint 使用同一 application schema。
 

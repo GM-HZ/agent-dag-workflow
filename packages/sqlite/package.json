@@ -1,5 +1,5 @@
 {
-  "name": "@gm-hz/dsh-workflow-sqlite",
+  "name": "@gm-hz/dsh-dag-workflow-sqlite",
   "version": "0.1.0",
   "description": "Node SQLite persistence providers for DSH workflow templates and runs",
   "type": "module",
@@ -24,9 +24,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@gm-hz/dsh-workflow-catalog": "workspace:^",
-    "@gm-hz/dsh-workflow-core": "workspace:^",
-    "@gm-hz/dsh-workflow-dsh": "workspace:^"
+    "@gm-hz/dsh-dag-workflow-catalog": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-host": "workspace:^"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
