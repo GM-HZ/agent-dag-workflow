@@ -12,6 +12,7 @@ flowchart LR
   C["Canvas Studio"] -->|编辑同一份模板| T
   T --> E["DAG Engine"]
   E --> N["Node Registry"]
+  N --> S["Pure Script Runtimes"]
   E --> R["Run Store"]
   N --> D["DSH tools / subagents / approval"]
   R --> C
@@ -22,6 +23,10 @@ flowchart LR
 - **一个真源**：Agent、Engine 和 Canvas 都读写 `WorkflowTemplate`，不再维护第二套 Canvas DSL。
 - **精确解析**：节点使用 `type@version`，发布后的 Workflow 和子流程固定到不可变 revision。
 - **能力不越权**：`dsh.tool@1`、`dsh.agent@1`、`dsh.human-approval@1` 始终经过当前 DSH scope 的 tool、subagent、approval 和 owning Agent。
+- **依赖先声明**：动态节点的 capability、Tool、Agent provider、脚本 runtime、secret 和子流程必须出现在 `spec.requires`；模板声明只会收窄权限，不会授予新权限。
+- **结果先契约化**：节点可用 `expects.schema/maxBytes` 声明实例级结果契约，输出必须在写入 checkpoint 前通过确定性校验；需要业务语义复核时再显式连接 Agent 节点。
+- **逻辑可扩展、边界不模糊**：确定性 JSON 处理使用可插拔的 `core.script@1` runtime；网络、文件、密钥和外部副作用仍必须走 DSH Tool/Agent 节点。
+- **外部扩展只有两级**：普通外部能力注册为 DSH Tool，由通用 `dsh.tool@1` 执行；只有暂停恢复、长任务、事务补偿等特殊工作流语义才实现自定义 Node。
 - **执行可恢复**：每次状态推进同时追加有序事件并提交 checkpoint；未知副作用不会自动重试，而是进入 `needs_attention`。
 - **布局不污染语义**：节点位置和 viewport 位于 `layout`，移动节点只产生 layout diff，不改变 Workflow 的 semantic hash。
 
@@ -34,6 +39,9 @@ metadata:
   id: echo-message
   name: Echo message
 spec:
+  requires:
+    - { kind: capability, uses: dsh.tools.execute }
+    - { kind: tool, uses: echo }
   inputSchema:
     type: object
     required: [message]
@@ -52,6 +60,12 @@ spec:
     - id: echo
       uses: dsh.tool@1
       with: { name: echo }
+      expects:
+        schema:
+          type: object
+          required: [result]
+          properties:
+            result: { type: object }
       inputs:
         message: { input: message }
     - id: end
@@ -120,10 +134,12 @@ import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 await ctx.plugin(DagWorkflow)
 ```
 
-插件会发布四个 Cordis service：
+插件会发布六个 Cordis service：
 
 | Service | 用途 |
 | --- | --- |
+| `ctx.workflowCapabilities` | 为自定义 Node 注册受声明约束的 Host 生命周期服务 |
+| `ctx.workflowScripts` | 注册版本化、确定性的纯 JSON 脚本运行时 |
 | `ctx.workflowNodes` | 注册并解析版本化节点 |
 | `ctx.workflowTemplates` | draft、CAS 更新、diff、校验和发布 |
 | `ctx.workflowRuns` | 事件日志与 checkpoint |
@@ -133,7 +149,9 @@ await ctx.plugin(DagWorkflow)
 
 ```ts
 import {
+  WorkflowCapabilityRegistryService,
   WorkflowNodeRegistryService,
+  WorkflowScriptRuntimeRegistryService,
 } from '@gm-hz/dsh-dag-workflow-host'
 import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import {
@@ -143,6 +161,8 @@ import {
 
 const database = { path: './data/workflows.db' }
 
+await ctx.plugin(WorkflowCapabilityRegistryService)
+await ctx.plugin(WorkflowScriptRuntimeRegistryService)
 await ctx.plugin(WorkflowNodeRegistryService)
 await ctx.plugin(SqliteWorkflowTemplatesProvider, database)
 await ctx.plugin(SqliteWorkflowRunsProvider, database)
@@ -195,6 +215,22 @@ if (result.status === 'completed') {
 
 `result` 会以 `completed`、`failed`、`cancelled` 或 `paused` 收敛。调用方持有 run，并应在读取结果后 `dispose()`。
 
+### 确定性脚本节点
+
+`core.script@1` 用于字段整理、模板拼接、数组筛选/投影和数值聚合。内置 `dsh.expr@1` 是有操作数上限的纯表达式语言，不使用 `eval`，表达式必须返回 JSON object：
+
+```json
+{
+  "language": "dsh.expr@1",
+  "maxOperations": 10000,
+  "source": "{ customer: upper(trim(input.customer)), total: sum(mapGet(input.orders, \"amount\")) }"
+}
+```
+
+可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `dsh.tool@1` 或 `dsh.agent@1`，再把其结构化输出交给脚本节点。
+
+动态依赖和结果契约属于模板语义并进入 semantic hash。执行时一个节点能看到的 gateway 或自定义 Host capability 会按其 NodeDefinition `capabilities` 裁剪；最终有效能力是“节点声明 ∩ Workflow requires ∩ owning Agent scope ∩ DSH policy”。
+
 恢复一个持久化运行：
 
 ```ts
@@ -228,7 +264,7 @@ await ctx.plugin(WorkflowCanvas, {
 
 省略 `authorize` 时使用面向本地单用户 profile 的默认边界：不存在、未附着或属于 subagent 的 session identity 会被拒绝，但 `sessionId` 本身不是多租户身份凭证。
 
-包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 支持节点和边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
+包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 会把当前 Agent scope 可见的每个 DSH Tool 直接显示为一个 palette 项，拖入后保存的仍是 `dsh.tool@1 + with.name`。它同时支持自定义节点、边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
 
 其他 DSH Client 插件也可以打开同一个 overlay：
 
@@ -240,31 +276,77 @@ ctx.workflowCanvasUi.open({
 })
 ```
 
-## 扩展节点
+## 两级扩展模型
 
-节点定义通过 `ctx.workflowNodes` 注册，返回 disposer，并随 Cordis scope 自动卸载：
+### 一级：DSH Tool
+
+普通外部系统只注册 DSH Tool，不需要实现 Workflow 接口。Tool 的输入 Schema、scope、guard、credential、observer 和输出校验继续由 DSH 负责；`workflow_nodes_list` 和 Canvas 会读取当前 Agent scope 可见的 Tool catalog。Canvas 中的 Tool 条目不是第三种节点类型，保存时统一物化为：
+
+```yaml
+- id: dms-query
+  uses: dsh.tool@1
+  with: { name: dms.query }
+  inputs:
+    sql: { input: sql }
+```
+
+编译器自动要求模板声明 `capability:dsh.tools.execute` 和 `tool:dms.query`。DMS 的目标库、SQL 风险、审批、脱敏等领域规则全部留在 DMS Tool 中。
+
+### 二级：自定义 Node
+
+只有 Tool 的单次 JSON 请求/响应无法表达的暂停恢复、进度 checkpoint、事务补偿或特殊控制流，才通过 `ctx.workflowNodes` 注册自定义 Node。自定义 Host 服务通过 `ctx.workflowCapabilities` 注册；节点只能从执行上下文解析自己预声明的 capability：
 
 ```ts
+const reviews = ctx.acmeReviews
+ctx.effect(() => ctx.workflowCapabilities.register('acme.review.execute', reviews))
+
 ctx.effect(() => ctx.workflowNodes.register({
   type: 'acme.review',
   version: 1,
   title: 'Review',
   description: 'Run an internal review step.',
   role: 'regular',
-  configSchema: { type: 'object', additionalProperties: false },
+  configSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['resource'],
+    properties: { resource: { type: 'string', minLength: 1 } },
+  },
   inputSchema: { type: 'object' },
   outputSchema: { type: 'object' },
-  outputPorts: ['default'],
-  requiredOutputPorts: ['default'],
-  capabilities: [],
+  outputPorts: ['success'],
+  capabilities: ['acme.review.execute'],
+  dependencyKinds: ['acme-resource'],
   retry: 'safe',
+  dependencies(config) {
+    return [{ kind: 'acme-resource', uses: String(config.resource) }]
+  },
   async execute(context) {
-    return { outputs: { accepted: true, input: context.inputs } }
+    const service = context.capabilities.require<typeof reviews>('acme.review.execute')
+    return { outputs: await service.review(context.inputs, context.signal) }
   },
 }))
 ```
 
-模板中使用 `acme.review@1`。如需自定义 Canvas 外观，Client 插件可额外注册同一 `uses` 对应的 React renderer；未注册时仍可使用通用节点编辑器。
+模板中使用 `acme.review@1`，并在 `spec.requires` 精确声明 capability 与 resource。未安装 capability、Node 未声明它或模板没有 allowlist 时都会 fail closed。如需自定义 Canvas 外观，Client 插件可额外注册同一 `uses` 对应的 React renderer；未注册时仍可使用通用节点编辑器。
+
+纯脚本 runtime 是内置 `core.script@1` 的确定性实现细节，不构成第三种外部集成层。如果定制只是 JSON 数据逻辑，可以注册：
+
+```ts
+ctx.effect(() => ctx.workflowScripts.register({
+  language: 'acme.rules',
+  version: 1,
+  title: 'Acme Rules',
+  description: 'Deterministic business rules.',
+  deterministic: true,
+  validate(source) { return validateRules(source) },
+  async execute({ source, inputs, signal, maxOperations }) {
+    return runRules({ source, inputs, signal, maxOperations }) // 必须返回 JSON object
+  },
+}))
+```
+
+模板使用 `core.script@1`，并设置 `with.language: acme.rules@1`。Runtime 插件属于受信任的宿主代码；`deterministic: true` 是契约声明，不是对恶意插件的 sandbox。
 
 ## 可靠性与安全边界
 

@@ -1,6 +1,6 @@
 {
   "name": "@gm-hz/dsh-dag-workflow-host",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Cordis service provider that integrates DSH with the DAG workflow core",
   "type": "module",
   "engines": { "node": ">=22.19.0" },

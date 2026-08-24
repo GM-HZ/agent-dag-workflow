@@ -16,7 +16,10 @@ import {
   type WorkflowToolRequest,
 } from '@gm-hz/dsh-dag-workflow-core'
 import { WorkflowTemplateCatalog } from '@gm-hz/dsh-dag-workflow-catalog'
-import { WorkflowNodeRegistryService } from '@gm-hz/dsh-dag-workflow-host'
+import {
+  WorkflowNodeRegistryService,
+  WorkflowScriptRuntimeRegistryService,
+} from '@gm-hz/dsh-dag-workflow-host'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SqliteWorkflowCatalogRepository,
@@ -61,6 +64,10 @@ function toolTemplate(): WorkflowTemplate {
     ...base,
     spec: {
       ...base.spec,
+      requires: [
+        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'tool', uses: 'echo' },
+      ],
       inputSchema: {
         type: 'object', additionalProperties: false, required: ['message'], properties: { message: { type: 'string' } },
       },
@@ -184,6 +191,7 @@ describe('SQLite workflow catalog repository', () => {
 
   it('publishes the SQLite catalog as ctx.workflowTemplates and closes on dispose', async () => {
     const ctx = new Context()
+    await ctx.plugin(WorkflowScriptRuntimeRegistryService)
     await ctx.plugin(WorkflowNodeRegistryService)
     const provider = await ctx.plugin(SqliteWorkflowTemplatesProvider, { path: ':memory:' })
 

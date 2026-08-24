@@ -1,0 +1,108 @@
+{
+  "apiVersion": "dsh.workflow/v1alpha1",
+  "kind": "WorkflowTemplate",
+  "metadata": {
+    "id": "script-transform-demo",
+    "name": "Order normalization",
+    "description": "A deterministic data-processing workflow using the bounded dsh.expr runtime."
+  },
+  "spec": {
+    "requires": [
+      { "kind": "capability", "uses": "workflow.script.execute" },
+      { "kind": "script-runtime", "uses": "dsh.expr@1" }
+    ],
+    "inputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer", "orders"],
+      "properties": {
+        "customer": { "type": "string", "minLength": 1 },
+        "orders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "amount", "approved"],
+            "properties": {
+              "id": { "type": "string" },
+              "amount": { "type": "number" },
+              "approved": { "type": "boolean" }
+            }
+          }
+        }
+      }
+    },
+    "outputSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["customer", "orderCount", "total", "approvedIds", "summary"],
+      "properties": {
+        "customer": { "type": "string" },
+        "orderCount": { "type": "number" },
+        "total": { "type": "number" },
+        "approvedIds": { "type": "array", "items": { "type": "string" } },
+        "summary": { "type": "string" }
+      }
+    },
+    "nodes": [
+      {
+        "id": "start",
+        "uses": "core.start@1",
+        "with": {},
+        "inputs": {}
+      },
+      {
+        "id": "normalize",
+        "uses": "core.script@1",
+        "title": "Normalize order data",
+        "with": {
+          "language": "dsh.expr@1",
+          "maxOperations": 10000,
+          "source": "{\n  customer: upper(trim(input.customer)),\n  orderCount: len(input.orders),\n  total: sum(mapGet(input.orders, \"amount\")),\n  approvedIds: mapGet(filterEq(input.orders, \"approved\", true), \"id\"),\n  summary: format(\"{{ customer }} / {{ count }} orders\", {\n    customer: trim(input.customer),\n    count: len(input.orders)\n  })\n}"
+        },
+        "inputs": {
+          "customer": { "input": "customer" },
+          "orders": { "input": "orders" }
+        }
+      },
+      {
+        "id": "end",
+        "uses": "core.end@1",
+        "with": {},
+        "inputs": {
+          "customer": { "output": { "node": "normalize", "path": ["customer"] } },
+          "orderCount": { "output": { "node": "normalize", "path": ["orderCount"] } },
+          "total": { "output": { "node": "normalize", "path": ["total"] } },
+          "approvedIds": { "output": { "node": "normalize", "path": ["approvedIds"] } },
+          "summary": { "output": { "node": "normalize", "path": ["summary"] } }
+        }
+      }
+    ],
+    "edges": [
+      { "id": "start-normalize", "source": "start", "target": "normalize" },
+      { "id": "normalize-end", "source": "normalize", "target": "end" }
+    ],
+    "outputs": {
+      "customer": { "output": { "node": "end", "path": ["customer"] } },
+      "orderCount": { "output": { "node": "end", "path": ["orderCount"] } },
+      "total": { "output": { "node": "end", "path": ["total"] } },
+      "approvedIds": { "output": { "node": "end", "path": ["approvedIds"] } },
+      "summary": { "output": { "node": "end", "path": ["summary"] } }
+    },
+    "policies": {
+      "maxConcurrentNodes": 2,
+      "maxNodeRuns": 8,
+      "maxDurationMs": 5000,
+      "maxOutputBytes": 10000
+    }
+  },
+  "layout": {
+    "engine": "xyflow",
+    "viewport": { "x": 40, "y": 80, "zoom": 0.9 },
+    "nodes": {
+      "start": { "x": 0, "y": 120 },
+      "normalize": { "x": 320, "y": 120 },
+      "end": { "x": 680, "y": 120 }
+    }
+  }
+}

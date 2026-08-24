@@ -6,6 +6,10 @@
 - Canvas Host 插件默认只从 Host 实时 Agent registry 接受仍附着的顶层 Agent，并拒绝缺失、脱离和 subagent identity；这个零配置边界只适合本地单用户 profile。
 - 浏览器的 `sessionId` 只是查找键，不是身份凭证。多人或多租户部署必须提供 `authorize`，并从 Host 自己的连接、用户、workspace 和 Session membership 状态做判断，不能因为 id 存在就允许；每个 RPC 都会携带 `agent/action/resourceId` 重新授权。
 - 当前 Catalog 是部署级 repository。多租户部署必须按租户隔离 provider/database，或在 authority 层实现同等强度的 resource ownership；不要共享一个无 ownership policy 的全局 catalog。
+- `spec.requires` 是模板级 allowlist，不是 grant。编译器要求 NodeDefinition capability、固定 Tool/Agent/Runtime/subworkflow 和 secret 引用全部预声明；运行仍取 owning Agent scope 与 DSH policy 的交集。
+- Engine 只向节点暴露其 NodeDefinition `capabilities` 覆盖的 gateway；自定义 `context.capabilities` 同时隐藏未声明绑定，并拒绝已声明但 Host 未安装的绑定。未声明 `dsh.tools.execute` 的普通节点无法取得 Tool gateway。
+- 外部业务调用只有 DSH Tool 与自定义 Node 两级。`ctx.workflowCapabilities` 只允许自定义 Node 注入特殊生命周期服务，不能用作 HTTP/数据库/消息等普通业务调用的旁路，否则会绕开 Tool scope、guard 和审计。
+- 第三方 NodeDefinition 是受信任 Host 插件，可以通过闭包持有 ambient authority；`requires` 无法替代插件代码审计或进程 sandbox。
 
 ## Secrets
 
@@ -21,9 +25,12 @@
 - child invocation id 和 foreach item index 稳定派生，重启后命中同一 child run。
 - Run 只持久化可序列化 `ownerRef`，不持久化 Agent/Session object。自动恢复用 Host `recovery.resolve` 重新取得 Agent；无 owner、无 authority 和 paused run 不自动开始。
 - 这套语义是 at-least-once + 显式不确定性，不声称 exactly-once。Tool 若支持业务幂等，应继续使用自己的 idempotency key。
+- 节点输出必须先通过 NodeDefinition schema 与实例 `expects` 才能进入 checkpoint。Agent 语义 review 是业务节点，不能作为安全 Schema、权限或 prompt-injection 边界。
 
 ## Resource limits
 
 - 模板策略限制并发节点、节点运行数、总时长、输出字节、foreach item/concurrency 与 subworkflow depth。
 - 普通图必须是 DAG；无 `eval`，condition 只使用固定 operator。
+- `core.script@1` 内置 `dsh.expr@1` 只做纯 JSON 变换，限制 source 大小和 evaluator operation 数，观察 AbortSignal，并拒绝 prototype key 与动态函数调用。
+- `ctx.workflowScripts` 中的第三方 runtime 与其他 Host 插件一样属于受信任代码。`deterministic: true` 是可调度/恢复契约，不是 sandbox 或权限证明；部署者必须审计 runtime，不能在其中暗藏 I/O、环境变量或 secret 访问。
 - 所有输入、模板、进度与输出先 materialize 为 lossless JSON；prototype、function、symbol、循环引用与非有限数值被拒绝。

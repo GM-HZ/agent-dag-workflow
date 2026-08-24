@@ -36,4 +36,4 @@ ctx.workflowCanvasUi.open({
 })
 ```
 
-The Studio provides node/edge editing, top-level JSON Schema config fields plus a raw lossless JSON fallback, diagnostics, optimistic draft save, semantic/layout diff, publish, draft test-run, persisted trace, and explicit retry/fail decisions for unknown side effects.
+The Studio projects every DSH Tool visible in the resolved Agent scope directly into the palette. Adding one always materializes the generic `dsh.tool@1` node with a fixed `with.name` and exact Tool requirements; custom NodeDefinitions remain the only second extension level. The Studio also provides node/edge editing, definition-supplied default config, dependency allowlist (`spec.requires`), per-node expected output contracts, multiline script editing, top-level JSON Schema config fields plus a raw lossless JSON fallback, diagnostics, optimistic draft save, semantic/layout diff, publish, draft test-run, persisted trace, and explicit retry/fail decisions for unknown side effects.

@@ -20,11 +20,10 @@ export function templateToFlow(
   definitions: readonly CanvasNodeDefinition[],
   trace?: CanvasTrace,
 ): { nodes: WorkflowFlowNode[]; edges: Edge[] } {
-  const catalog = new Map(definitions.map(definition => [definition.uses, definition]))
   const positions = readPositions(template)
   return {
     nodes: template.spec.nodes.map((node, index) => {
-      const definition = catalog.get(node.uses)
+      const definition = findNodeDefinition(definitions, node)
       const status = trace?.nodeStates[node.id]
       return {
         id: node.id,
@@ -74,16 +73,44 @@ export function addNode(
   definition: CanvasNodeDefinition,
   position: XYPosition,
 ): CanvasWorkflowTemplate {
-  const stem = definition.uses.split('@', 1)[0]?.split('.').at(-1)?.replaceAll(/[^a-z0-9]/g, '-') || 'node'
+  const stem = (definition.toolName ?? definition.uses.split('@', 1)[0]?.split('.').at(-1))
+    ?.toLowerCase().replaceAll(/[^a-z0-9]/g, '-') || 'node'
   const occupied = new Set(template.spec.nodes.map(node => node.id))
   let id = stem
   let suffix = 2
   while (occupied.has(id)) id = `${stem}-${suffix++}`
-  const node: CanvasWorkflowNode = { id, uses: definition.uses, with: {}, inputs: {} }
+  const node: CanvasWorkflowNode = {
+    id,
+    uses: definition.uses,
+    with: definition.defaultConfig ?? {},
+    inputs: {},
+  }
   return moveNode({
     ...template,
-    spec: { ...template.spec, nodes: [...template.spec.nodes, node] },
+    spec: {
+      ...template.spec,
+      requires: mergeRequirements(template.spec.requires ?? [], definition.defaultRequirements),
+      nodes: [...template.spec.nodes, node],
+    },
   }, id, position)
+}
+
+export function findNodeDefinition(
+  definitions: readonly CanvasNodeDefinition[],
+  node: CanvasWorkflowNode,
+): CanvasNodeDefinition | undefined {
+  const toolName = typeof node.with.name === 'string' ? node.with.name : undefined
+  return definitions.find(definition => definition.uses === node.uses && definition.toolName === toolName)
+    ?? definitions.find(definition => definition.uses === node.uses && definition.toolName === undefined)
+}
+
+function mergeRequirements(
+  current: readonly import('../types.js').CanvasWorkflowRequirement[],
+  added: readonly import('../types.js').CanvasWorkflowRequirement[],
+): readonly import('../types.js').CanvasWorkflowRequirement[] {
+  const requirements = new Map(current.map(item => [`${item.kind}:${item.uses}`, item]))
+  for (const item of added) requirements.set(`${item.kind}:${item.uses}`, item)
+  return [...requirements.values()]
 }
 
 export function removeNode(template: CanvasWorkflowTemplate, nodeId: string): CanvasWorkflowTemplate {

@@ -50,6 +50,10 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'approval-flow', name: 'Approval flow' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'dsh.approval.request' },
+        { kind: 'approval-action', uses: 'publish' },
+      ],
       inputSchema: { type: 'object', additionalProperties: false },
       outputSchema: {
         type: 'object',
@@ -88,6 +92,11 @@ function foreachWorkflowTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-flow', name: 'For each flow' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
+        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'workflow', uses: 'item-worker@1' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -125,6 +134,11 @@ function subworkflowParentTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'subworkflow-parent', name: 'Subworkflow parent' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
+        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'workflow', uses: 'child@1' },
+      ],
       inputSchema: { type: 'object', additionalProperties: false },
       outputSchema: {
         type: 'object',

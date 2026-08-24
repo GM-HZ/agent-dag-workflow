@@ -4,6 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import {
   WorkflowNodeRegistryService,
+  WorkflowCapabilityRegistryService,
+  WorkflowScriptRuntimeRegistryService,
 } from '@gm-hz/dsh-dag-workflow-host'
 import {
   SqliteWorkflowRunsProvider,
@@ -25,6 +27,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   }
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
 
+  if (ctx.get('workflowScripts') === undefined) await ctx.plugin(WorkflowScriptRuntimeRegistryService)
+  if (ctx.get('workflowCapabilities') === undefined) await ctx.plugin(WorkflowCapabilityRegistryService)
   if (ctx.get('workflowNodes') === undefined) await ctx.plugin(WorkflowNodeRegistryService)
   if (ctx.get('workflowTemplates') === undefined) {
     await ctx.plugin(SqliteWorkflowTemplatesProvider, { path })

@@ -108,6 +108,10 @@ function template(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'dsh-plugin-test', name: 'DSH plugin test' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'tool', uses: 'echo' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -140,6 +144,12 @@ function agentApprovalTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'agent-approval-test', name: 'Agent approval test' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'dsh.subagents.start' },
+        { kind: 'agent-provider', uses: 'spawn' },
+        { kind: 'capability', uses: 'dsh.approval.request' },
+        { kind: 'approval-action', uses: 'publish-report' },
+      ],
       inputSchema: { type: 'object', additionalProperties: false },
       outputSchema: {
         type: 'object',
@@ -236,6 +246,11 @@ function nestedParentTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'nested-parent', name: 'Nested parent' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
+        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'workflow', uses: 'nested-child@1' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -273,6 +288,11 @@ function foreachParentTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-parent', name: 'For each parent' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
+        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'workflow', uses: 'item-worker@1' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -315,15 +335,19 @@ describe('DSH Cordis plugin', () => {
   it('reuses caller-owned registry, catalog, and run store services', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
+    const capabilitiesPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowCapabilityRegistryService)
+    const scriptsPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowScriptRuntimeRegistryService)
     const nodesPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowNodeRegistryService)
     const templatesPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowTemplatesProvider)
     const runsPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowRunsProvider)
     const registry = ctx.workflowNodes.registry
+    const capabilities = ctx.workflowCapabilities.registry
     const draft = ctx.workflowTemplates.createDraft(childTemplate('external-services'))
 
     const plugin = await ctx.plugin(DshWorkflowPlugin, { catalog: 'external', runStore: 'external' })
 
     expect(ctx.workflowNodes.registry).toBe(registry)
+    expect(ctx.workflowCapabilities.registry).toBe(capabilities)
     expect(ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
     const run = ctx.dagWorkflowEngine.start({
       template: childTemplate('external-run'),
@@ -340,6 +364,8 @@ describe('DSH Cordis plugin', () => {
     await runsPlugin.dispose()
     await templatesPlugin.dispose()
     await nodesPlugin.dispose()
+    await scriptsPlugin.dispose()
+    await capabilitiesPlugin.dispose()
   })
 
   it('publishes services and executes dsh.tool with the owning Agent', async () => {
@@ -364,6 +390,7 @@ describe('DSH Cordis plugin', () => {
       'core.condition@1',
       'core.end@1',
       'core.foreach@1',
+      'core.script@1',
       'core.start@1',
       'core.subworkflow@1',
       'dsh.agent@1',
@@ -400,10 +427,76 @@ describe('DSH Cordis plugin', () => {
     await plugin.dispose()
     expect(ctx.get('dagWorkflowEngine')).toBeUndefined()
     expect(ctx.get('workflowNodes')).toBeUndefined()
+    expect(ctx.get('workflowCapabilities')).toBeUndefined()
+    expect(ctx.get('workflowScripts')).toBeUndefined()
     expect(ctx.get('workflowTemplates')).toBeUndefined()
     expect(ctx.get('workflowRuns')).toBeUndefined()
     expect(tools.definitions).toEqual(new Map())
     expect(ctx.skills.definitions).toEqual(new Map())
+  })
+
+  it('supports the second extension level with a scoped custom Node capability', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    const plugin = await ctx.plugin(DshWorkflowPlugin)
+    const disposeCapability = ctx.workflowCapabilities.register('acme.jobs.execute', {
+      async execute(value: string) { return `custom:${value}` },
+    })
+    const disposeNode = ctx.workflowNodes.register({
+      type: 'acme.job', version: 1, title: 'Acme job', description: 'Custom lifecycle Node.',
+      configSchema: { type: 'object', additionalProperties: false },
+      inputSchema: {
+        type: 'object', additionalProperties: false, required: ['value'],
+        properties: { value: { type: 'string' } },
+      },
+      outputSchema: {
+        type: 'object', additionalProperties: false, required: ['value'],
+        properties: { value: { type: 'string' } },
+      },
+      outputPorts: ['success'],
+      capabilities: ['acme.jobs.execute'],
+      retry: 'idempotent',
+      async execute(execution) {
+        const jobs = execution.capabilities.require<{ execute(value: string): Promise<string> }>('acme.jobs.execute')
+        return { outputs: { value: await jobs.execute(String(execution.inputs.value)) } }
+      },
+    })
+    const customTemplate: WorkflowTemplate = {
+      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      metadata: { id: 'custom-node-dsh', name: 'Custom Node in DSH' },
+      spec: {
+        requires: [{ kind: 'capability', uses: 'acme.jobs.execute' }],
+        inputSchema: {
+          type: 'object', additionalProperties: false, required: ['value'],
+          properties: { value: { type: 'string' } },
+        },
+        outputSchema: {
+          type: 'object', additionalProperties: false, required: ['value'],
+          properties: { value: { type: 'string' } },
+        },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'custom', uses: 'acme.job@1', with: {}, inputs: { value: { input: 'value' } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'custom', path: ['value'] } } } },
+        ],
+        edges: [
+          { id: 'start-custom', source: 'start', target: 'custom' },
+          { id: 'custom-end', source: 'custom', target: 'end' },
+        ],
+        outputs: { value: { output: { node: 'end', path: ['value'] } } },
+      },
+    }
+
+    const run = ctx.dagWorkflowEngine.start({
+      template: customTemplate,
+      inputs: { value: 'payload' },
+      parent: { session: new StubSession() },
+    })
+    await expect(run.result).resolves.toMatchObject({ status: 'completed', outputs: { value: 'custom:payload' } })
+    await run.dispose()
+    disposeNode()
+    disposeCapability()
+    await plugin.dispose()
   })
 
   it('contains request observer failures without writing Session events', async () => {
@@ -524,7 +617,21 @@ describe('DSH Cordis plugin', () => {
     }
 
     const nodes = await call('workflow_nodes_list', {})
-    expect(nodes).toMatchObject({ nodes: expect.arrayContaining([expect.objectContaining({ uses: 'core.foreach@1' })]) })
+    expect(nodes).toMatchObject({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({ uses: 'core.foreach@1' }),
+        expect.objectContaining({
+          uses: 'core.script@1',
+          defaultConfig: expect.objectContaining({ language: 'dsh.expr@1' }),
+          dependencyKinds: ['script-runtime'],
+          defaultRequirements: expect.arrayContaining([
+            { kind: 'capability', uses: 'workflow.script.execute' },
+            { kind: 'script-runtime', uses: 'dsh.expr@1' },
+          ]),
+        }),
+      ]),
+      scriptRuntimes: [expect.objectContaining({ uses: 'dsh.expr@1', deterministic: true })],
+    })
     const created = await call('workflow_draft_create', { template: authored })
     expect(created).toMatchObject({ id: 'tool-authored', revision: 1 })
     expect(await call('workflow_draft_read', { id: 'tool-authored' })).toEqual(created)
@@ -560,6 +667,11 @@ describe('DSH Cordis plugin', () => {
       ...base,
       spec: {
         ...base.spec,
+        requires: [
+          ...(base.spec.requires ?? []),
+          { kind: 'capability', uses: 'workflow.secrets.resolve' },
+          { kind: 'secret', uses: 'credential:report-api' },
+        ],
         nodes: base.spec.nodes.map(node => node.id === 'echo'
           ? { ...node, inputs: { message: { secret: { ref: 'credential:report-api' } } } }
           : node),

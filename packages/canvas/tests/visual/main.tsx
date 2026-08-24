@@ -47,5 +47,5 @@ const api = {
 createRoot(document.getElementById('root')!).render(<WorkflowStudio api={api} sessionId="visual-session" initialTemplate={template} />)
 
 function node(uses: string, title: string, role: CanvasNodeDefinition['role'], outputPorts: string[]): CanvasNodeDefinition {
-  return { uses, title, role, outputPorts, description: title, configSchema: {}, inputSchema: {}, outputSchema: {}, requiredOutputPorts: [], capabilities: [], retry: 'safe' }
+  return { catalogId: uses, kind: 'node', uses, title, role, outputPorts, description: title, configSchema: {}, inputSchema: {}, outputSchema: {}, requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], retry: 'safe' }
 }

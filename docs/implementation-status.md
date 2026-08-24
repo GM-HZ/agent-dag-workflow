@@ -8,14 +8,17 @@
 | 节点注册与插件卸载 | 完成 | `registry.ts`、compiler lease 测试、Cordis registry service 测试 | 后续只需扩充节点类型 |
 | 编译诊断、DAG、上游 binding、端口、终态路径 | 完成 | `compiler.ts`、compiler/catalog tests，含固定 revision 存在性、依赖环、继承深度校验 | 无 |
 | 内存调度、condition/join/skip、取消、caps | 完成 | `engine.ts`、`engine.spec.ts` | 持久事务与恢复由下一项承接 |
-| `start/end/tool/condition` | 完成 | `nodes.ts` 与核心/DSH 集成测试 | 无 |
-| DSH Cordis `ctx.workflowNodes/ctx.dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、`plugin.spec.ts` | 加入正式 DSH bundle patch |
+| `start/end/tool/condition/script` | 完成 | `nodes.ts`、`expression.ts` 与核心/DSH 集成测试 | 无 |
+| 确定性脚本 runtime SDK | 完成 | `WorkflowScriptRuntimeRegistry`、内置 `dsh.expr@1`、语义诊断、操作预算/取消/安全 key 测试 | 后续按真实需求扩充 builtin，不引入通用 eval |
+| 两级扩展 / Capability manifest / `spec.requires` | 完成 | scope-visible Tool 自动物化为通用 `dsh.tool@1`；自定义 Node registry + scoped `WorkflowCapabilityRegistry`；resource resolver、secret inference、duplicate/undeclared diagnostics | 领域约束留在具体 DSH Tool/自定义 Node，不在 Core 枚举 |
+| 动态结果契约 / `node.expects` | 完成 | 实例 JSON Schema、节点级 byte cap、checkpoint 前校验、下游 binding schema 收窄测试 | Agent 语义 review 复用显式 `dsh.agent@1`，不进入安全边界 |
+| DSH Cordis `ctx.workflowCapabilities/workflowScripts/workflowNodes/dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、Tool 与自定义 Node 两级端到端测试 | 加入正式 DSH bundle patch |
 | 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
 | Run trace 与实时事件 | 完成 | SQLite run/node event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | DSH 开放仓外 Session event 注册前不写自定义 Session event |
 | Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis provider | 无 |
 | Run event store、checkpoint、crash recovery | 完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、ownerRef 与 Host 自动恢复协调器 | 无 |
 | `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
-| Agent CRUD/validate/diff/publish/run tools | 完成 | 8 个 `workflow_*` tools；scope-visible node/tool schemas、CAS、显式 revision run 集成测试 | 无 |
+| Agent CRUD/validate/diff/publish/run tools | 完成 | 8 个 `workflow_*` tools；scope-visible node/tool/script runtime schemas、CAS、显式 revision run 集成测试 | 无 |
 | `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
 | Canvas Host RPC 与 Client overlay | 完成 | `packages/canvas`：12 Remote descriptors、shell overlay、XYFlow、schema form、diagnostics、CAS/diff/publish/run/trace/resume、renderer registry、navigation controller | 无 |
 | 安全/权限/secret/idempotency review | 完成 | Canvas 实时顶层 Agent lookup、多用户附加 authority、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
@@ -48,3 +51,4 @@
 3. 浏览器不传 Agent object；每个 RPC 都先从 Host 实时 registry 解析顶层 Agent，再执行可选的 `authorize(sessionId, agent, action, resourceId)`；多人部署必须提供该策略。
 4. Canvas 只在 `layout.canvas.positions` 写坐标；node/edge/config/binding 始终是同一份 `WorkflowTemplate`。
 5. 真实 Chromium 已验证 1200×744 和 900×700、节点选择、palette 新增与最终 0 console error/warning。
+6. 节点 palette 使用 definition `defaultConfig`，并把 scope-visible DSH Tool 直接映射为 `dsh.tool@1`；脚本 source 使用 multiline editor，保存的仍是同一份 `WorkflowTemplate`。

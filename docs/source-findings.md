@@ -9,6 +9,7 @@
 - 同一 README 明确列出 `No journaling or resume`、`No saved or nested workflows`。因此新系统应补“版本化 DAG + 持久执行”，不应把现有 script seam 改成不兼容的多形请求。
 - [`packages/workflow/tool-workflow/src/types.ts`](../ref_project/deepseek-harness/packages/workflow/tool-workflow/src/types.ts) 用仓内已登记的 Session event 记录 run/member 生命周期；仓外插件目前无法登记自己的 Session event，也无法通过 `Session.append()` 设置 `ignorable`，因此 DAG 使用“完整 run store + 实时 Cordis event”，不污染 owning Session 日志。
 - [`packages/core/tools/src/index.ts`](../ref_project/deepseek-harness/packages/core/tools/src/index.ts) 的 `ctx.tools.execute()` 是 approval、guard、around/post policy、cancellation 与 observer 的执行边界。DAG tool node 直接调用 definition 会绕过安全策略，因此禁止。
+- DSH service `inject` 体现“依赖先声明、由组合器解析”的边界。本项目把该原则扩展到模板：NodeDefinition 声明 capability/resource，`spec.requires` 作为 revision 级 allowlist，运行时再与 owning Agent scope 和 DSH policy 求交集。
 - [`packages/skill/skill/README.md`](../ref_project/deepseek-harness/packages/skill/skill/README.md) 提供 scope-aware provider registry，适合把 workflow builder 做成普通 skill；生成器仍应通过 workflow tools 提交模板，避免 skill 私自实现存储与权限。
 - [`packages/client/modules/src/index.ts`](../ref_project/deepseek-harness/packages/client/modules/src/index.ts)、[`packages/client/ui-slots`](../ref_project/deepseek-harness/packages/client/ui-slots/README.md) 与 [`packages/client/ui-layout/src/client/index.ts`](../ref_project/deepseek-harness/packages/client/ui-layout/src/client/index.ts) 证明 Canvas 可作为独立 Client Cordis 插件加载。`shell.overlay` 是适合全屏 Studio 的 additive seat。
 - [`packages/goal/goal/src/index.ts`](../ref_project/deepseek-harness/packages/goal/goal/src/index.ts) 展示 `TypertRemoteService` 与 `@Remote` 的业务 service 模式，Canvas 的 template/run RPC 可按此实现。
@@ -48,12 +49,14 @@
 - Dify [`api/core/workflow/generator/runner.py`](../ref_project/dify/api/core/workflow/generator/runner.py) 使用 router -> planner -> bounded parallel node builders -> deterministic postprocess -> structural validation。这个拆分非常适合 workflow builder skill。
 - [`api/core/workflow/generator/tool_catalogue.py`](../ref_project/dify/api/core/workflow/generator/tool_catalogue.py) 区分“完整 inventory 用于校验”和“截断/路由后的 catalog 用于 prompt”，避免大量插件挤爆上下文，同时不把 catalog 外的真实工具误报为缺失。
 - [`web/app/components/workflow/workflow-generator/graph-diff.ts`](../ref_project/dify/web/app/components/workflow/workflow-generator/graph-diff.ts) 和 [`apply.ts`](../ref_project/dify/web/app/components/workflow/workflow-generator/apply.ts) 在覆盖 draft 前展示差异，并用 hash 处理并发编辑。DSH draft API 应直接提供 revision/hash compare-and-swap。
+- Dify planner 的 code/template-transform/list-operator/assigner/iteration/loop，以及 Coze 的 code/textprocessor/json/variableassigner，说明成熟 Workflow 需要一层位于“结构化 binding”和“外部 Tool”之间的确定性数据处理面。DSH 采用一个 `core.script@1` adapter + 可插拔纯 runtime registry，先用 `dsh.expr@1` 覆盖高频 JSON 变换，避免复制大量窄节点或开放任意代码执行。
 
 ### 不直接照搬
 
 - Dify draft graph 是 React Flow 序列化结构，runtime 与 Canvas 耦合较深；DSH 模板使用 UI-neutral semantic graph + 独立 layout。
 - Dify generator 对 `{{#node.variable#}}` 做了大量 deterministic repair。DSH 从 v1 使用结构化 binding，减少字符串引用、重命名和生成修复成本。
 - Graphon 是 Python/thread queue 内核；本项目应借鉴状态语义，而不是在 TypeScript DSH 中嵌入 Python engine。
+- Coze Plugin Node 最终统一进入 `ExecuteTool`，Dify 也把 Node registry 与 Tool runtime protocol 分开；因此 DSH 不增加 Tool-backed preset/provider 执行层。普通外部集成全部使用 Tool，只有特殊工作流生命周期才实现自定义 Node。
 
 ## 综合取舍
 
@@ -64,8 +67,12 @@
 | Saved/reusable workflow | 新的 versioned DAG template | DSH gap + Coze/Dify |
 | Canvas/runtime separation | semantic template + separate layout + executable IR | Coze 分层，修正 Coze/Dify UI 耦合 |
 | Variable binding | literal/ref 的结构化 union + field path | Coze |
+| Deterministic data plane | `core.script@1` + versioned pure runtime；内置 bounded `dsh.expr@1` | Dify/Coze 节点族，按 DSH 插件边界重构 |
 | Branch/join | edge unknown/taken/skipped | Graphon |
 | Pause/resume | versioned full runtime checkpoint + host context | Coze + Dify/Graphon |
 | Generation | topology planner + schema-driven node build + deterministic validation | Dify |
 | Tool execution | 始终走 `ctx.tools.execute()` | DSH |
+| External extension model | 两级：通用 DSH Tool + 自定义 Node；Canvas Tool 条目仍物化为 `dsh.tool@1` | Coze Plugin ExecuteTool + Dify Tool runtime/Node registry 分层 |
+| Capability isolation | NodeDefinition declaration + `spec.requires` + scoped Host resolver | DSH inject/policy，扩展为模板协议 |
+| Dynamic result contract | definition schema + node `expects` + optional explicit Agent review | Coze/Dify structured outputs，按可审计 checkpoint 边界重构 |
 | Canvas host bridge | Typert Remote + Client module + `shell.overlay` | DSH |

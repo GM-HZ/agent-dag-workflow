@@ -8,6 +8,7 @@ import type {
   WorkflowEdgeTemplate,
   WorkflowNodeDefinition,
   WorkflowNodeTemplate,
+  WorkflowRequirement,
   WorkflowTemplate,
   JsonSchema,
 } from './types.js'
@@ -20,6 +21,8 @@ export interface CompiledWorkflowNode {
   readonly outgoing: readonly WorkflowEdgeTemplate[]
   readonly validateInputs: (value: unknown) => readonly string[]
   readonly validateOutputs: (value: unknown) => readonly string[]
+  readonly validateExpectation?: (value: unknown) => readonly string[]
+  readonly requirements: readonly WorkflowRequirement[]
 }
 
 export interface CompiledWorkflow {
@@ -29,6 +32,7 @@ export interface CompiledWorkflow {
   readonly order: readonly string[]
   readonly startNodeId: string
   readonly semanticHash: string
+  readonly requirements: readonly WorkflowRequirement[]
   readonly validateWorkflowInputs: (value: unknown) => readonly string[]
   readonly validateWorkflowOutputs: (value: unknown) => readonly string[]
 }
@@ -48,8 +52,20 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
   const diagnostics = structuralDiagnostics(template)
   if (diagnostics.length > 0) return { diagnostics }
 
+  const declaredRequirements = new Map<string, WorkflowRequirement>()
+  for (const [index, requirement] of (template.spec.requires ?? []).entries()) {
+    const key = requirementKey(requirement)
+    if (declaredRequirements.has(key)) {
+      diagnostics.push(diagnostic('DUPLICATE_WORKFLOW_REQUIREMENT', `duplicate workflow requirement: ${key}`, undefined, ['spec', 'requires', index]))
+    } else {
+      declaredRequirements.set(key, requirement)
+    }
+  }
+
   const nodesById = new Map<string, WorkflowNodeTemplate>()
   const definitions = new Map<string, WorkflowNodeDefinition>()
+  const nodeRequirements = new Map<string, readonly WorkflowRequirement[]>()
+  const outputSchemas = new Map<string, JsonSchema>()
   for (const [index, node] of template.spec.nodes.entries()) {
     if (nodesById.has(node.id)) {
       diagnostics.push(diagnostic('DUPLICATE_NODE_ID', `duplicate node id: ${node.id}`, node.id, ['spec', 'nodes', index, 'id']))
@@ -58,18 +74,50 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
     nodesById.set(node.id, node)
     const definition = registry.resolve(node.uses)
     if (definition === undefined) {
-      diagnostics.push(diagnostic('UNKNOWN_NODE_TYPE', `node provider is not registered: ${node.uses}`, node.id, ['spec', 'nodes', index, 'uses']))
+      diagnostics.push(diagnostic('UNKNOWN_NODE_TYPE', `workflow NodeDefinition is not registered: ${node.uses}`, node.id, ['spec', 'nodes', index, 'uses']))
       continue
     }
     definitions.set(node.id, definition)
+    outputSchemas.set(node.id, node.expects?.schema ?? definition.outputSchema)
     if ((node.policy?.retry?.maxAttempts ?? 1) > 1) {
       diagnostics.push(diagnostic('RETRY_UNSUPPORTED', 'v0.1 executes every node at most once; maxAttempts must be 1', node.id, ['spec', 'nodes', index, 'policy', 'retry']))
     }
+    let configValid = false
     try {
       const configErrors = compileJsonValidator(definition.configSchema, `${node.uses} config schema`)(node.with)
       for (const message of configErrors) diagnostics.push(diagnostic('NODE_CONFIG_INVALID', message, node.id, ['spec', 'nodes', index, 'with']))
+      configValid = configErrors.length === 0
     } catch (error: unknown) {
       diagnostics.push(diagnostic('NODE_PROVIDER_SCHEMA_INVALID', renderError(error), node.id))
+    }
+    if (configValid) {
+      try {
+        for (const message of definition.validateConfig?.(node.with) ?? []) {
+          diagnostics.push(diagnostic('NODE_CONFIG_SEMANTIC_INVALID', message, node.id, ['spec', 'nodes', index, 'with']))
+        }
+        const requested = collectNodeRequirements(node, definition)
+        nodeRequirements.set(node.id, requested)
+        for (const requirement of requested) {
+          const key = requirementKey(requirement)
+          if (!declaredRequirements.has(key)) {
+            diagnostics.push(diagnostic(
+              'WORKFLOW_REQUIREMENT_UNDECLARED',
+              `node requires undeclared dependency: ${key}`,
+              node.id,
+              ['spec', 'requires'],
+            ))
+          }
+        }
+      } catch (error: unknown) {
+        diagnostics.push(diagnostic('NODE_PROVIDER_DEPENDENCY_INVALID', renderError(error), node.id, ['spec', 'nodes', index, 'with']))
+      }
+    }
+    if (node.expects !== undefined) {
+      try {
+        compileJsonValidator(node.expects.schema, `${node.uses} expectation schema`)
+      } catch (error: unknown) {
+        diagnostics.push(diagnostic('NODE_EXPECTATION_SCHEMA_INVALID', renderError(error), node.id, ['spec', 'nodes', index, 'expects', 'schema']))
+      }
     }
   }
 
@@ -138,7 +186,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
         node.inputs,
         nodeId,
         nodesById,
-        definitions,
+        outputSchemas,
         ancestors,
         template.spec.inputSchema,
         definitions.get(nodeId)?.inputSchema,
@@ -150,7 +198,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       template.spec.outputs,
       undefined,
       nodesById,
-      definitions,
+      outputSchemas,
       undefined,
       template.spec.inputSchema,
       template.spec.outputSchema,
@@ -189,6 +237,10 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
         outgoing: outgoing.get(nodeId) ?? [],
         validateInputs: compileJsonValidator(definition.inputSchema, `${node.uses} input schema`),
         validateOutputs: compileJsonValidator(definition.outputSchema, `${node.uses} output schema`),
+        ...(node.expects === undefined ? {} : {
+          validateExpectation: compileJsonValidator(node.expects.schema, `${node.uses} expected output schema`),
+        }),
+        requirements: nodeRequirements.get(nodeId) ?? Object.freeze([]),
       })
     } catch (error: unknown) {
       diagnostics.push(diagnostic('NODE_PROVIDER_SCHEMA_INVALID', renderError(error), nodeId))
@@ -205,6 +257,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       order,
       startNodeId,
       semanticHash: materializeWorkflowTemplate(template).semanticHash,
+      requirements: Object.freeze([...declaredRequirements.values()]),
       validateWorkflowInputs,
       validateWorkflowOutputs,
     },
@@ -217,11 +270,42 @@ export function compileWorkflowOrThrow(template: WorkflowTemplate, registry: Wor
   return result.workflow
 }
 
+function collectNodeRequirements(
+  node: WorkflowNodeTemplate,
+  definition: WorkflowNodeDefinition,
+): readonly WorkflowRequirement[] {
+  const requested: WorkflowRequirement[] = [
+    ...definition.capabilities.map(uses => ({ kind: 'capability', uses })),
+    ...(definition.dependencies?.(node.with) ?? []),
+  ]
+  const secrets = Object.values(node.inputs)
+    .filter((binding): binding is Extract<WorkflowBinding, { readonly secret: unknown }> => 'secret' in binding)
+    .map(binding => binding.secret.ref)
+  if (secrets.length > 0) requested.push({ kind: 'capability', uses: 'workflow.secrets.resolve' })
+  for (const ref of secrets) requested.push({ kind: 'secret', uses: ref })
+
+  const unique = new Map<string, WorkflowRequirement>()
+  for (const requirement of requested) {
+    if (!/^[a-z][a-z0-9.-]*$/u.test(requirement.kind) || requirement.uses.length === 0 || requirement.uses.length > 256) {
+      throw new Error(`NodeDefinition returned an invalid workflow requirement: ${JSON.stringify(requirement)}`)
+    }
+    unique.set(requirementKey(requirement), requirement)
+  }
+  return Object.freeze([...unique.values()].map(requirement => Object.freeze({
+    kind: requirement.kind,
+    uses: requirement.uses,
+  })))
+}
+
+function requirementKey(requirement: WorkflowRequirement): string {
+  return `${requirement.kind}:${requirement.uses}`
+}
+
 function validateBindings(
   bindings: Readonly<Record<string, WorkflowBinding>>,
   consumerNodeId: string | undefined,
   nodes: ReadonlyMap<string, WorkflowNodeTemplate>,
-  definitions: ReadonlyMap<string, WorkflowNodeDefinition>,
+  outputSchemas: ReadonlyMap<string, JsonSchema>,
   ancestors: ReadonlyMap<string, ReadonlySet<string>> | undefined,
   workflowInputSchema: JsonSchema,
   targetSchema: JsonSchema | undefined,
@@ -272,7 +356,7 @@ function validateBindings(
       if (consumerNodeId !== undefined && !ancestors?.get(consumerNodeId)?.has(sourceId)) {
         diagnostics.push(diagnostic('BINDING_NOT_UPSTREAM', `binding source ${sourceId} is not a strict upstream node`, consumerNodeId, [...basePath, name]))
       }
-      const resolved = schemaAtPath(definitions.get(sourceId)?.outputSchema, binding.output.path)
+      const resolved = schemaAtPath(outputSchemas.get(sourceId), binding.output.path)
       if (resolved.error !== undefined) {
         diagnostics.push(diagnostic('BINDING_OUTPUT_PATH_INVALID', resolved.error, consumerNodeId, [...basePath, name, 'output', 'path']))
       }

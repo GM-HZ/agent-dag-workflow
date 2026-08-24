@@ -40,6 +40,13 @@ function dependencyTemplate(id: string, dependency?: { readonly id: string; read
     kind: 'WorkflowTemplate',
     metadata: { id, name: id },
     spec: {
+      ...(dependency === undefined ? {} : {
+        requires: [
+          { kind: 'capability' as const, uses: 'workflowTemplates.getPublished' },
+          { kind: 'capability' as const, uses: 'dagWorkflowEngine.invoke' },
+          { kind: 'workflow' as const, uses: `${dependency.id}@${dependency.revision}` },
+        ],
+      }),
       inputSchema: { type: 'object', additionalProperties: false },
       outputSchema: { type: 'object', additionalProperties: false },
       nodes: [

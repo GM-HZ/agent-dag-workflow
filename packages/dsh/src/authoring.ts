@@ -28,7 +28,7 @@ const idProperty = { type: 'string', pattern: '^[a-z][a-z0-9-]*$' } as const
 const revisionProperty = { type: 'integer', minimum: 1 } as const
 
 export class WorkflowAuthoringProvider {
-  static inject = ['tools', 'skills', 'workflowNodes', 'workflowTemplates', 'dagWorkflowEngine']
+  static inject = ['tools', 'skills', 'workflowNodes', 'workflowScripts', 'workflowTemplates', 'dagWorkflowEngine']
 
   constructor(ctx: Context) {
     ctx.effect(() => registerWorkflowAuthoring(ctx), 'dsh-dag-workflow: authoring tools and skill')
@@ -56,19 +56,31 @@ export function registerWorkflowAuthoring(rawContext: Context): () => void {
 
 export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolDefinition[] {
   return [
-    tool('workflow_nodes_list', 'List exact workflow node providers plus DSH tools visible in the calling Agent scope.', {}, async (_args, execution) => ({
+    tool('workflow_nodes_list', 'List exact workflow NodeDefinitions, pure script runtimes, and DSH Tools visible in the calling Agent scope.', {}, async (_args, execution) => ({
       nodes: ctx.workflowNodes.list().map(node => snapshotJsonValue({
         uses: `${node.type}@${node.version}`,
         title: node.title,
         description: node.description,
         role: node.role ?? 'regular',
         configSchema: node.configSchema as JsonValue,
+        ...(node.defaultConfig === undefined ? {} : { defaultConfig: node.defaultConfig }),
         inputSchema: node.inputSchema as JsonValue,
         outputSchema: node.outputSchema as JsonValue,
         outputPorts: node.outputPorts,
         requiredOutputPorts: node.requiredOutputPorts ?? [],
         capabilities: node.capabilities,
+        dependencyKinds: node.dependencyKinds ?? [],
+        defaultRequirements: [
+          ...node.capabilities.map(uses => ({ kind: 'capability', uses })),
+          ...(node.defaultConfig === undefined ? [] : node.dependencies?.(node.defaultConfig) ?? []),
+        ],
         retry: node.retry,
+      })),
+      scriptRuntimes: ctx.workflowScripts.list().map(runtime => snapshotJsonValue({
+        uses: `${runtime.language}@${runtime.version}`,
+        title: runtime.title,
+        description: runtime.description,
+        deterministic: runtime.deterministic,
       })),
       tools: (ctx as AuthoringContext).tools.schemas(execution.agent)
         .filter(schema => !schema.name.startsWith('workflow_'))

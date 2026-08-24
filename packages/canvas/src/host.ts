@@ -1,6 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@gm-hz/dsh-dag-workflow-host'
+import type { DshToolRegistryLike } from '@gm-hz/dsh-dag-workflow-host'
 import {
   snapshotJsonObject,
   snapshotJsonValue,
@@ -40,7 +41,7 @@ declare module '@deepseek-ai/cordis' {
 }
 
 export class WorkflowCanvasGateway extends TypertRemoteService {
-  static inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine', 'agents']
+  static inject = ['tools', 'workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine', 'agents']
 
   constructor(ctx: Context, private readonly config: WorkflowCanvasConfig = {}) {
     super(ctx, 'workflowCanvas')
@@ -48,20 +49,63 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
 
   @Remote
   async nodes(sessionId: string): Promise<readonly CanvasNodeDefinition[]> {
-    await this.guard(sessionId, 'nodes:list')
-    return this.ctx.workflowNodes.list().map(node => ({
+    const principal = await this.guard(sessionId, 'nodes:list')
+    const nodes = this.ctx.workflowNodes.list()
+      .filter(node => `${node.type}@${node.version}` !== 'dsh.tool@1')
+      .map(node => ({
+      catalogId: `${node.type}@${node.version}`,
+      kind: 'node' as const,
       uses: `${node.type}@${node.version}`,
       title: node.title,
       description: node.description,
       role: node.role ?? 'regular',
       configSchema: snapshotJsonObject(node.configSchema),
+      ...(node.defaultConfig === undefined ? {} : { defaultConfig: snapshotJsonObject(node.defaultConfig) }),
       inputSchema: snapshotJsonObject(node.inputSchema),
       outputSchema: snapshotJsonObject(node.outputSchema),
       outputPorts: [...node.outputPorts],
       requiredOutputPorts: [...(node.requiredOutputPorts ?? [])],
       capabilities: [...node.capabilities],
+      dependencyKinds: [...(node.dependencyKinds ?? [])],
+      defaultRequirements: [
+        ...node.capabilities.map(uses => ({ kind: 'capability', uses })),
+        ...(node.defaultConfig === undefined ? [] : node.dependencies?.(node.defaultConfig) ?? []),
+      ],
       retry: node.retry,
     }))
+    const tools = (this.ctx as Context & { readonly tools: DshToolRegistryLike }).tools
+      .schemas(principal.agent)
+      .filter(tool => !tool.name.startsWith('workflow_'))
+      .map(tool => ({
+        catalogId: `tool:${tool.name}`,
+        kind: 'tool' as const,
+        uses: 'dsh.tool@1',
+        toolName: tool.name,
+        title: tool.name,
+        description: tool.description,
+        role: 'regular' as const,
+        configSchema: snapshotJsonObject({
+          type: 'object',
+          additionalProperties: false,
+          required: ['name'],
+          properties: { name: { type: 'string', enum: [tool.name] } },
+        }),
+        defaultConfig: snapshotJsonObject({ name: tool.name }),
+        inputSchema: snapshotJsonObject(tool.parameters),
+        outputSchema: snapshotJsonObject({
+          type: 'object', additionalProperties: false, required: ['result'], properties: { result: {} },
+        }),
+        outputPorts: ['success'],
+        requiredOutputPorts: [],
+        capabilities: ['dsh.tools.execute'],
+        dependencyKinds: ['tool'],
+        defaultRequirements: [
+          { kind: 'capability', uses: 'dsh.tools.execute' },
+          { kind: 'tool', uses: tool.name },
+        ],
+        retry: 'never' as const,
+      }))
+    return [...nodes, ...tools]
   }
 
   @Remote

@@ -107,8 +107,38 @@ describe('workflow canvas Host gateway', () => {
     const ctx = await runtime()
     const agent = { id: 'session-1', session: new Session() }
     ctx.agents.register(agent.id, agent)
+    ctx.tools.register({
+      name: 'dms.query',
+      description: 'Queries DMS through its own authorization policy.',
+      parameters: {
+        type: 'object', additionalProperties: false, required: ['sql'],
+        properties: { sql: { type: 'string' } },
+      },
+      output: { schema: { type: 'array' }, render: () => [] },
+      async execute() { return [] },
+    })
     const defaultPlugin = await ctx.plugin(CanvasPlugin)
     expect((await ctx.workflowCanvas.nodes(agent.id)).map(node => node.uses)).toContain('core.start@1')
+    expect(await ctx.workflowCanvas.nodes(agent.id)).toContainEqual(expect.objectContaining({
+      uses: 'core.script@1',
+      defaultConfig: expect.objectContaining({ language: 'dsh.expr@1' }),
+      dependencyKinds: ['script-runtime'],
+      defaultRequirements: expect.arrayContaining([
+        { kind: 'capability', uses: 'workflow.script.execute' },
+        { kind: 'script-runtime', uses: 'dsh.expr@1' },
+      ]),
+    }))
+    expect(await ctx.workflowCanvas.nodes(agent.id)).toContainEqual(expect.objectContaining({
+      catalogId: 'tool:dms.query',
+      kind: 'tool',
+      uses: 'dsh.tool@1',
+      toolName: 'dms.query',
+      defaultConfig: { name: 'dms.query' },
+      defaultRequirements: [
+        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'tool', uses: 'dms.query' },
+      ],
+    }))
     await defaultPlugin.dispose()
     await ctx.plugin(CanvasPlugin, { authorize: () => undefined })
     await expect(ctx.workflowCanvas.nodes(agent.id)).rejects.toThrow(/access denied/)

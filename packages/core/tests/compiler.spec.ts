@@ -134,6 +134,54 @@ describe('workflow compiler', () => {
       code: 'BINDING_TYPE_MISMATCH', nodeId: 'number',
     }))
   })
+
+  it('runs NodeDefinition semantic config validation during compilation', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    const candidate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: base.spec.nodes.map(node => node.id === 'call'
+          ? { ...node, uses: 'core.script@1', with: { language: 'dsh.expr@1', source: '{ result: input. }' } }
+          : node),
+      },
+    } as WorkflowTemplate
+
+    expect(compileWorkflow(candidate, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'NODE_CONFIG_SEMANTIC_INVALID',
+      nodeId: 'call',
+      message: expect.stringContaining('expected identifier'),
+    }))
+  })
+
+  it('fails closed when a node capability or fixed resource is not declared', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const template = toolWorkflowTemplate()
+    const undeclared = { ...template, spec: { ...template.spec, requires: [] } }
+
+    expect(compileWorkflow(undeclared, registry).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'WORKFLOW_REQUIREMENT_UNDECLARED', nodeId: 'call', message: 'node requires undeclared dependency: capability:dsh.tools.execute' }),
+      expect.objectContaining({ code: 'WORKFLOW_REQUIREMENT_UNDECLARED', nodeId: 'call', message: 'node requires undeclared dependency: tool:echo' }),
+    ]))
+  })
+
+  it('rejects duplicate allowlist entries', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const template = toolWorkflowTemplate()
+    const duplicate = {
+      ...template,
+      spec: { ...template.spec, requires: [...(template.spec.requires ?? []), { kind: 'tool', uses: 'echo' }] },
+    }
+
+    expect(compileWorkflow(duplicate, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'DUPLICATE_WORKFLOW_REQUIREMENT',
+      message: 'duplicate workflow requirement: tool:echo',
+    }))
+  })
 })
 
 function testNode(type: string, inputSchema: Record<string, unknown>, outputSchema: Record<string, unknown>): WorkflowNodeDefinition {

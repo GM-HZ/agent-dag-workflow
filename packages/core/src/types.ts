@@ -9,12 +9,26 @@ export type WorkflowBinding =
   | { readonly output: { readonly node: string; readonly path: readonly (string | number)[] } }
   | { readonly secret: { readonly ref: string } }
 
+/** A dependency declaration is an allowlist entry, never a permission grant. */
+export interface WorkflowRequirement {
+  readonly kind: string
+  readonly uses: string
+}
+
+export interface WorkflowNodeExpectation {
+  /** Validates the complete node output object after the NodeDefinition schema. */
+  readonly schema: JsonSchema
+  /** Optional node-local cap; the workflow-wide output cap still applies. */
+  readonly maxBytes?: number
+}
+
 export interface WorkflowNodeTemplate {
   readonly id: string
   readonly uses: string
   readonly title?: string
   readonly with: JsonObject
   readonly inputs: Readonly<Record<string, WorkflowBinding>>
+  readonly expects?: WorkflowNodeExpectation
   readonly policy?: {
     readonly timeoutMs?: number
     readonly retry?: { readonly maxAttempts: number }
@@ -47,6 +61,7 @@ export interface WorkflowTemplate {
   readonly spec: {
     readonly inputSchema: JsonSchema
     readonly outputSchema: JsonSchema
+    readonly requires?: readonly WorkflowRequirement[]
     readonly nodes: readonly WorkflowNodeTemplate[]
     readonly edges: readonly WorkflowEdgeTemplate[]
     readonly outputs: Readonly<Record<string, WorkflowBinding>>
@@ -163,6 +178,26 @@ export interface WorkflowNodeServices {
   readonly subworkflows?: WorkflowSubworkflowGateway
 }
 
+export type WorkflowCapabilityDisposer = () => void
+
+/** Host-owned capability bindings. Normal external business operations belong in DSH Tools. */
+export interface WorkflowCapabilitySource {
+  resolve<T = unknown>(capability: string): T | undefined
+}
+
+/** A per-node view that can only resolve capabilities declared by its NodeDefinition. */
+export interface WorkflowCapabilityResolver {
+  readonly declared: readonly string[]
+  has(capability: string): boolean
+  optional<T = unknown>(capability: string): T | undefined
+  require<T = unknown>(capability: string): T
+}
+
+export interface WorkflowEngineServices extends WorkflowNodeServices {
+  /** Additive extension seam for custom Nodes; built-in typed gateways remain supported. */
+  readonly capabilities?: WorkflowCapabilitySource
+}
+
 export interface WorkflowNodeExecutionContext {
   readonly runId: string
   readonly nodeId: string
@@ -170,7 +205,12 @@ export interface WorkflowNodeExecutionContext {
   readonly inputs: JsonObject
   readonly config: JsonObject
   readonly signal: AbortSignal
+  /** Generic, fail-closed service projection for custom workflow Nodes. */
+  readonly capabilities: WorkflowCapabilityResolver
+  /** Typed built-in gateway views retained for Tool/Agent/Approval/subworkflow Nodes. */
   readonly services: WorkflowNodeServices
+  /** Exact allowlist entries matched for this node at compile time. */
+  readonly requirements: readonly WorkflowRequirement[]
   readonly depth: number
   readonly subworkflowMaxDepth: number
   readonly progress?: JsonValue
@@ -185,14 +225,44 @@ export interface WorkflowNodeDefinition {
   readonly description: string
   readonly role?: NodeRole
   readonly configSchema: JsonSchema
+  /** Safe authoring seed used by Canvas/Agent builders; it never overrides template config. */
+  readonly defaultConfig?: JsonObject
   readonly inputSchema: JsonSchema
   readonly outputSchema: JsonSchema
   readonly outputPorts: readonly string[]
   readonly requiredOutputPorts?: readonly string[]
   readonly capabilities: readonly string[]
+  /** Resource kinds that authoring clients should expect this definition to declare. */
+  readonly dependencyKinds?: readonly string[]
   readonly retry: NodeRetryMode
   readonly execution?: 'activity' | 'human-wait'
+  /** Optional definition-owned semantic validation performed during workflow compilation. */
+  validateConfig?(config: JsonObject): readonly string[]
+  /** Resolve fixed external resources from validated config. Dynamic names are forbidden. */
+  dependencies?(config: JsonObject): readonly WorkflowRequirement[]
   execute(context: WorkflowNodeExecutionContext): Promise<WorkflowNodeExecutionResult>
+}
+
+export interface WorkflowScriptExecutionRequest {
+  readonly source: string
+  readonly inputs: JsonObject
+  readonly signal: AbortSignal
+  readonly maxOperations: number
+}
+
+/**
+ * Script runtimes are deliberately pure data transforms. Runtimes that need I/O,
+ * credentials, host modules, or ambient authority must register a normal workflow
+ * node or DSH tool instead of using this interface.
+ */
+export interface WorkflowScriptRuntimeDefinition {
+  readonly language: string
+  readonly version: number
+  readonly title: string
+  readonly description: string
+  readonly deterministic: true
+  validate(source: string): readonly string[]
+  execute(request: WorkflowScriptExecutionRequest): Promise<JsonObject>
 }
 
 export type WorkflowNodeStatus =

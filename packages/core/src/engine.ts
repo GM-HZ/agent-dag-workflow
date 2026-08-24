@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { CompiledWorkflow, CompiledWorkflowNode } from './compiler.js'
 import { compileWorkflowOrThrow } from './compiler.js'
+import { createScopedWorkflowCapabilityResolver } from './capabilities.js'
 import { WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 import type { WorkflowNodeRegistry } from './registry.js'
@@ -13,6 +14,7 @@ import type {
   WorkflowEvent,
   WorkflowEventInput,
   WorkflowInvocationRequest,
+  WorkflowEngineServices,
   WorkflowNodeExecutionResult,
   WorkflowNodeServices,
   WorkflowNodeStatus,
@@ -79,11 +81,11 @@ const DEFAULT_POLICIES = {
 
 export class DagWorkflowEngine {
   readonly #registry: WorkflowNodeRegistry
-  readonly #services: WorkflowNodeServices
+  readonly #services: WorkflowEngineServices
   readonly #runStore: WorkflowRunStore | undefined
   readonly #now: () => number
 
-  constructor(registry: WorkflowNodeRegistry, services: WorkflowNodeServices = {}, options: DagWorkflowEngineOptions = {}) {
+  constructor(registry: WorkflowNodeRegistry, services: WorkflowEngineServices = {}, options: DagWorkflowEngineOptions = {}) {
     this.#registry = registry
     this.#services = services
     this.#runStore = options.runStore
@@ -609,7 +611,13 @@ export class DagWorkflowEngine {
         inputs,
         config: node.template.with,
         signal: timeoutSignal,
-        services: this.#services,
+        capabilities: createScopedWorkflowCapabilityResolver(
+          this.#services.capabilities,
+          node.definition.capabilities,
+          node.template.id,
+        ),
+        services: scopeNodeServices(this.#services, node.definition.capabilities),
+        requirements: node.requirements,
         depth: state.depth,
         subworkflowMaxDepth,
         ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
@@ -626,17 +634,35 @@ export class DagWorkflowEngine {
       }
       const outputErrors = node.validateOutputs(outputs)
       if (outputErrors.length > 0) throw new WorkflowExecutionError('NODE_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
+      const expectationErrors = node.validateExpectation?.(outputs) ?? []
+      if (expectationErrors.length > 0) {
+        throw new WorkflowExecutionError('NODE_OUTPUT_EXPECTATION_FAILED', expectationErrors.join('; '), { nodeId: node.template.id })
+      }
       const selected = result.selectedPorts ?? ['success']
       if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
         throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
       }
-      assertOutputSize(outputs, maxOutputBytes, `node ${node.template.id} output`)
+      assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `node ${node.template.id} output`)
       return { nodeId: node.template.id, ok: true, result }
     } catch (error: unknown) {
       if (error instanceof WorkflowCommitFailure) throw error.original
       return { nodeId: node.template.id, ok: false, error }
     }
   }
+}
+
+function scopeNodeServices(services: WorkflowNodeServices, capabilities: readonly string[]): WorkflowNodeServices {
+  const allowed = new Set(capabilities)
+  return Object.freeze({
+    ...(allowed.has('dsh.tools.execute') && services.tools !== undefined ? { tools: services.tools } : {}),
+    ...(allowed.has('dsh.subagents.start') && services.agents !== undefined ? { agents: services.agents } : {}),
+    ...(allowed.has('dsh.approval.request') && services.approvals !== undefined ? { approvals: services.approvals } : {}),
+    ...(allowed.has('workflowTemplates.getPublished')
+      && allowed.has('dagWorkflowEngine.invoke')
+      && services.subworkflows !== undefined
+      ? { subworkflows: services.subworkflows }
+      : {}),
+  })
 }
 
 function createInitialState(workflow: CompiledWorkflow, depth: number, subworkflowDepthLimit: number, invocationId?: string): RuntimeState {

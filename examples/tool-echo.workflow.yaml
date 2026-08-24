@@ -5,6 +5,9 @@ metadata:
   name: Tool echo
   description: Minimal workflow supported by the v0.1 runtime.
 spec:
+  requires:
+    - { kind: capability, uses: dsh.tools.execute }
+    - { kind: tool, uses: echo }
   inputSchema:
     type: object
     additionalProperties: false

@@ -39,6 +39,7 @@ import {
   moveNode,
   removeEdge,
   removeNode,
+  findNodeDefinition,
   templateToFlow,
   type WorkflowFlowNode,
 } from './model.js'
@@ -259,7 +260,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
       <SectionLabel index="02" text="NODE CATALOG" />
       <div className="wf-node-list">
         {definitions.map((definition, index) => <button
-          key={definition.uses}
+          key={definition.catalogId}
           className="wf-palette-node"
           onClick={() => mutate(addNode(template, definition, { x: 140 + index % 2 * 280, y: 100 + index * 36 }))}
         >
@@ -268,13 +269,13 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
           <small>{definition.uses}</small>
         </button>)}
       </div>
-      <div className="wf-palette-foot"><span>{definitions.length} PROVIDERS</span><span>V1α1</span></div>
+      <div className="wf-palette-foot"><span>{definitions.length} TOOLS + NODES</span><span>V1α1</span></div>
     </aside>
 
     <main className="wf-canvas">
       <div className="wf-coordinate">GRAPH / {template.spec.nodes.length}N · {template.spec.edges.length}E</div>
       {definitions.length === 0
-        ? <div className="wf-canvas-loading">INDEXING NODE PROVIDERS…</div>
+        ? <div className="wf-canvas-loading">INDEXING TOOLS + NODES…</div>
         : <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -305,7 +306,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
       {rightPanel === 'inspector'
         ? selected === undefined
           ? <WorkflowInspector template={template} onChange={mutate} />
-          : <NodeInspector node={selected} definition={definitions.find(item => item.uses === selected.uses)} onChange={updateSelected} onDelete={() => {
+          : <NodeInspector node={selected} definition={findNodeDefinition(definitions, selected)} onChange={updateSelected} onDelete={() => {
               mutate(removeNode(template, selected.id)); setSelectedNode(undefined)
             }} />
         : rightPanel === 'diagnostics'
@@ -373,6 +374,10 @@ function WorkflowInspector({ template, onChange }: { readonly template: CanvasWo
       metadata: { ...template.metadata, description: event.target.value },
     })} /></label>
     <JsonEditor label="INPUT SCHEMA" value={template.spec.inputSchema} onChange={value => onChange({ ...template, spec: { ...template.spec, inputSchema: value } })} />
+    <RequirementsEditor value={template.spec.requires ?? []} onChange={value => onChange({
+      ...template,
+      spec: { ...template.spec, requires: value },
+    })} />
     <JsonEditor label="OUTPUTS" value={template.spec.outputs as unknown as CanvasJsonObject} onChange={value => onChange({
       ...template,
       spec: { ...template.spec, outputs: value as unknown as CanvasWorkflowTemplate['spec']['outputs'] },
@@ -397,6 +402,12 @@ function NodeInspector({ node, definition, onChange, onDelete }: {
       ...node,
       inputs: value as unknown as CanvasWorkflowNode['inputs'],
     })} />
+    <JsonEditor label="EXPECTED OUTPUT" value={(node.expects ?? {}) as unknown as CanvasJsonObject} onChange={value => {
+      const { expects: _expects, ...withoutExpectation } = node
+      onChange(Object.keys(value).length === 0
+        ? withoutExpectation
+        : { ...withoutExpectation, expects: value as unknown as NonNullable<CanvasWorkflowNode['expects']> })
+    }} />
     <button className="wf-danger" onClick={onDelete}>REMOVE NODE</button>
   </div>
 }
@@ -419,6 +430,12 @@ function SchemaObjectEditor({ schema, value, onChange }: {
         ? <select value={typeof current === 'string' ? current : ''} onChange={event => onChange({ ...value, [name]: event.target.value })}>
             <option value="">—</option>{choices.map(choice => <option key={choice} value={choice}>{choice}</option>)}
           </select>
+        : property['x-dsh-editor'] === 'multiline'
+          ? <textarea
+              value={typeof current === 'string' ? current : ''}
+              placeholder={typeof property.description === 'string' ? property.description : 'expression'}
+              onChange={event => onChange({ ...value, [name]: event.target.value })}
+            />
         : type === 'boolean'
           ? <input type="checkbox" checked={current === true} onChange={event => onChange({ ...value, [name]: event.target.checked })} />
           : <input
@@ -449,6 +466,26 @@ function JsonEditor({ label, value, onChange }: { readonly label: string; readon
   }} /></label>
 }
 
+function RequirementsEditor({ value, onChange }: {
+  readonly value: NonNullable<CanvasWorkflowTemplate['spec']['requires']>
+  readonly onChange: (value: NonNullable<CanvasWorkflowTemplate['spec']['requires']>) => void
+}) {
+  const serialized = JSON.stringify(value, null, 2)
+  const [text, setText] = useState(serialized)
+  const [invalid, setInvalid] = useState(false)
+  useEffect(() => { setText(serialized); setInvalid(false) }, [serialized])
+  return <label data-invalid={invalid}>REQUIRES / ALLOWLIST<textarea value={text} onChange={event => setText(event.target.value)} onBlur={() => {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      if (!Array.isArray(parsed) || parsed.some(item => !isObject(item) || typeof item.kind !== 'string' || typeof item.uses !== 'string')) {
+        throw new Error('requirement array required')
+      }
+      setInvalid(false)
+      onChange(parsed as unknown as NonNullable<CanvasWorkflowTemplate['spec']['requires']>)
+    } catch { setInvalid(true) }
+  }} /></label>
+}
+
 function Diagnostics({ diagnostics, onSelect }: { readonly diagnostics: readonly CanvasWorkflowDiagnostic[]; readonly onSelect: (id: string) => void }) {
   if (diagnostics.length === 0) return <div className="wf-panel-empty"><b>NO DIAGNOSTICS</b><span>Run CHECK to compile the current graph.</span></div>
   return <div className="wf-diagnostics">{diagnostics.map((item, index) => <button key={`${item.code}-${index}`} data-severity={item.severity} onClick={() => { if (item.nodeId !== undefined) onSelect(item.nodeId) }}>
@@ -473,11 +510,13 @@ function Flag({ on, text }: { readonly on: boolean; readonly text: string }) { r
 function SectionLabel({ index, text }: { readonly index: string; readonly text: string }) { return <h4 className="wf-section-label"><span>{index}</span>{text}</h4> }
 
 function nodeGlyph(definition?: CanvasNodeDefinition): string {
+  if (definition?.kind === 'tool') return 'T'
   if (definition?.role === 'start') return '▷'
   if (definition?.role === 'end') return '■'
   if (definition?.uses.includes('agent')) return 'A'
   if (definition?.uses.includes('condition')) return '◇'
   if (definition?.uses.includes('foreach')) return '∞'
+  if (definition?.uses.includes('script')) return 'ƒ'
   if (definition?.uses.includes('approval')) return '⌁'
   return '＋'
 }

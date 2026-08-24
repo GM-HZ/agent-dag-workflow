@@ -16,6 +16,7 @@ export interface CanvasWorkflowNode {
   readonly title?: string
   readonly with: CanvasJsonObject
   readonly inputs: Readonly<Record<string, CanvasWorkflowBinding>>
+  readonly expects?: { readonly schema: CanvasJsonObject; readonly maxBytes?: number }
   readonly policy?: { readonly timeoutMs?: number; readonly retry?: { readonly maxAttempts: number } }
 }
 
@@ -33,6 +34,7 @@ export interface CanvasWorkflowTemplate {
   readonly spec: {
     readonly inputSchema: CanvasJsonObject
     readonly outputSchema: CanvasJsonObject
+    readonly requires?: readonly CanvasWorkflowRequirement[]
     readonly nodes: readonly CanvasWorkflowNode[]
     readonly edges: readonly CanvasWorkflowEdge[]
     readonly outputs: Readonly<Record<string, CanvasWorkflowBinding>>
@@ -45,6 +47,11 @@ export interface CanvasWorkflowTemplate {
     }
   }
   readonly layout?: CanvasJsonObject
+}
+
+export interface CanvasWorkflowRequirement {
+  readonly kind: string
+  readonly uses: string
 }
 
 export type WorkflowCanvasAction =
@@ -70,16 +77,23 @@ export interface WorkflowCanvasConfig {
 }
 
 export interface CanvasNodeDefinition {
+  /** Unique palette identity; Tool entries share dsh.tool@1 but have distinct catalog ids. */
+  readonly catalogId: string
+  readonly kind: 'tool' | 'node'
   readonly uses: string
+  readonly toolName?: string
   readonly title: string
   readonly description: string
   readonly role: 'start' | 'end' | 'regular'
   readonly configSchema: CanvasJsonObject
+  readonly defaultConfig?: CanvasJsonObject
   readonly inputSchema: CanvasJsonObject
   readonly outputSchema: CanvasJsonObject
   readonly outputPorts: readonly string[]
   readonly requiredOutputPorts: readonly string[]
   readonly capabilities: readonly string[]
+  readonly dependencyKinds: readonly string[]
+  readonly defaultRequirements: readonly CanvasWorkflowRequirement[]
   readonly retry: 'never' | 'safe' | 'idempotent'
 }
 

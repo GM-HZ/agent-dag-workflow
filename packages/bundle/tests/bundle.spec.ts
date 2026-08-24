@@ -87,6 +87,21 @@ describe('installable DSH bundle', () => {
     try {
       const first = await host()
       const firstPlugin = await first.plugin(Bundle, { databasePath })
+      const disposeCapability = first.workflowCapabilities.register('acme.bundle.lifecycle', { durable: true })
+      expect(first.workflowCapabilities.resolve('acme.bundle.lifecycle')).toEqual({ durable: true })
+      const disposeRules = first.workflowScripts.register({
+        language: 'acme.rules',
+        version: 1,
+        title: 'Acme rules',
+        description: 'Bundle registry wiring check.',
+        deterministic: true,
+        validate: source => source === 'accept' ? [] : ['unknown rule'],
+        async execute() { return { accepted: true } },
+      })
+      expect(first.workflowNodes.resolve('core.script@1')?.validateConfig?.({
+        language: 'acme.rules@1',
+        source: 'accept',
+      })).toEqual([])
       const draft = first.workflowTemplates.createDraft(template())
       const run = first.dagWorkflowEngine.start({
         template: draft.template,
@@ -95,6 +110,8 @@ describe('installable DSH bundle', () => {
       })
       expect(await run.result).toMatchObject({ status: 'completed', outputs: { value: 'persisted' } })
       await run.dispose()
+      disposeRules()
+      disposeCapability()
       await firstPlugin.dispose()
 
       const second = await host()

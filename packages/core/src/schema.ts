@@ -49,6 +49,16 @@ const bindingSchema = {
   ],
 } as const
 
+const requirementSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['kind', 'uses'],
+  properties: {
+    kind: { type: 'string', pattern: '^[a-z][a-z0-9.-]*$' },
+    uses: { type: 'string', minLength: 1, maxLength: 256 },
+  },
+} as const
+
 export const WORKFLOW_TEMPLATE_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -73,6 +83,7 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
       properties: {
         inputSchema: { type: 'object' },
         outputSchema: { type: 'object' },
+        requires: { type: 'array', items: requirementSchema },
         nodes: {
           type: 'array',
           minItems: 2,
@@ -86,6 +97,15 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
               title: { type: 'string', minLength: 1 },
               with: { type: 'object' },
               inputs: { type: 'object', additionalProperties: bindingSchema },
+              expects: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['schema'],
+                properties: {
+                  schema: { type: 'object' },
+                  maxBytes: { type: 'integer', minimum: 1 },
+                },
+              },
               policy: {
                 type: 'object',
                 additionalProperties: false,

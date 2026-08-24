@@ -4,6 +4,7 @@ import type {
   WorkflowNodeDefinition,
 } from './types.js'
 import type { WorkflowNodeDisposer, WorkflowNodeRegistry } from './registry.js'
+import { createDefaultWorkflowScriptRuntimeRegistry, type WorkflowScriptRuntimeRegistry } from './script-runtime.js'
 import { WorkflowExecutionError } from './errors.js'
 import { stableJsonStringify } from './json.js'
 
@@ -56,6 +57,7 @@ export const conditionNodeDefinition: WorkflowNodeDefinition = {
       operator: { enum: ['truthy', 'falsy', 'eq', 'neq', 'gt', 'gte', 'lt', 'lte'] },
     },
   },
+  defaultConfig: { operator: 'truthy' },
   inputSchema: {
     type: 'object',
     additionalProperties: false,
@@ -80,6 +82,79 @@ export const conditionNodeDefinition: WorkflowNodeDefinition = {
   },
 }
 
+const defaultScriptRuntimes = createDefaultWorkflowScriptRuntimeRegistry()
+
+export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegistry): WorkflowNodeDefinition {
+  return {
+    type: 'core.script',
+    version: 1,
+    title: 'Deterministic script',
+    description: 'Transforms JSON with a bounded, plugin-provided deterministic script runtime; I/O must use DSH tools.',
+    configSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['language', 'source'],
+      properties: {
+        language: { type: 'string', pattern: '^[a-z][a-z0-9.-]*@[1-9][0-9]*$' },
+        source: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 32768,
+          'x-dsh-editor': 'multiline',
+          description: 'A pure expression that must return one JSON object. The input object is available as `input`.',
+        },
+        maxOperations: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 100000,
+          description: 'Maximum parser/evaluator operations for one node execution.',
+        },
+      },
+    },
+    defaultConfig: {
+      language: 'dsh.expr@1',
+      source: '{ result: input }',
+      maxOperations: 10000,
+    },
+    inputSchema: objectSchema,
+    outputSchema: objectSchema,
+    outputPorts: ['success'],
+    capabilities: ['workflow.script.execute'],
+    dependencyKinds: ['script-runtime'],
+    retry: 'safe',
+    dependencies(config) {
+      return typeof config.language === 'string' ? [{ kind: 'script-runtime', uses: config.language }] : []
+    },
+    validateConfig(config) {
+      const language = config.language
+      const source = config.source
+      if (typeof language !== 'string' || typeof source !== 'string') return []
+      const runtime = runtimes.resolve(language)
+      if (runtime === undefined) return [`script runtime is not registered: ${language}`]
+      return runtime.validate(source)
+    },
+    async execute(context) {
+      const language = stringConfig(context.config, 'language', context.nodeId)
+      const source = stringConfig(context.config, 'source', context.nodeId)
+      const maxOperations = optionalIntegerConfig(context.config, 'maxOperations', context.nodeId) ?? 10000
+      const runtime = runtimes.resolve(language)
+      if (runtime === undefined) {
+        throw new WorkflowExecutionError('SCRIPT_RUNTIME_MISSING', `script runtime is not registered: ${language}`, { nodeId: context.nodeId })
+      }
+      return {
+        outputs: await runtime.execute({
+          source,
+          inputs: context.inputs,
+          signal: context.signal,
+          maxOperations,
+        }),
+      }
+    },
+  }
+}
+
+export const scriptNodeDefinition = createScriptNodeDefinition(defaultScriptRuntimes)
+
 export const toolNodeDefinition: WorkflowNodeDefinition = {
   type: 'dsh.tool',
   version: 1,
@@ -100,7 +175,11 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['success'],
   capabilities: ['dsh.tools.execute'],
+  dependencyKinds: ['tool'],
   retry: 'never',
+  dependencies(config) {
+    return typeof config.name === 'string' ? [{ kind: 'tool', uses: config.name }] : []
+  },
   async execute(context) {
     const tools = context.services.tools
     if (tools === undefined) {
@@ -150,7 +229,11 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['success'],
   capabilities: ['dsh.subagents.start'],
+  dependencyKinds: ['agent-provider'],
   retry: 'never',
+  dependencies(config) {
+    return typeof config.provider === 'string' ? [{ kind: 'agent-provider', uses: config.provider }] : []
+  },
   async execute(context) {
     const agents = context.services.agents
     if (agents === undefined) {
@@ -213,8 +296,12 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   outputPorts: ['approved', 'rejected'],
   requiredOutputPorts: ['approved', 'rejected'],
   capabilities: ['dsh.approval.request'],
+  dependencyKinds: ['approval-action'],
   retry: 'safe',
   execution: 'human-wait',
+  dependencies(config) {
+    return typeof config.action === 'string' ? [{ kind: 'approval-action', uses: config.action }] : []
+  },
   async execute(context) {
     const approvals = context.services.approvals
     if (approvals === undefined) {
@@ -261,7 +348,11 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['success'],
   capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  dependencyKinds: ['workflow'],
   retry: 'safe',
+  dependencies(config) {
+    return subworkflowDependency(config)
+  },
   async execute(context) {
     const subworkflows = requireSubworkflows(context.services.subworkflows, context.nodeId)
     const target = subworkflowTarget(context.config, context.nodeId)
@@ -322,7 +413,11 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['success'],
   capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  dependencyKinds: ['workflow'],
   retry: 'safe',
+  dependencies(config) {
+    return subworkflowDependency(config)
+  },
   async execute(context) {
     const subworkflows = requireSubworkflows(context.services.subworkflows, context.nodeId)
     const target = subworkflowTarget(context.config, context.nodeId)
@@ -389,11 +484,15 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
   },
 }
 
-export function registerCoreNodes(registry: WorkflowNodeRegistry): WorkflowNodeDisposer {
+export function registerCoreNodes(
+  registry: WorkflowNodeRegistry,
+  options: { readonly scriptRuntimes?: WorkflowScriptRuntimeRegistry } = {},
+): WorkflowNodeDisposer {
   const disposers = [
     registry.register(startNodeDefinition),
     registry.register(endNodeDefinition),
     registry.register(conditionNodeDefinition),
+    registry.register(options.scriptRuntimes === undefined ? scriptNodeDefinition : createScriptNodeDefinition(options.scriptRuntimes)),
     registry.register(toolNodeDefinition),
     registry.register(agentNodeDefinition),
     registry.register(humanApprovalNodeDefinition),
@@ -454,6 +553,14 @@ function subworkflowTarget(config: JsonObject, nodeId: string): { readonly templ
   const revision = optionalIntegerConfig(config, 'revision', nodeId)
   if (revision === undefined || revision < 1) throw new WorkflowExecutionError('SUBWORKFLOW_CONFIG', 'revision must be a positive safe integer', { nodeId })
   return { templateId, revision }
+}
+
+function subworkflowDependency(config: JsonObject): readonly import('./types.js').WorkflowRequirement[] {
+  const templateId = config.templateId
+  const revision = config.revision
+  return typeof templateId === 'string' && typeof revision === 'number' && Number.isSafeInteger(revision) && revision > 0
+    ? [{ kind: 'workflow', uses: `${templateId}@${revision}` }]
+    : []
 }
 
 function nextSubworkflowDepth(depth: number, maxDepth: number, nodeId: string): number {

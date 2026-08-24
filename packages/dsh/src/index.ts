@@ -4,7 +4,9 @@ import {
   InMemoryWorkflowRunsProvider,
   InMemoryWorkflowTemplatesProvider,
   WorkflowRecoveryCoordinatorProvider,
+  WorkflowCapabilityRegistryService,
   WorkflowNodeRegistryService,
+  WorkflowScriptRuntimeRegistryService,
 } from './services.js'
 import type { DshWorkflowPluginConfig } from './types.js'
 import { WorkflowAuthoringProvider } from './authoring.js'
@@ -13,6 +15,8 @@ export const name = 'dsh-dag-workflow'
 export const inject = ['tools', 'subagents', 'approval', 'skills']
 
 export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}): Promise<void> {
+  if (ctx.get('workflowCapabilities') === undefined) await ctx.plugin(WorkflowCapabilityRegistryService)
+  if (ctx.get('workflowScripts') === undefined) await ctx.plugin(WorkflowScriptRuntimeRegistryService)
   if (ctx.get('workflowNodes') === undefined) await ctx.plugin(WorkflowNodeRegistryService)
 
   if ((config.catalog ?? 'memory') === 'memory') {
@@ -38,8 +42,10 @@ export {
   InMemoryWorkflowRunsProvider,
   InMemoryWorkflowTemplatesProvider,
   WorkflowRecoveryCoordinatorProvider,
+  WorkflowCapabilityRegistryService,
   RepositoryWorkflowTemplatesProvider,
   WorkflowNodeRegistryService,
+  WorkflowScriptRuntimeRegistryService,
   WorkflowRunsService,
   WorkflowTemplatesService,
 } from './services.js'

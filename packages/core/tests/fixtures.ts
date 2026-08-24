@@ -6,6 +6,10 @@ export function toolWorkflowTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'tool-flow', name: 'Tool flow' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'tool', uses: 'echo' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,
@@ -50,6 +54,11 @@ export function branchingWorkflowTemplate(): WorkflowTemplate {
     kind: 'WorkflowTemplate',
     metadata: { id: 'branch-flow', name: 'Branch flow' },
     spec: {
+      requires: [
+        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'tool', uses: 'enabled-tool' },
+        { kind: 'tool', uses: 'disabled-tool' },
+      ],
       inputSchema: {
         type: 'object',
         additionalProperties: false,

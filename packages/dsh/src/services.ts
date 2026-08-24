@@ -2,15 +2,21 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import {
   DagWorkflowEngine as CoreDagWorkflowEngine,
   InMemoryWorkflowRunStore,
+  WorkflowCapabilityRegistry,
   WorkflowExecutionError,
   WorkflowPauseError,
   WorkflowNodeRegistry,
+  WorkflowScriptRuntimeRegistry,
+  dshExpressionRuntime,
   registerCoreNodes,
   snapshotJsonValue,
   stableJsonStringify,
   type WorkflowEvent,
+  type WorkflowCapabilityDisposer,
   type WorkflowNodeDefinition,
   type WorkflowNodeDisposer,
+  type WorkflowScriptRuntimeDefinition,
+  type WorkflowScriptRuntimeDisposer,
   type WorkflowRun,
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
@@ -39,6 +45,8 @@ import type {
 declare module '@deepseek-ai/cordis' {
   interface Context {
     workflowNodes: WorkflowNodeRegistryService
+    workflowCapabilities: WorkflowCapabilityRegistryService
+    workflowScripts: WorkflowScriptRuntimeRegistryService
     workflowTemplates: WorkflowTemplatesService
     workflowRuns: WorkflowRunsService
     dagWorkflowEngine: DagWorkflowEngineService
@@ -49,6 +57,47 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
+export class WorkflowCapabilityRegistryService extends Service {
+  readonly registry = new WorkflowCapabilityRegistry()
+
+  constructor(ctx: Context) {
+    super(ctx, 'workflowCapabilities')
+  }
+
+  register<T>(capability: string, service: T): WorkflowCapabilityDisposer {
+    return this.registry.register(capability, service)
+  }
+
+  resolve<T = unknown>(capability: string): T | undefined {
+    return this.registry.resolve<T>(capability)
+  }
+
+  list(): readonly string[] {
+    return this.registry.list()
+  }
+}
+
+export class WorkflowScriptRuntimeRegistryService extends Service {
+  readonly registry = new WorkflowScriptRuntimeRegistry()
+
+  constructor(ctx: Context) {
+    super(ctx, 'workflowScripts')
+    ctx.effect(() => this.registry.register(dshExpressionRuntime), 'dsh-dag-workflow: dsh.expr runtime')
+  }
+
+  register(definition: WorkflowScriptRuntimeDefinition): WorkflowScriptRuntimeDisposer {
+    return this.registry.register(definition)
+  }
+
+  resolve(uses: string): WorkflowScriptRuntimeDefinition | undefined {
+    return this.registry.resolve(uses)
+  }
+
+  list(): readonly WorkflowScriptRuntimeDefinition[] {
+    return this.registry.list()
+  }
+}
+
 type DshRuntimeContext = Context & {
   readonly tools: DshToolRuntimeLike
   readonly subagents: DshSubagentRuntimeLike
@@ -56,11 +105,15 @@ type DshRuntimeContext = Context & {
 }
 
 export class WorkflowNodeRegistryService extends Service {
+  static inject = ['workflowScripts']
+
   readonly registry = new WorkflowNodeRegistry()
 
   constructor(ctx: Context) {
     super(ctx, 'workflowNodes')
-    ctx.effect(() => registerCoreNodes(this.registry), 'dsh-dag-workflow: core nodes')
+    ctx.effect(() => registerCoreNodes(this.registry, {
+      scriptRuntimes: ctx.workflowScripts.registry,
+    }), 'dsh-dag-workflow: core nodes')
   }
 
   register(definition: WorkflowNodeDefinition): WorkflowNodeDisposer {
@@ -151,7 +204,7 @@ export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplat
 }
 
 export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
-  static inject = ['tools', 'subagents', 'approval', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
+  static inject = ['tools', 'subagents', 'approval', 'workflowCapabilities', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Map<string, WorkflowRun>()
@@ -161,6 +214,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
     const tools = runtime.tools
     let engine: CoreDagWorkflowEngine
     engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
+      capabilities: ctx.workflowCapabilities.registry,
       ...(config.resolveSecret === undefined ? {} : {
         secrets: {
           resolve: async (ref, context) => {
