@@ -13,8 +13,6 @@ import {
 export interface Config {
   /** SQLite file path. The DSH bundle patch supplies a durable path under DSH_HOME. */
   readonly databasePath?: string
-  /** Mirror compact run/node events into the owning DSH Session. */
-  readonly recordSessionEvents?: boolean
 }
 
 export const name = 'gm-hz-dsh-dag-workflow'
@@ -37,7 +35,6 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   await ctx.plugin(DagWorkflow, {
     catalog: 'external',
     runStore: 'external',
-    ...(config.recordSessionEvents === undefined ? {} : { recordSessionEvents: config.recordSessionEvents }),
   })
 }
 

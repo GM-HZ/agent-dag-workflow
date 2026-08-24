@@ -44,7 +44,7 @@ flowchart TB
     DshTools["ctx.tools"]
     Subagents["ctx.subagents"]
     Approval["interaction / approval"]
-    Sessions["session event log"]
+    Sessions["owning Agent / session authority"]
     Remote["Typert Remote"]
     Slots["client modules / UI slots"]
   end

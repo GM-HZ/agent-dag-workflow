@@ -5,7 +5,6 @@ import {
   WorkflowExecutionError,
   WorkflowPauseError,
   WorkflowNodeRegistry,
-  compileWorkflowOrThrow,
   registerCoreNodes,
   snapshotJsonValue,
   stableJsonStringify,
@@ -28,11 +27,6 @@ import {
 } from '@gm-hz/dsh-dag-workflow-catalog'
 import type { WorkflowDiagnostic, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import type {
-  DagWorkflowNodeEndData,
-  DagWorkflowNodeStartData,
-  DagWorkflowNodeWaitData,
-  DagWorkflowRunEndData,
-  DagWorkflowRunStartData,
   DshAgentLike,
   DshDagWorkflowResumeRequest,
   DshDagWorkflowStartRequest,
@@ -161,13 +155,10 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Map<string, WorkflowRun>()
-  private readonly recordSessionEvents: boolean
-
   constructor(ctx: Context, private readonly config: DshWorkflowPluginConfig = {}) {
     super(ctx)
     const runtime = ctx as DshRuntimeContext
     const tools = runtime.tools
-    this.recordSessionEvents = config.recordSessionEvents ?? true
     let engine: CoreDagWorkflowEngine
     engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
       ...(config.resolveSecret === undefined ? {} : {
@@ -276,8 +267,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
           if (published.revision !== request.revision) {
             throw new WorkflowExecutionError('SUBWORKFLOW_REVISION_MISMATCH', `expected ${request.templateId}@${request.revision}, received revision ${published.revision}`, { nodeId: request.nodeId })
           }
-          const compiled = compileWorkflowOrThrow(published.template, ctx.workflowNodes.registry)
-          const observe = createRunObserver(ctx, request.owner, published.id, compiled.semanticHash, this.recordSessionEvents)
+          const observe = createRunObserver(ctx, request.owner)
           const childOwnerRef = ownerReference(config, request.owner)
           const child = engine.invoke({
             invocationId: request.invocationId,
@@ -332,8 +322,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
   start(request: DshDagWorkflowStartRequest): WorkflowRun {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
-    const compiled = compileWorkflowOrThrow(request.template, this.ctx.workflowNodes.registry)
-    const observe = createRunObserver(this.ctx, parent, request.template.metadata.id, compiled.semanticHash, this.recordSessionEvents, request.onEvent)
+    const observe = createRunObserver(this.ctx, parent, request.onEvent)
     const ownerRef = ownerReference(this.config, parent)
     const run = this.engine.start({
       template: request.template,
@@ -354,7 +343,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
     const record = this.ctx.workflowRuns.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
     if (this.active.has(request.runId)) throw new WorkflowExecutionError('RUN_ACTIVE', `workflow run is already active: ${request.runId}`)
-    const observe = createRunObserver(this.ctx, parent, record.template.metadata.id, record.semanticHash, this.recordSessionEvents, request.onEvent)
+    const observe = createRunObserver(this.ctx, parent, request.onEvent)
     const run = this.engine.resume({
       runId: request.runId,
       owner: parent,
@@ -425,104 +414,12 @@ export async function recoverPersistedWorkflowRuns(
   return started
 }
 
-function appendSessionSummary(
-  parent: DshAgentLike,
-  event: WorkflowEvent,
-  templateId: string,
-  semanticHash: string,
-): void {
-  switch (event.type) {
-    case 'run.started': {
-      const data: DagWorkflowRunStartData = { runId: event.runId, templateId, semanticHash }
-      parent.session.append('dsh-dag-workflow/run-start', data)
-      return
-    }
-    case 'run.resumed':
-      parent.session.append('dsh-dag-workflow/run-resume', { runId: event.runId })
-      return
-    case 'node.started': {
-      const data: DagWorkflowNodeStartData = { runId: event.runId, nodeId: event.nodeId }
-      parent.session.append('dsh-dag-workflow/node-start', data)
-      return
-    }
-    case 'node.waiting': {
-      const data: DagWorkflowNodeWaitData = { runId: event.runId, nodeId: event.nodeId }
-      parent.session.append('dsh-dag-workflow/node-wait', data)
-      return
-    }
-    case 'node.completed':
-    case 'node.skipped': {
-      const data: DagWorkflowNodeEndData = {
-        runId: event.runId,
-        nodeId: event.nodeId,
-        status: event.type === 'node.completed' ? 'completed' : 'skipped',
-      }
-      parent.session.append('dsh-dag-workflow/node-end', data)
-      return
-    }
-    case 'node.cancelled':
-    case 'node.needs-attention': {
-      const data: DagWorkflowNodeEndData = {
-        runId: event.runId,
-        nodeId: event.nodeId,
-        status: event.type === 'node.cancelled' ? 'cancelled' : 'needs_attention',
-      }
-      parent.session.append('dsh-dag-workflow/node-end', data)
-      return
-    }
-    case 'node.failed': {
-      const data: DagWorkflowNodeEndData = {
-        runId: event.runId,
-        nodeId: event.nodeId,
-        status: 'failed',
-        error: event.error,
-      }
-      parent.session.append('dsh-dag-workflow/node-end', data)
-      return
-    }
-    case 'run.completed': {
-      const data: DagWorkflowRunEndData = { runId: event.runId, status: 'completed' }
-      parent.session.append('dsh-dag-workflow/run-end', data)
-      return
-    }
-    case 'run.failed':
-    case 'run.cancelled': {
-      const data: DagWorkflowRunEndData = {
-        runId: event.runId,
-        status: event.type === 'run.failed' ? 'failed' : 'cancelled',
-        error: event.type === 'run.failed' ? event.error : event.reason,
-      }
-      parent.session.append('dsh-dag-workflow/run-end', data)
-      return
-    }
-    case 'run.paused': {
-      const data: DagWorkflowRunEndData = { runId: event.runId, status: 'paused', error: event.reason }
-      parent.session.append('dsh-dag-workflow/run-end', data)
-      return
-    }
-    default:
-      return
-  }
-}
-
 function createRunObserver(
   ctx: Context,
   parent: DshAgentLike,
-  templateId: string,
-  semanticHash: string,
-  recordSessionEvents: boolean,
   requestObserver?: (event: WorkflowEvent) => void,
 ): (event: WorkflowEvent) => void {
-  let recordingEnabled = recordSessionEvents
   return event => {
-    if (recordingEnabled) {
-      try {
-        appendSessionSummary(parent, event, templateId, semanticHash)
-      } catch (error: unknown) {
-        recordingEnabled = false
-        ctx.logger.warn(`dsh-dag-workflow: disabled Session recording: ${renderError(error)}`)
-      }
-    }
     try { ctx.emit('dag-workflow/event', event, parent) } catch (error: unknown) {
       ctx.logger.warn(`dsh-dag-workflow: event listener failed: ${renderError(error)}`)
     }

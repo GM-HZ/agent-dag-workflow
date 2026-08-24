@@ -11,7 +11,7 @@
 | `start/end/tool/condition` | 完成 | `nodes.ts` 与核心/DSH 集成测试 | 无 |
 | DSH Cordis `ctx.workflowNodes/ctx.dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、`plugin.spec.ts` | 加入正式 DSH bundle patch |
 | 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
-| Session 摘要与实时事件 | 完成 | run/node Session event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | 无 |
+| Run trace 与实时事件 | 完成 | SQLite run/node event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | DSH 开放仓外 Session event 注册前不写自定义 Session event |
 | Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis provider | 无 |
 | Run event store、checkpoint、crash recovery | 完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、ownerRef 与 Host 自动恢复协调器 | 无 |
 | `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
@@ -27,7 +27,7 @@
 2. 所有注册必须由 `ctx.effect()` 持有；核心节点在插件卸载后移除。
 3. Provider 卸载必须 cancel + await active runs，不能只删除 service key。
 4. DSH 仍处于预览版本且包发布不同步；Tools/Agent 使用结构桥接，Cordis 使用精确兼容 peer range。
-5. Session 记录是观察面，任何 append/listener 失败都不能改变执行面。
+5. 完整 trace 写入独立 Workflow Run Store；实时 listener 失败不能改变执行面。DSH 当前不允许安全注册仓外 Session event，因此不向 Session 日志写自定义类型。
 
 ## 恢复语义审阅结论
 

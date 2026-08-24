@@ -118,7 +118,6 @@ export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest,
 }
 
 export interface DshWorkflowPluginConfig {
-  readonly recordSessionEvents?: boolean
   readonly catalog?: 'memory' | 'external'
   readonly runStore?: 'memory' | 'external'
   /** Optional scoped credential bridge. Secret values must never be logged or persisted by this callback. */
@@ -137,39 +136,6 @@ export interface DshWorkflowPluginConfig {
       readonly signal: AbortSignal
     }) => Promise<DshAgentLike | undefined>
   }
-}
-
-export interface DagWorkflowRunStartData {
-  readonly runId: string
-  readonly templateId: string
-  readonly semanticHash: string
-}
-
-export interface DagWorkflowNodeStartData {
-  readonly runId: string
-  readonly nodeId: string
-}
-
-export interface DagWorkflowNodeEndData {
-  readonly runId: string
-  readonly nodeId: string
-  readonly status: 'completed' | 'failed' | 'skipped' | 'cancelled' | 'needs_attention'
-  readonly error?: string
-}
-
-export interface DagWorkflowNodeWaitData {
-  readonly runId: string
-  readonly nodeId: string
-}
-
-export interface DagWorkflowRunEndData {
-  readonly runId: string
-  readonly status: 'completed' | 'failed' | 'cancelled' | 'paused'
-  readonly error?: string
-}
-
-export interface DagWorkflowRunResumeData {
-  readonly runId: string
 }
 
 export type DshDagWorkflowEvent = WorkflowEvent

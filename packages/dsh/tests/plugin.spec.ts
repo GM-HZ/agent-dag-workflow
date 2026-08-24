@@ -374,17 +374,9 @@ describe('DSH Cordis plugin', () => {
     const published = ctx.workflowTemplates.publish(draft.id, draft.revision)
     expect(ctx.workflowTemplates.getPublished(draft.id).revision).toBe(published.revision)
     expect(observed).toContain('run.completed')
-    expect(session.events.map(event => event.type)).toEqual([
-      'dsh-dag-workflow/run-start',
-      'dsh-dag-workflow/node-start',
-      'dsh-dag-workflow/node-end',
-      'dsh-dag-workflow/node-start',
-      'dsh-dag-workflow/node-end',
-      'dsh-dag-workflow/node-start',
-      'dsh-dag-workflow/node-end',
-      'dsh-dag-workflow/run-end',
-    ])
-    expect(session.events[0]?.data).toEqual(expect.objectContaining({ templateId: 'dsh-plugin-test', semanticHash: expect.any(String) }))
+    // Downstream Session event types cannot currently be registered with DSH.
+    // Persist the complete trace in workflowRuns and keep the owning Session clean.
+    expect(session.events).toEqual([])
     expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
     expect([...tools.definitions.keys()].sort()).toEqual([
       'workflow_diff',
@@ -414,12 +406,11 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.skills.definitions).toEqual(new Map())
   })
 
-  it('contains Session recording and request observer failures', async () => {
+  it('contains request observer failures without writing Session events', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
     await ctx.plugin(DshWorkflowPlugin)
     const session = new StubSession()
-    session.fail = true
     const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
 
     const result = await ctx.dagWorkflowEngine.start({
@@ -430,7 +421,7 @@ describe('DSH Cordis plugin', () => {
     }).result
 
     expect(result.status).toBe('completed')
-    expect(warn.mock.calls.some(call => String(call[0]).includes('disabled Session recording'))).toBe(true)
+    expect(session.events).toEqual([])
     expect(warn.mock.calls.some(call => String(call[0]).includes('request observer failed'))).toBe(true)
   })
 

@@ -7,7 +7,6 @@
 - `ctx.workflowRuns`：默认内存 Run Store provider；生产环境可替换为 SQLite provider。
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
-- `dsh-dag-workflow/*` Session 摘要事件：用于重放顶层 run/node 状态。
 - 八个 `workflow_*` authoring tools 与 model/user 均可调用的 bundled `workflow-builder` Skill。
 
 ## 装配
@@ -67,6 +66,10 @@ const recovered = ctx.dagWorkflowEngine.resume({
 - 已发布 run 的 `result` 始终 resolve。
 - consumer 持有并最终 `dispose()` run。
 - Provider 卸载时取消并等待全部活跃 run 收敛。
-- Session 写入、实时事件 listener 和 request observer 的错误全部被隔离，不改变运行结果。
+- 实时事件 listener 和 request observer 的错误全部被隔离，不改变运行结果。
+
+完整 run/node trace 由 `ctx.workflowRuns` 持久化。当前 DSH 尚未开放仓外
+Session event 类型注册，也没有为 `Session.append()` 提供 `ignorable` 标记入口，
+因此插件不会向 owning Session 写自定义事件，避免会话重载时被判定为不兼容。
 
 Cordis Service 不能使用 JavaScript 原生 `#private` 字段：服务由 Proxy 暴露，方法中的 `this` 是代理。实现统一使用 TypeScript `private`，这个约束也适用于后续 Catalog、Store 和 Canvas RPC service。
