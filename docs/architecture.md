@@ -171,7 +171,7 @@ running after crash ----> needs_attention | ready(retry-safe)
 
 ### 4.3 事件与 checkpoint
 
-独立 workflow run store 保存完整事件和 checkpoint；DSH Session log 只保存需要在会话中重放的摘要事实，例如 run start/end、node start/end、pause。最终输出仍由正常 `workflow_run` tool result 写入 Session，满足 DSH “model-visible means logged”。
+独立 workflow run store 保存完整事件和 checkpoint。插件不向 DSH Session 写入自定义事件类型，避免宿主在未注册下游事件 schema 时拒绝重放会话；Agent 调用产生的标准 `workflow_run` tool call/result 仍由 DSH 正常写入 Session，满足 “model-visible means logged”。Canvas 的运行轨迹则通过 run store 和实时 `dag-workflow/event` 信号呈现。
 
 最小 run event：
 
