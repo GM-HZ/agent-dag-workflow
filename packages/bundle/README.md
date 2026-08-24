@@ -10,4 +10,4 @@ The bundle patch mounts the durable runtime and `@gm-hz/dsh-dag-workflow-canvas`
 
 The Canvas Remote accepts only live, top-level Agents from the Host registry. Its zero-config policy is intended for a local single-user profile; multi-user deployments must configure the Canvas plugin's user/workspace/action `authorize` policy directly.
 
-See the [repository README](https://github.com/GM-HZ/dsh-workflow#readme) for the template format, authoring flow, execution API, security boundary, and custom node SDK.
+See the [repository README](https://github.com/GM-HZ/dsh-dag-workflow#readme) for the template format, authoring flow, execution API, security boundary, and custom node SDK.

@@ -81,8 +81,8 @@ dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 从源码开发和运行全部门禁需要 pnpm 11：
 
 ```bash
-git clone https://github.com/GM-HZ/dsh-workflow.git
-cd dsh-workflow
+git clone https://github.com/GM-HZ/dsh-dag-workflow.git
+cd dsh-dag-workflow
 pnpm install
 pnpm check
 ```

@@ -8,11 +8,11 @@
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
+    "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git",
     "directory": "packages/catalog"
   },
-  "bugs": { "url": "https://github.com/GM-HZ/dsh-workflow/issues" },
-  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
+  "bugs": { "url": "https://github.com/GM-HZ/dsh-dag-workflow/issues" },
+  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme",
   "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "workflow", "catalog"],
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

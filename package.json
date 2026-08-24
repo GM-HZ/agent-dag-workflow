@@ -1,5 +1,5 @@
 {
-  "name": "dsh-workflow-root",
+  "name": "dsh-dag-workflow",
   "version": "0.1.1",
   "private": true,
   "type": "module",
@@ -22,13 +22,13 @@
   "description": "Persistent DAG workflows and visual authoring for DeepSeek Harness",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GM-HZ/dsh-workflow.git"
+    "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git"
   },
   "keywords": ["deepseek", "deepseek-harness", "dsh", "dag", "workflow", "canvas"],
   "author": "GM-HZ",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/GM-HZ/dsh-workflow/issues"
+    "url": "https://github.com/GM-HZ/dsh-dag-workflow/issues"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme"
+  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme"
 }

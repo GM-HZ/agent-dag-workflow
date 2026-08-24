@@ -10,12 +10,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GM-HZ/dsh-workflow.git",
+    "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git",
     "directory": "packages/bundle"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-workflow#readme",
+  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme",
   "bugs": {
-    "url": "https://github.com/GM-HZ/dsh-workflow/issues"
+    "url": "https://github.com/GM-HZ/dsh-dag-workflow/issues"
   },
   "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "dag", "workflow", "canvas"],
   "main": "lib/index.js",
