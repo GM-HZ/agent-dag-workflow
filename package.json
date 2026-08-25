@@ -1,30 +1,59 @@
 {
-  "name": "dsh-dag-workflow",
-  "version": "0.1.5",
-  "private": true,
+  "name": "@gm-hz/dsh-dag-workflow",
+  "version": "0.1.6",
+  "description": "Installable DSH package for durable DAG workflows, Agent authoring, SQLite runs, and Canvas Studio",
   "type": "module",
   "packageManager": "pnpm@11.5.2",
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "pnpm -r --if-present build",
+    "build": "pnpm -r --if-present build && tsc -p tsconfig.build.json",
     "check": "pnpm build && pnpm typecheck && pnpm test",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
-    "test": "pnpm -r --if-present test",
-    "typecheck": "pnpm -r --if-present typecheck"
+    "prepare": "pnpm build",
+    "test": "pnpm -r --if-present test && vitest run tests/bundle.spec.ts",
+    "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json --noEmit"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["lib", "cordis.patch.yml", "README.md", "LICENSE"],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@gm-hz/dsh-dag-workflow-canvas": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-host": "workspace:^",
+    "@gm-hz/dsh-dag-workflow-sqlite": "workspace:^"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@gm-hz/dsh-dag-workflow-core": "workspace:^",
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
-  "description": "Persistent DAG workflows and visual authoring for DeepSeek Harness",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git"
   },
-  "keywords": ["deepseek", "deepseek-harness", "dsh", "dag", "workflow", "canvas"],
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "dag", "workflow", "canvas"],
   "author": "GM-HZ",
   "license": "MIT",
   "bugs": {

@@ -7,7 +7,23 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@gm-hz/dsh-dag-workflow-canvas':
+        specifier: workspace:^
+        version: link:packages/canvas
+      '@gm-hz/dsh-dag-workflow-host':
+        specifier: workspace:^
+        version: link:packages/dsh
+      '@gm-hz/dsh-dag-workflow-sqlite':
+        specifier: workspace:^
+        version: link:packages/sqlite
     devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.1
+        version: 4.0.1
+      '@gm-hz/dsh-dag-workflow-core':
+        specifier: workspace:^
+        version: link:packages/core
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
@@ -23,34 +39,6 @@ importers:
       '@deepseek-ai/cordis':
         specifier: 4.0.1
         version: 4.0.1
-      '@types/node':
-        specifier: ^22.20.0
-        version: 22.20.1
-      typescript:
-        specifier: ^6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: ^4.1.8
-        version: 4.1.11(@types/node@22.20.1)(vite@8.2.2(@types/node@22.20.1)(yaml@2.9.0))
-
-  packages/bundle:
-    dependencies:
-      '@gm-hz/dsh-dag-workflow-canvas':
-        specifier: workspace:^
-        version: link:../canvas
-      '@gm-hz/dsh-dag-workflow-host':
-        specifier: workspace:^
-        version: link:../dsh
-      '@gm-hz/dsh-dag-workflow-sqlite':
-        specifier: workspace:^
-        version: link:../sqlite
-    devDependencies:
-      '@deepseek-ai/cordis':
-        specifier: 4.0.1
-        version: 4.0.1
-      '@gm-hz/dsh-dag-workflow-core':
-        specifier: workspace:^
-        version: link:../core
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1

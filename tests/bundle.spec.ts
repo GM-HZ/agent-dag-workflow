@@ -12,7 +12,7 @@ import type {
   DshWorkflowToolDefinition,
 } from '@gm-hz/dsh-dag-workflow-host'
 import { describe, expect, it } from 'vitest'
-import * as Bundle from '../src/index.js'
+import * as Workflow from '../src/index.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -80,13 +80,13 @@ function template(): WorkflowTemplate {
   }
 }
 
-describe('installable DSH bundle', () => {
+describe('installable DSH workflow package', () => {
   it('mounts the durable services and reopens their SQLite state', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'dsh-dag-workflow-bundle-'))
     const databasePath = join(directory, 'nested', 'workflows.db')
     try {
       const first = await host()
-      const firstPlugin = await first.plugin(Bundle, { databasePath })
+      const firstPlugin = await first.plugin(Workflow, { databasePath })
       const disposeCapability = first.workflowCapabilities.register('acme.bundle.lifecycle', { durable: true })
       expect(first.workflowCapabilities.resolve('acme.bundle.lifecycle')).toEqual({ durable: true })
       const disposeRules = first.workflowScripts.register({
@@ -115,7 +115,7 @@ describe('installable DSH bundle', () => {
       await firstPlugin.dispose()
 
       const second = await host()
-      const secondPlugin = await second.plugin(Bundle, { databasePath })
+      const secondPlugin = await second.plugin(Workflow, { databasePath })
       expect(second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
       expect(second.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
       await secondPlugin.dispose()
@@ -130,14 +130,14 @@ describe('installable DSH bundle', () => {
     const databasePath = join(directory, 'dsh-dag-workflow', 'workflows.db')
     try {
       const legacy = await host()
-      const legacyPlugin = await legacy.plugin(Bundle, { databasePath: legacyDatabasePath })
+      const legacyPlugin = await legacy.plugin(Workflow, { databasePath: legacyDatabasePath })
       legacy.workflowTemplates.createDraft(template())
       await legacyPlugin.dispose()
       expect(existsSync(legacyDatabasePath)).toBe(true)
       expect(existsSync(databasePath)).toBe(false)
 
       const migrated = await host()
-      const migratedPlugin = await migrated.plugin(Bundle, { databasePath, legacyDatabasePath })
+      const migratedPlugin = await migrated.plugin(Workflow, { databasePath, legacyDatabasePath })
       expect(migrated.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
       expect(existsSync(databasePath)).toBe(true)
       expect(existsSync(legacyDatabasePath)).toBe(true)

@@ -84,13 +84,13 @@ spec:
 
 ## 快速开始
 
-要求 Node.js 22.19+。将完整 Workflow bundle 安装到 DSH Web profile：
+要求 Node.js 22.19+。将 `dsh-dag-workflow` 主包安装到 DSH Web profile：
 
 ```bash
 dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 ```
 
-该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-dag-workflow/workflows.db`。从 `0.1.4` 及更早版本升级时，bundle 会在新路径不存在的前提下通过 SQLite backup API 迁移旧的 `dsh-workflow/workflows.db`，并保留旧文件作为备份。
+该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-dag-workflow/workflows.db`。从 `0.1.4` 及更早版本升级时，主包会在新路径不存在的前提下通过 SQLite backup API 迁移旧的 `dsh-workflow/workflows.db`，并保留旧文件作为备份。
 
 从源码开发和运行全部门禁需要 pnpm 11：
 
@@ -111,7 +111,7 @@ dsh plugin --profile web add \
   "$PWD/packages/dsh" \
   "$PWD/packages/sqlite" \
   "$PWD/packages/canvas" \
-  "$PWD/packages/bundle"
+  "$PWD"
 dsh web
 ```
 
@@ -367,7 +367,7 @@ ctx.effect(() => ctx.workflowScripts.register({
 
 | 包 | 职责 |
 | --- | --- |
-| [`@gm-hz/dsh-dag-workflow`](packages/bundle/README.md) | 可由 `dsh plugin add` 安装的完整 bundle，默认启用 SQLite 和 Canvas |
+| [`@gm-hz/dsh-dag-workflow`](package.json) | 仓库根主包，可由 `dsh plugin add` 安装，默认启用 SQLite 和 Canvas |
 | [`@gm-hz/dsh-dag-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
 | [`@gm-hz/dsh-dag-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
 | [`@gm-hz/dsh-dag-workflow-host`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
