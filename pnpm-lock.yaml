@@ -4,18 +4,23 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-canvas': link:packages/canvas
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-host': link:packages/dsh
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-sqlite': link:packages/sqlite
+
 importers:
 
   .:
     dependencies:
       '@gm-hz/dsh-dag-workflow-canvas':
-        specifier: workspace:^
+        specifier: link:packages/canvas
         version: link:packages/canvas
       '@gm-hz/dsh-dag-workflow-host':
-        specifier: workspace:^
+        specifier: link:packages/dsh
         version: link:packages/dsh
       '@gm-hz/dsh-dag-workflow-sqlite':
-        specifier: workspace:^
+        specifier: link:packages/sqlite
         version: link:packages/sqlite
     devDependencies:
       '@deepseek-ai/cordis':

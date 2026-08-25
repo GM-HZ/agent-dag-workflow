@@ -1,4 +1,9 @@
 packages:
   - packages/*
 
+overrides:
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-canvas': link:packages/canvas
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-host': link:packages/dsh
+  '@gm-hz/dsh-dag-workflow>@gm-hz/dsh-dag-workflow-sqlite': link:packages/sqlite
+
 onlyBuiltDependencies: []
