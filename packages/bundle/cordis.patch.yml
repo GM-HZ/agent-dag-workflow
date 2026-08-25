@@ -2,7 +2,8 @@
     - id: gm-hz-dsh-dag-workflow
       name: '@gm-hz/dsh-dag-workflow'
       config:
-        databasePath: !!js dshHomePath('dsh-workflow/workflows.db')
+        databasePath: !!js dshHomePath('dsh-dag-workflow/workflows.db')
+        legacyDatabasePath: !!js dshHomePath('dsh-workflow/workflows.db')
 
-    - id: gm-hz-dsh-workflow-canvas
+    - id: gm-hz-dsh-dag-workflow-canvas
       name: '@gm-hz/dsh-dag-workflow-canvas'

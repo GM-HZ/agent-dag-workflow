@@ -35,7 +35,7 @@ afterEach(() => {
 })
 
 function dbPath(): string {
-  const root = mkdtempSync(join(tmpdir(), 'dsh-workflow-sqlite-'))
+  const root = mkdtempSync(join(tmpdir(), 'dsh-dag-workflow-sqlite-'))
   temporaryRoots.push(root)
   return join(root, 'workflows.db')
 }

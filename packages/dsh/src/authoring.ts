@@ -50,7 +50,7 @@ export function registerWorkflowAuthoring(rawContext: Context): () => void {
   disposers.push(ctx.skills.register({
     name: 'workflow-builder',
     description: 'Plan, create, validate, review, publish, and test DSH DAG workflows through the guarded workflow tools. Use for requests to build or modify reusable workflows, DAG automations, or workflow templates.',
-    source: 'bundled:dsh-workflow',
+    source: 'bundled:dsh-dag-workflow',
     content: stripFrontmatter(skillContent),
     invocation: { modelInvocable: true, userInvocable: true },
   }))

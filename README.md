@@ -90,7 +90,7 @@ spec:
 dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 ```
 
-该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-workflow/workflows.db`。
+该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-dag-workflow/workflows.db`。从 `0.1.4` 及更早版本升级时，bundle 会在新路径不存在的前提下通过 SQLite backup API 迁移旧的 `dsh-workflow/workflows.db`，并保留旧文件作为备份。
 
 从源码开发和运行全部门禁需要 pnpm 11：
 
@@ -123,7 +123,7 @@ dsh web
 pnpm demo
 ```
 
-也可以将同一组本地包链接到本机 `headless` profile，再让真实 DSH Agent 创建、校验、发布和运行该模板。Web 与 Headless profile 默认共用 `$DSH_HOME/dsh-workflow/workflows.db`，因此 Agent 创建的模板会直接出现在 Canvas 的 OPEN 列表中。
+也可以将同一组本地包链接到本机 `headless` profile，再让真实 DSH Agent 创建、校验、发布和运行该模板。Web 与 Headless profile 默认共用 `$DSH_HOME/dsh-dag-workflow/workflows.db`，因此 Agent 创建的模板会直接出现在 Canvas 的 OPEN 列表中。
 
 需要定制存储或 Canvas authority 时，也可以只安装子包并在 DSH Host 中手动装配。最小内存版只需要 `@gm-hz/dsh-dag-workflow-host`：
 
