@@ -80,7 +80,7 @@ spec:
     answer: { output: { node: end, path: [answer] } }
 ```
 
-完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)，多 Agent 示例见 [research-report.workflow.yaml](examples/research-report.workflow.yaml)。
+完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)，多 Agent 示例见 [research-report.workflow.yaml](examples/research-report.workflow.yaml)。真实外部数据的完整验收模板见 [weekly-ai-model-news.workflow.json](examples/weekly-ai-model-news.workflow.json)：DSH Tool 获取一周内 100 条候选，Agent 只返回评分/摘要 overlay，受限脚本严格合并、稳定排序并输出 Top 10。
 
 ## 快速开始
 
@@ -176,13 +176,15 @@ await ctx.plugin(DagWorkflow, {
 
 ### 1. 让 Agent 生成 Workflow
 
-主插件会向 DSH 注册 `workflow-builder` Skill，以及下面八个受 DSH 策略保护的工具：
+主插件会向 DSH 注册 `workflow-builder` Skill，以及下面十个受 DSH 策略保护的工具：
 
 ```text
 workflow_nodes_list
 workflow_draft_create
+workflow_draft_import
 workflow_draft_read
 workflow_draft_update
+workflow_draft_validate
 workflow_validate
 workflow_diff
 workflow_publish
@@ -193,7 +195,7 @@ workflow_run
 
 > 创建一个“研究主题 → 两路独立调研 → 汇总报告 → 人工确认”的 workflow。先展示校验结果和 diff，得到我确认后再发布，并运行发布的精确 revision。
 
-Skill 引导 Agent 按 `查询节点 → 生成拓扑 → 创建 draft → 校验 → diff → 发布 → 运行` 的顺序工作。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
+Skill 引导 Agent 按 `查询节点/Agent provider → 生成拓扑 → 创建或导入 draft → 校验 → diff → 发布 → 运行` 的顺序工作。大型模板使用 `workflow_draft_import` 传递完整 JSON 字符串，避免模型把 object 参数错误序列化。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
 
 ### 2. 从代码执行
 
@@ -227,7 +229,9 @@ if (result.status === 'completed') {
 }
 ```
 
-可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `dsh.tool@1` 或 `dsh.agent@1`，再把其结构化输出交给脚本节点。
+可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。`sortBy` 支持对象数组的稳定多键排序，`joinBy` 用唯一 key 严格合并等长 overlay，并拒绝未知、重复、缺失 key 或覆盖原字段。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `dsh.tool@1` 或 `dsh.agent@1`，再把其结构化输出交给脚本节点。
+
+周报验收模板使用的 [AI news provider](packages/ai-news-provider/README.md) 是源码内私有参考包：它证明普通外部 provider 只需注册一个 DSH Tool，不需要实现 Workflow Node。该模板还演示了更强的 Agent 边界：Agent 只能产出 `{id, ...新增字段}`，脚本用 `joinBy` 将其与 Tool 原始记录合并，因此标题、URL、发布时间和来源无法被 Agent 静默改写。
 
 动态依赖和结果契约属于模板语义并进入 semantic hash。执行时一个节点能看到的 gateway 或自定义 Host capability 会按其 NodeDefinition `capabilities` 裁剪；最终有效能力是“节点声明 ∩ Workflow requires ∩ owning Agent scope ∩ DSH policy”。
 
@@ -369,6 +373,7 @@ ctx.effect(() => ctx.workflowScripts.register({
 | [`@gm-hz/dsh-dag-workflow-host`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
 | [`@gm-hz/dsh-dag-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint Provider |
 | [`@gm-hz/dsh-dag-workflow-canvas`](packages/canvas/README.md) | 授权 RPC、DSH Client manifest、XYFlow Studio |
+| [`@gm-hz/dsh-dag-workflow-ai-news-provider`](packages/ai-news-provider/README.md) | 私有验收 provider；通过普通 DSH Tool 提供一周 AI 新闻候选 |
 
 - [总体架构](docs/architecture.md)
 - [源码对照与设计取舍](docs/source-findings.md)

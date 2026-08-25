@@ -110,7 +110,7 @@ Canvas renderer不是 Host 定义的一部分。Client 插件按相同 `type@ver
 
 `core.script@1` 不是开放的 JavaScript/Python eval 节点，而是一个版本化 runtime adapter。Host 通过 `ctx.workflowScripts` 注册 `language@version`；节点在编译期完成 runtime availability 与 source 语义校验，在运行期只传入深冻结 JSON input、AbortSignal 和操作预算，并只接受 JSON object 输出。
 
-内置 `dsh.expr@1` 覆盖 Coze/Dify 常见的字段映射、文本模板、数组筛选/投影、聚合和类型转换。它没有 I/O、时间、随机数、环境变量或 secret API，并拒绝 prototype key 与动态函数调用。外部 HTTP、数据库、知识库和凭据访问继续使用 `dsh.tool@1`；复杂非确定逻辑使用 `dsh.agent@1`。第三方 runtime 是受信任的 Host 插件代码，声明 `deterministic: true` 后仍由部署者负责审计。
+内置 `dsh.expr@1` 覆盖 Coze/Dify 常见的字段映射、文本模板、数组筛选/投影、聚合和类型转换。`sortBy` 提供稳定多键排序，`withIndex` 从确定顺序生成序号；`joinBy` 对唯一 key 做一一对应 overlay 合并，并禁止覆盖原字段，可用于把 Agent 评分/摘要安全合并回 Tool 原始记录。它没有 I/O、时间、随机数、环境变量或 secret API，并拒绝 prototype key 与动态函数调用。外部 HTTP、数据库、知识库和凭据访问继续使用 `dsh.tool@1`；复杂非确定逻辑使用 `dsh.agent@1`。第三方 runtime 是受信任的 Host 插件代码，声明 `deterministic: true` 后仍由部署者负责审计。
 
 ### 3.3 `ctx.workflowTemplates`
 
@@ -229,7 +229,7 @@ HTTP、知识库、数据库不先做专属节点；它们通过 `dsh.tool@1` �
 引导 skill 不直接拼接并落盘 YAML。它驱动一组受验证工具：
 
 - `workflow_nodes_list`：返回当前 Agent scope 可用的节点类型、版本和 schemas。
-- `workflow_draft_create/read/update`：维护带 revision 的 draft。
+- `workflow_draft_create/import/read/update/validate`：维护带 revision 的 draft；大型模板以完整 JSON 字符串导入并继续使用 CAS。
 - `workflow_validate`：返回结构化 diagnostics。
 - `workflow_diff`：生成前后节点/边/config 差异。
 - `workflow_publish`：只有无 error diagnostics 且 expected revision 一致时发布。
@@ -238,7 +238,7 @@ HTTP、知识库、数据库不先做专属节点；它们通过 `dsh.tool@1` �
 skill 流程借鉴 Dify 的 planner/builder 拆分，但由 DSH Agent 完成：
 
 1. 澄清目标、输入、输出、外部副作用和人工确认点。
-2. 查询当前 scope 的节点/tool catalog，禁止臆造插件名。
+2. 查询当前 scope 的节点/tool/Agent provider catalog 与结构化输出 Schema 方言，禁止臆造插件名或使用 provider 不支持的约束。
 3. 先生成只含 node id/type/purpose/edges 的 topology plan。
 4. 再按节点 schema 填充 config 与 bindings；大型图可有界并行构建节点配置。
 5. 只做确定性修复，例如默认 layout、缺省端口、稳定 ID；有多种语义解释时回问用户。

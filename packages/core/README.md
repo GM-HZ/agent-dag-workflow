@@ -62,8 +62,10 @@ const resumed = engine.resume({
 ```text
 len upper lower trim join split concat slice coalesce
 string number boolean keys values get has
-sum min max unique sort mapGet filterEq json parseJson format
+sum min max unique sort sortBy withIndex joinBy mapGet filterEq json parseJson format
 ```
+
+`sortBy(array, path, direction, ...)` 对对象数组做稳定多键排序；`withIndex(array, field, start)` 从确定顺序生成序号且不覆盖已有字段。`joinBy(base, overlays, key)` 要求一一对应的唯一 key，只允许 overlay 增加新字段；未知、缺失、重复 key 或覆盖 base 字段都会失败。这适合把 Agent 的结构化评分/摘要安全地合并回 Tool 原始数据。
 
 运行时有 AbortSignal、操作数上限和 32 KiB source 上限；禁止动态函数调用、prototype key、I/O、时间、随机数与 `eval`。自定义确定性语言通过 `WorkflowScriptRuntimeRegistry` 注册，再将该 registry 传给 `registerCoreNodes(registry, { scriptRuntimes })`。
 

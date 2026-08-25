@@ -7,6 +7,7 @@ import type { WorkflowNodeDisposer, WorkflowNodeRegistry } from './registry.js'
 import { createDefaultWorkflowScriptRuntimeRegistry, type WorkflowScriptRuntimeRegistry } from './script-runtime.js'
 import { WorkflowExecutionError } from './errors.js'
 import { stableJsonStringify } from './json.js'
+import { validateDshObjectJsonSchema } from './dsh-schema.js'
 
 const objectSchema = { type: 'object' } as const
 
@@ -233,6 +234,9 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
   retry: 'never',
   dependencies(config) {
     return typeof config.provider === 'string' ? [{ kind: 'agent-provider', uses: config.provider }] : []
+  },
+  validateConfig(config) {
+    return config.outputSchema === undefined ? [] : validateDshObjectJsonSchema(config.outputSchema)
   },
   async execute(context) {
     const agents = context.services.agents

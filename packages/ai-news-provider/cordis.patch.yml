@@ -1,0 +1,3 @@
+- insert:
+    - id: gm-hz-dsh-dag-workflow-ai-news-provider
+      name: '@gm-hz/dsh-dag-workflow-ai-news-provider'

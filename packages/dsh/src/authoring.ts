@@ -12,6 +12,7 @@ import {
 import type {
   DshAgentLike,
   DshSkillRuntimeLike,
+  DshSubagentRuntimeLike,
   DshToolRegistryLike,
   DshToolRunContextLike,
   DshWorkflowToolDefinition,
@@ -19,6 +20,7 @@ import type {
 
 type AuthoringContext = Context & {
   readonly tools: DshToolRegistryLike
+  readonly subagents: DshSubagentRuntimeLike
   readonly skills: DshSkillRuntimeLike
 }
 
@@ -26,9 +28,15 @@ const objectOutput = { type: 'object' } as const
 const templateProperty = { type: 'object', description: 'A complete WorkflowTemplate v1alpha1 JSON object.' } as const
 const idProperty = { type: 'string', pattern: '^[a-z][a-z0-9-]*$' } as const
 const revisionProperty = { type: 'integer', minimum: 1 } as const
+const DSH_STRUCTURED_OUTPUT_SCHEMA = Object.freeze({
+  dialect: 'dsh.object-json-schema/v1',
+  rootType: 'object',
+  keywords: ['type', 'oneOf', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const'],
+  annotations: ['description', 'title', 'default', 'examples'],
+})
 
 export class WorkflowAuthoringProvider {
-  static inject = ['tools', 'skills', 'workflowNodes', 'workflowScripts', 'workflowTemplates', 'dagWorkflowEngine']
+  static inject = ['tools', 'subagents', 'skills', 'workflowNodes', 'workflowScripts', 'workflowTemplates', 'dagWorkflowEngine']
 
   constructor(ctx: Context) {
     ctx.effect(() => registerWorkflowAuthoring(ctx), 'dsh-dag-workflow: authoring tools and skill')
@@ -85,6 +93,19 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       tools: (ctx as AuthoringContext).tools.schemas(execution.agent)
         .filter(schema => !schema.name.startsWith('workflow_'))
         .map(schema => snapshotJsonValue(schema)),
+      agentProviders: ((ctx as AuthoringContext).subagents.list?.() ?? []).map(name => {
+        const capabilities = (ctx as AuthoringContext).subagents.getProvider?.(name)?.capabilities ?? {
+          outputSchema: false,
+          depthLimit: false,
+          toolFilter: false,
+          persona: false,
+        }
+        return snapshotJsonValue({
+          name,
+          capabilities,
+          ...(capabilities.outputSchema ? { structuredOutputSchema: DSH_STRUCTURED_OUTPUT_SCHEMA } : {}),
+        })
+      }),
     }), true),
     tool('workflow_draft_create', 'Create a workflow draft after materializing a lossless JSON snapshot. Drafts may be structurally incomplete.', {
       template: { ...templateProperty, required: true },
@@ -101,6 +122,22 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       integerArg(args, 'expectedRevision'),
       templateArg(args, 'template'),
     ))),
+    tool('workflow_draft_import', 'Create or CAS-update a workflow draft from a lossless JSON string. Use this for large templates that are unreliable as nested tool arguments.', {
+      templateJson: { type: 'string', required: true },
+      expectedRevision: revisionProperty,
+    }, async args => {
+      const template = templateJsonArg(args)
+      const expectedRevision = optionalIntegerArg(args, 'expectedRevision')
+      return snapshotJsonValue(expectedRevision === undefined
+        ? ctx.workflowTemplates.createDraft(template)
+        : ctx.workflowTemplates.updateDraft(template.metadata.id, expectedRevision, template))
+    }),
+    tool('workflow_draft_validate', 'Validate the current immutable draft by id without resending the complete template.', {
+      id: { ...idProperty, required: true },
+    }, async args => {
+      const draft = ctx.workflowTemplates.readDraft(stringArg(args, 'id'))
+      return { revision: draft.revision, diagnostics: snapshotJsonValue(ctx.workflowTemplates.validate(draft.template)) }
+    }, true),
     tool('workflow_validate', 'Compile a candidate workflow and return stable diagnostics. Never infer success from an empty tool error.', {
       template: { ...templateProperty, required: true },
     }, async args => ({ diagnostics: snapshotJsonValue(ctx.workflowTemplates.validate(templateArg(args, 'template'))) }), true),
@@ -217,6 +254,15 @@ function optionalIntegerArg(value: unknown, key: string): number | undefined {
 
 function templateArg(value: unknown, key: string): WorkflowTemplate {
   return objectArg(value, key) as unknown as WorkflowTemplate
+}
+
+function templateJsonArg(value: unknown): WorkflowTemplate {
+  const source = stringArg(value, 'templateJson')
+  let parsed: unknown
+  try { parsed = JSON.parse(source) } catch (error: unknown) {
+    throw new Error(`templateJson must be valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  return snapshotJsonObject(parsed) as unknown as WorkflowTemplate
 }
 
 function stripFrontmatter(content: string): string {

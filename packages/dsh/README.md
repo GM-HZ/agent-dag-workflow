@@ -9,7 +9,7 @@
 - `ctx.workflowRuns`：默认内存 Run Store provider；生产环境可替换为 SQLite provider。
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
-- 八个 `workflow_*` authoring tools 与 model/user 均可调用的 bundled `workflow-builder` Skill。
+- 十个 `workflow_*` authoring tools 与 model/user 均可调用的 bundled `workflow-builder` Skill。
 
 ## 装配
 
@@ -41,9 +41,9 @@ await ctx.plugin(DagWorkflow, {
 
 `core.subworkflow@1` 与 `core.foreach@1` 还会读取 `ctx.workflowTemplates` 中的精确 published revision。每个 child 是同一 `ctx.workflowRuns` 中的确定性 run；子流程暂停时父流程进入 `paused/needs_attention`，不会把未知副作用误报成普通失败。
 
-Authoring tools 包括 `workflow_nodes_list`、`workflow_draft_create/read/update`、`workflow_validate`、`workflow_diff`、`workflow_publish`、`workflow_run`。它们作为普通 DSH tools 重新经过 scope、guard、approval 与 observer policy；published run 必须指定精确 revision。Skill 只引导调用这些工具，不自行读写 Catalog。
+Authoring tools 包括 `workflow_nodes_list`、`workflow_draft_create/import/read/update/validate`、`workflow_validate`、`workflow_diff`、`workflow_publish`、`workflow_run`。`workflow_draft_import` 接收完整 `templateJson`，适合大型模板；更新时仍要求 draft revision CAS。它们作为普通 DSH tools 重新经过 scope、guard、approval 与 observer policy；published run 必须指定精确 revision。Skill 只引导调用这些工具，不自行读写 Catalog。
 
-`workflow_nodes_list` 同时返回 `scriptRuntimes`、节点 `dependencyKinds` 和可由默认配置推导的 `defaultRequirements`。第三方插件可调用 `ctx.workflowScripts.register()` 增加确定性业务语言；`core.script@1` 在编译期解析精确 `language@version` 并执行 runtime 的语义校验。Runtime 只负责纯 JSON 变换，任何 I/O 或 secret 访问仍由普通 DSH 节点承担。
+`workflow_nodes_list` 同时返回 `scriptRuntimes`、可用 Agent providers 及其结构化输出能力/Schema 方言、节点 `dependencyKinds` 和可由默认配置推导的 `defaultRequirements`。第三方插件可调用 `ctx.workflowScripts.register()` 增加确定性业务语言；`core.script@1` 在编译期解析精确 `language@version` 并执行 runtime 的语义校验。Runtime 只负责纯 JSON 变换，任何 I/O 或 secret 访问仍由普通 DSH 节点承担。
 
 外部扩展固定为两级。普通 HTTP、数据库、消息和存储能力只注册到 `ctx.tools`，由 `dsh.tool@1` 统一执行；`workflow_nodes_list` 会按调用 Agent scope 返回这些 Tool。只有暂停恢复、进度 checkpoint、事务补偿等 Tool 无法表达的生命周期才注册 `ctx.workflowNodes`。此类自定义 Node 可以用 `ctx.workflowCapabilities.register()` 绑定 Host 服务，并通过 `execution.capabilities.require()` 获取 fail-closed 的节点级投影；它不是第二套 Tool invocation bus。
 

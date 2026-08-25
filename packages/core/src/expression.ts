@@ -38,7 +38,7 @@ const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 const BUILTINS = new Set([
   'len', 'upper', 'lower', 'trim', 'join', 'split', 'concat', 'slice',
   'coalesce', 'string', 'number', 'boolean', 'keys', 'values', 'get', 'has',
-  'sum', 'min', 'max', 'unique', 'sort', 'mapGet', 'filterEq', 'json',
+  'sum', 'min', 'max', 'unique', 'sort', 'sortBy', 'withIndex', 'joinBy', 'mapGet', 'filterEq', 'json',
   'parseJson', 'format',
 ])
 
@@ -430,6 +430,101 @@ function callBuiltin(name: string, args: readonly JsonValue[], budget: { remaini
       }
       return values.sort((left, right) => compare(left, right))
     }
+    case 'sortBy': {
+      arity(name, args, 3)
+      if (args.length % 2 === 0) {
+        throw new WorkflowExpressionExecutionError('sortBy expects an array followed by path/direction pairs')
+      }
+      const values = requireArray(args[0], name)
+      const fields: { readonly path: string; readonly direction: 1 | -1 }[] = []
+      for (let index = 1; index < args.length; index += 2) {
+        const path = requireString(args[index], name)
+        const direction = requireString(args[index + 1], name)
+        if (path.length === 0) throw new WorkflowExpressionExecutionError('sortBy paths must be non-empty')
+        if (direction !== 'asc' && direction !== 'desc') {
+          throw new WorkflowExpressionExecutionError('sortBy directions must be "asc" or "desc"')
+        }
+        fields.push({ path, direction: direction === 'asc' ? 1 : -1 })
+      }
+      const indexed = values.map((value, index) => ({ value: requireObject(value, name), index }))
+      for (const entry of indexed) {
+        for (const field of fields) {
+          spend(budget)
+          const value = getPath(entry.value, field.path, MISSING)
+          if (value === MISSING) throw new WorkflowExpressionExecutionError(`sortBy path does not exist: ${field.path}`)
+          if (typeof value !== 'number' && typeof value !== 'string') {
+            throw new WorkflowExpressionExecutionError(`sortBy path must resolve to a number or string: ${field.path}`)
+          }
+        }
+      }
+      indexed.sort((left, right) => {
+        for (const field of fields) {
+          spend(budget)
+          const leftValue = getPath(left.value, field.path, MISSING)
+          const rightValue = getPath(right.value, field.path, MISSING)
+          if (leftValue === MISSING || rightValue === MISSING) {
+            throw new WorkflowExpressionExecutionError(`sortBy path does not exist: ${field.path}`)
+          }
+          const order = compare(leftValue, rightValue)
+          if (order !== 0) return order * field.direction
+        }
+        return left.index - right.index
+      })
+      return indexed.map(entry => entry.value)
+    }
+    case 'withIndex': {
+      arity(name, args, 2, 3)
+      const values = requireArray(args[0], name).map(value => requireObject(value, name))
+      const field = requireString(args[1], name)
+      const start = args.length === 3 ? requireInteger(args[2], name) : 0
+      if (field.length === 0 || field.includes('.') || UNSAFE_KEYS.has(field)) {
+        throw new WorkflowExpressionExecutionError('withIndex field must be one safe top-level property name')
+      }
+      return values.map((value, index) => {
+        spend(budget)
+        if (Object.hasOwn(value, field)) throw new WorkflowExpressionExecutionError(`withIndex cannot overwrite existing field: ${field}`)
+        const assigned = start + index
+        if (!Number.isSafeInteger(assigned)) throw new WorkflowExpressionExecutionError('withIndex produced an unsafe integer')
+        return { ...value, [field]: assigned }
+      })
+    }
+    case 'joinBy': {
+      arity(name, args, 3, 3)
+      const base = requireArray(args[0], name).map(value => requireObject(value, name))
+      const overlays = requireArray(args[1], name).map(value => requireObject(value, name))
+      const key = requireString(args[2], name)
+      if (key.length === 0 || key.includes('.') || UNSAFE_KEYS.has(key)) {
+        throw new WorkflowExpressionExecutionError('joinBy key must be one safe top-level property name')
+      }
+      const baseByKey = new Map<string, JsonObject>()
+      for (const item of base) {
+        spend(budget)
+        const identity = joinIdentity(item[key], key)
+        if (baseByKey.has(identity)) throw new WorkflowExpressionExecutionError(`joinBy base key is duplicated: ${String(item[key])}`)
+        baseByKey.set(identity, item)
+      }
+      const overlayByKey = new Map<string, JsonObject>()
+      for (const overlay of overlays) {
+        spend(budget)
+        const identity = joinIdentity(overlay[key], key)
+        if (!baseByKey.has(identity)) throw new WorkflowExpressionExecutionError(`joinBy overlay key is unknown: ${String(overlay[key])}`)
+        if (overlayByKey.has(identity)) throw new WorkflowExpressionExecutionError(`joinBy overlay key is duplicated: ${String(overlay[key])}`)
+        const original = baseByKey.get(identity)!
+        for (const field of Object.keys(overlay)) {
+          if (field !== key && Object.hasOwn(original, field)) {
+            throw new WorkflowExpressionExecutionError(`joinBy overlay cannot overwrite base field: ${field}`)
+          }
+        }
+        overlayByKey.set(identity, overlay)
+      }
+      if (overlayByKey.size !== baseByKey.size) {
+        throw new WorkflowExpressionExecutionError(`joinBy requires exactly one overlay for each base item (${overlayByKey.size}/${baseByKey.size})`)
+      }
+      return base.map(item => {
+        const overlay = overlayByKey.get(joinIdentity(item[key], key))!
+        return { ...item, ...overlay }
+      })
+    }
     case 'mapGet': {
       arity(name, args, 2, 3)
       const values = requireArray(args[0], name)
@@ -534,6 +629,11 @@ function requireInteger(value: JsonValue | undefined, name: string): number {
   if (!Number.isSafeInteger(number)) throw new WorkflowExpressionExecutionError(`${name} requires a safe integer`)
   return number
 }
+function joinIdentity(value: JsonValue | undefined, key: string): string {
+  if (typeof value === 'string') return `string:${value}`
+  if (typeof value === 'number' && Number.isFinite(value)) return `number:${value}`
+  throw new WorkflowExpressionExecutionError(`joinBy key ${key} must resolve to a string or number`)
+}
 function finite(value: number, name: string): number {
   if (!Number.isFinite(value)) throw new WorkflowExpressionExecutionError(`${name} produced a non-finite number`)
   return value
@@ -552,7 +652,7 @@ function equalJson(left: JsonValue, right: JsonValue): boolean {
 }
 function compare(left: JsonValue, right: JsonValue): number {
   if (typeof left === 'number' && typeof right === 'number') return left - right
-  if (typeof left === 'string' && typeof right === 'string') return left.localeCompare(right)
+  if (typeof left === 'string' && typeof right === 'string') return left < right ? -1 : left > right ? 1 : 0
   throw new WorkflowExpressionExecutionError('comparison requires two numbers or two strings')
 }
 function isObject(value: unknown): value is JsonObject { return value !== null && typeof value === 'object' && !Array.isArray(value) }

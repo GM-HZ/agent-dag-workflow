@@ -28,6 +28,15 @@ export interface DshSubagentRunLike {
 }
 
 export interface DshSubagentRuntimeLike {
+  list?(): readonly string[]
+  getProvider?(name: string): {
+    readonly capabilities: {
+      readonly outputSchema: boolean
+      readonly depthLimit: boolean
+      readonly toolFilter: boolean
+      readonly persona: boolean
+    }
+  } | undefined
   start(provider: string, request: {
     readonly label?: string
     readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]

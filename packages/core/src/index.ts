@@ -3,6 +3,7 @@ export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileResult } fr
 export { createScopedWorkflowCapabilityResolver, WorkflowCapabilityRegistry } from './capabilities.js'
 export { createDshToolGateway } from './dsh-tool-adapter.js'
 export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './dsh-tool-adapter.js'
+export { validateDshObjectJsonSchema } from './dsh-schema.js'
 export { DagWorkflowEngine } from './engine.js'
 export { WorkflowCompileError, WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 export {

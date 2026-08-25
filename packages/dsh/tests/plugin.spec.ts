@@ -1,11 +1,13 @@
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { JsonValue, WorkflowRunRecord, WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
+import { readFileSync } from 'node:fs'
+import { parseWorkflowTemplate, type JsonValue, type WorkflowRunRecord, type WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
 import { describe, expect, it, vi } from 'vitest'
 import * as DshWorkflowPlugin from '../src/index.js'
 import type {
   DshAgentLike,
   DshApprovalRuntimeLike,
   DshSkillRuntimeLike,
+  DshSubagentRunLike,
   DshSubagentRuntimeLike,
   DshToolRuntimeInput,
   DshToolRuntimeResult,
@@ -23,18 +25,27 @@ declare module '@deepseek-ai/cordis' {
 
 class StubSubagentRuntime extends Service implements DshSubagentRuntimeLike {
   readonly requests: Parameters<DshSubagentRuntimeLike['start']>[] = []
+  handler: (...args: Parameters<DshSubagentRuntimeLike['start']>) => Promise<DshSubagentRunLike> = async () => ({
+    id: 'child-1',
+    result: Promise.resolve({ output: [{ type: 'text', text: 'child answer' }], structured: { answer: 'child answer' }, stopReason: 'completed' }),
+    async dispose() {},
+  })
 
   constructor(ctx: Context) {
     super(ctx, 'subagents')
   }
 
+  list(): readonly string[] { return ['spawn'] }
+
+  getProvider(name: string) {
+    return name === 'spawn'
+      ? { capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true } }
+      : undefined
+  }
+
   async start(...args: Parameters<DshSubagentRuntimeLike['start']>): ReturnType<DshSubagentRuntimeLike['start']> {
     this.requests.push(args)
-    return {
-      id: 'child-1',
-      result: Promise.resolve({ output: [{ type: 'text', text: 'child answer' }], structured: { answer: 'child answer' }, stopReason: 'completed' }),
-      async dispose() {},
-    }
+    return this.handler(...args)
   }
 }
 
@@ -408,8 +419,10 @@ describe('DSH Cordis plugin', () => {
     expect([...tools.definitions.keys()].sort()).toEqual([
       'workflow_diff',
       'workflow_draft_create',
+      'workflow_draft_import',
       'workflow_draft_read',
       'workflow_draft_update',
+      'workflow_draft_validate',
       'workflow_nodes_list',
       'workflow_publish',
       'workflow_run',
@@ -433,6 +446,126 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.get('workflowRuns')).toBeUndefined()
     expect(tools.definitions).toEqual(new Map())
     expect(ctx.skills.definitions).toEqual(new Map())
+  })
+
+  it('executes the 100-item weekly news workflow with deterministic Top-10 and immutable source fields', async () => {
+    const ctx = new Context()
+    await mountRuntime(ctx)
+    await ctx.plugin(DshWorkflowPlugin)
+    const from = '2026-08-19T00:00:00+08:00'
+    const to = '2026-08-25T23:59:59+08:00'
+    const items = Array.from({ length: 100 }, (_, index) => {
+      const publishedAt = `2026-08-${String(19 + (index % 7)).padStart(2, '0')}T${String(index % 24).padStart(2, '0')}:00:00+08:00`
+      return index % 2 === 0
+        ? {
+            id: `hn-${String(index).padStart(3, '0')}`,
+            title: `AI model news ${index}`,
+            url: `https://news.example/${index}`,
+            publishedAt,
+            source: 'Hacker News',
+            kind: 'news',
+            engagement: { points: index * 3, comments: index },
+          }
+        : {
+            id: `arxiv-${String(index).padStart(3, '0')}`,
+            title: `AI model paper ${index}`,
+            url: `https://arxiv.example/${index}`,
+            publishedAt,
+            source: 'arXiv',
+            kind: 'paper',
+            summary: `Source abstract ${index}`,
+          }
+    })
+    ctx.tools.handler = async input => {
+      expect(input).toMatchObject({ name: 'ai_model_news_search', arguments: { from, to, limit: 100 } })
+      return {
+        isError: false,
+        value: {
+          from,
+          to,
+          requestedLimit: 100,
+          candidateCount: 100,
+          availableCount: 140,
+          truncated: true,
+          items,
+          sourceCounts: { hackerNews: 70, arxiv: 70 },
+        },
+      }
+    }
+    let childId = 0
+    ctx.subagents.handler = async (_provider, request) => {
+      const marker = '\n\nWorkflow node inputs (JSON):\n'
+      const markerIndex = request.prompt[0]?.text.indexOf(marker) ?? -1
+      if (markerIndex < 0) throw new Error('missing workflow input marker')
+      const inputs = JSON.parse(request.prompt[0]!.text.slice(markerIndex + marker.length)) as {
+        readonly items: readonly { readonly id: string }[]
+      }
+      const structured = request.label === 'score-weekly-ai-model-news'
+        ? {
+            scores: inputs.items.map((item, index) => ({
+              id: item.id,
+              importanceScore: (index * 37) % 101,
+              importanceReason: `importance ${index}`,
+            })),
+          }
+        : {
+            summaries: inputs.items.map((item, index) => ({
+              id: item.id,
+              digest: `摘要 ${index + 1}`,
+            })),
+          }
+      childId += 1
+      return {
+        id: `child-${childId}`,
+        result: Promise.resolve({ output: [{ type: 'text', text: 'structured output' }], structured, stopReason: 'completed' }),
+        async dispose() {},
+      }
+    }
+    const workflow = parseWorkflowTemplate(readFileSync(new URL('../../../examples/weekly-ai-model-news.workflow.json', import.meta.url), 'utf8'))
+
+    const result = await ctx.dagWorkflowEngine.start({
+      template: workflow,
+      inputs: { from, to },
+      parent: { session: new StubSession() },
+    }).result
+
+    expect(result.status).toBe('completed')
+    if (result.status !== 'completed') throw new Error(result.error)
+    const outputs = result.outputs as {
+      readonly period: { readonly from: string; readonly to: string }
+      readonly candidateCount: number
+      readonly items: readonly Record<string, JsonValue>[]
+    }
+    const expected = items.map((item, index) => ({
+      ...item,
+      importanceScore: (index * 37) % 101,
+      importanceReason: `importance ${index}`,
+    })).sort((left, right) =>
+      right.importanceScore - left.importanceScore
+      || right.publishedAt.localeCompare(left.publishedAt)
+      || left.id.localeCompare(right.id),
+    ).slice(0, 10)
+    expect(outputs.period).toEqual({ from, to })
+    expect(outputs.candidateCount).toBe(100)
+    expect(outputs.items.map(item => item.id)).toEqual(expected.map(item => item.id))
+    expect(outputs.items.map(item => item.rank)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    for (const [index, item] of outputs.items.entries()) {
+      expect(item).toEqual({ ...expected[index], rank: index + 1, digest: `摘要 ${index + 1}` })
+    }
+    expect(ctx.tools.requests).toHaveLength(1)
+    expect(ctx.subagents.requests.map(args => args[1].label)).toEqual([
+      'score-weekly-ai-model-news',
+      'summarize-weekly-ai-model-news',
+    ])
+    const record = ctx.workflowRuns.loadRun(result.runId)
+    expect(record?.checkpoint).toMatchObject({ status: 'completed' })
+    expect(record?.checkpoint.nodeStates).toEqual(expect.objectContaining({
+      'fetch-news': 'succeeded',
+      'score-news': 'succeeded',
+      'rank-top-10': 'succeeded',
+      'summarize-top-10': 'succeeded',
+      'finalize-top-10': 'succeeded',
+    }))
   })
 
   it('supports the second extension level with a scoped custom Node capability', async () => {
@@ -631,6 +764,11 @@ describe('DSH Cordis plugin', () => {
         }),
       ]),
       scriptRuntimes: [expect.objectContaining({ uses: 'dsh.expr@1', deterministic: true })],
+      agentProviders: [expect.objectContaining({
+        name: 'spawn',
+        capabilities: expect.objectContaining({ outputSchema: true }),
+        structuredOutputSchema: expect.objectContaining({ dialect: 'dsh.object-json-schema/v1' }),
+      })],
     })
     const created = await call('workflow_draft_create', { template: authored })
     expect(created).toMatchObject({ id: 'tool-authored', revision: 1 })
@@ -639,8 +777,15 @@ describe('DSH Cordis plugin', () => {
     const updated = await call('workflow_draft_update', { id: 'tool-authored', expectedRevision: 1, template: updatedTemplate })
     expect(updated).toMatchObject({ revision: 2, template: { metadata: { name: 'Updated through tool' } } })
     expect(await call('workflow_validate', { template: updatedTemplate })).toEqual({ diagnostics: [] })
-    expect(await call('workflow_diff', { id: 'tool-authored', candidate: updatedTemplate })).toMatchObject({ semanticChanged: false })
-    const published = await call('workflow_publish', { id: 'tool-authored', expectedRevision: 2 })
+    const importedTemplate = { ...updatedTemplate, metadata: { ...updatedTemplate.metadata, name: 'Imported JSON template' } }
+    const imported = await call('workflow_draft_import', {
+      expectedRevision: 2,
+      templateJson: JSON.stringify(importedTemplate),
+    })
+    expect(imported).toMatchObject({ revision: 3, template: { metadata: { name: 'Imported JSON template' } } })
+    expect(await call('workflow_draft_validate', { id: 'tool-authored' })).toEqual({ revision: 3, diagnostics: [] })
+    expect(await call('workflow_diff', { id: 'tool-authored', candidate: importedTemplate })).toMatchObject({ semanticChanged: false })
+    const published = await call('workflow_publish', { id: 'tool-authored', expectedRevision: 3 })
     expect(published).toMatchObject({ id: 'tool-authored', revision: 1 })
     expect(await call('workflow_run', { id: 'tool-authored', revision: 1, inputs: { message: 'from tool' } })).toMatchObject({
       status: 'completed',

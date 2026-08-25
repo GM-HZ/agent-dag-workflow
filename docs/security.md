@@ -26,6 +26,7 @@
 - Run 只持久化可序列化 `ownerRef`，不持久化 Agent/Session object。自动恢复用 Host `recovery.resolve` 重新取得 Agent；无 owner、无 authority 和 paused run 不自动开始。
 - 这套语义是 at-least-once + 显式不确定性，不声称 exactly-once。Tool 若支持业务幂等，应继续使用自己的 idempotency key。
 - 节点输出必须先通过 NodeDefinition schema 与实例 `expects` 才能进入 checkpoint。Agent 语义 review 是业务节点，不能作为安全 Schema、权限或 prompt-injection 边界。
+- 非确定 Agent 不应重写外部来源记录。推荐只返回以稳定 `id` 标识的评分/摘要 overlay，再由 `dsh.expr@1` 的 `joinBy` 做一一对应合并；缺失、未知、重复 id 或覆盖原字段会 fail closed，并完整进入 run trace。
 
 ## Resource limits
 
