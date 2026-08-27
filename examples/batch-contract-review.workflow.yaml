@@ -1,0 +1,104 @@
+apiVersion: dsh.workflow/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  id: batch-contract-review
+  name: Recoverable batch contract review
+  description: Fan out a published clause-review workflow with durable foreach frames, then synthesize a portfolio-level legal review.
+spec:
+  requires:
+    - { kind: capability, uses: workflowTemplates.getPublished }
+    - { kind: capability, uses: dagWorkflowEngine.invoke }
+    - { kind: workflow, uses: contract-clause-review-worker@2 }
+    - { kind: capability, uses: dsh.subagents.start }
+  inputSchema:
+    type: object
+    additionalProperties: false
+    required: [contractId, clauses, policy]
+    properties:
+      contractId: { type: string, minLength: 1 }
+      clauses: { type: array, minItems: 1, maxItems: 200, items: { type: object } }
+      policy: { type: object }
+  outputSchema:
+    type: object
+    additionalProperties: false
+    required: [contractId, reviewedClauses, executiveSummary, blockingIssues]
+    properties:
+      contractId: { type: string }
+      reviewedClauses: { type: integer, minimum: 1 }
+      executiveSummary: { type: string }
+      blockingIssues: { type: array, items: { type: string } }
+  nodes:
+    - id: start
+      uses: core.start@1
+      title: Contract package
+      with: {}
+      inputs: {}
+    - id: review-clauses
+      uses: core.foreach@1
+      title: Review clauses with durable frames
+      with:
+        templateId: contract-clause-review-worker
+        revision: 2
+        maxConcurrency: 6
+        maxItems: 200
+      inputs:
+        items: { input: clauses }
+        shared: { input: policy }
+    - id: synthesize
+      uses: dsh.agent@1
+      title: Synthesize contract risk
+      with:
+        label: contract-portfolio-synthesis
+        prompt: The inputs are immutable outputs from schema-validated child workflows. Produce an executive summary and a list of blocking issues. Do not invent clauses or legal facts. Return only the declared structured result.
+        outputSchema: &summaryOutput
+          type: object
+          additionalProperties: false
+          required: [reviewedClauses, executiveSummary, blockingIssues]
+          properties:
+            reviewedClauses: { type: integer }
+            executiveSummary: { type: string }
+            blockingIssues: { type: array, items: { type: string } }
+      expects:
+        maxBytes: 524288
+        schema:
+          type: object
+          additionalProperties: false
+          required: [runId, content, structured]
+          properties:
+            runId: { type: string }
+            content: { type: array }
+            structured: *summaryOutput
+      inputs:
+        contractId: { input: contractId }
+        results: { output: { node: review-clauses, path: [results] } }
+    - id: end
+      uses: core.end@1
+      title: Contract review report
+      with: {}
+      inputs:
+        contractId: { input: contractId }
+        reviewedClauses: { output: { node: synthesize, path: [structured, reviewedClauses] } }
+        executiveSummary: { output: { node: synthesize, path: [structured, executiveSummary] } }
+        blockingIssues: { output: { node: synthesize, path: [structured, blockingIssues] } }
+  edges:
+    - { id: start-review, source: start, target: review-clauses }
+    - { id: review-synthesize, source: review-clauses, target: synthesize }
+    - { id: synthesize-end, source: synthesize, target: end }
+  outputs:
+    contractId: { output: { node: end, path: [contractId] } }
+    reviewedClauses: { output: { node: end, path: [reviewedClauses] } }
+    executiveSummary: { output: { node: end, path: [executiveSummary] } }
+    blockingIssues: { output: { node: end, path: [blockingIssues] } }
+  policies:
+    maxConcurrentNodes: 8
+    maxNodeRuns: 16
+    maxDurationMs: 1800000
+    maxOutputBytes: 4194304
+    subworkflowMaxDepth: 3
+layout:
+  engine: xyflow
+  nodes:
+    start: { x: 20, y: 160 }
+    review-clauses: { x: 350, y: 160 }
+    synthesize: { x: 700, y: 160 }
+    end: { x: 1040, y: 160 }

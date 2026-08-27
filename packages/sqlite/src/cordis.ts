@@ -1,11 +1,11 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { RepositoryWorkflowTemplatesProvider } from '@gm-hz/dsh-dag-workflow-host'
+import { RepositoryWorkflowTemplatesService } from '@gm-hz/dsh-dag-workflow-host'
 import { WorkflowRunsService } from '@gm-hz/dsh-dag-workflow-host'
 import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunRecord } from '@gm-hz/dsh-dag-workflow-core'
 import { SqliteWorkflowCatalogRepository, type SqliteWorkflowCatalogOptions } from './catalog-repository.js'
 import { SqliteWorkflowRunStore, type SqliteWorkflowRunStoreOptions } from './run-store.js'
 
-export class SqliteWorkflowTemplatesProvider extends RepositoryWorkflowTemplatesProvider {
+export class SqliteWorkflowTemplatesService extends RepositoryWorkflowTemplatesService {
   static inject = ['workflowNodes']
   private readonly repository: SqliteWorkflowCatalogRepository
 
@@ -17,7 +17,7 @@ export class SqliteWorkflowTemplatesProvider extends RepositoryWorkflowTemplates
   }
 }
 
-export class SqliteWorkflowRunsProvider extends WorkflowRunsService {
+export class SqliteWorkflowRunsService extends WorkflowRunsService {
   private readonly store: SqliteWorkflowRunStore
 
   constructor(ctx: Context, config: SqliteWorkflowRunStoreOptions) {

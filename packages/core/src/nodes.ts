@@ -208,9 +208,8 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
   configSchema: {
     type: 'object',
     additionalProperties: false,
-    required: ['provider', 'prompt'],
+    required: ['prompt'],
     properties: {
-      provider: { type: 'string', minLength: 1 },
       prompt: { type: 'string', minLength: 1 },
       label: { type: 'string', minLength: 1 },
       outputSchema: { type: 'object' },
@@ -230,11 +229,7 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['success'],
   capabilities: ['dsh.subagents.start'],
-  dependencyKinds: ['agent-provider'],
   retry: 'never',
-  dependencies(config) {
-    return typeof config.provider === 'string' ? [{ kind: 'agent-provider', uses: config.provider }] : []
-  },
   validateConfig(config) {
     return config.outputSchema === undefined ? [] : validateDshObjectJsonSchema(config.outputSchema)
   },
@@ -243,7 +238,6 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
     if (agents === undefined) {
       throw new WorkflowExecutionError('AGENT_GATEWAY_MISSING', 'dsh.agent requires a WorkflowAgentGateway', { nodeId: context.nodeId })
     }
-    const provider = stringConfig(context.config, 'provider', context.nodeId)
     const prompt = stringConfig(context.config, 'prompt', context.nodeId)
     const label = optionalStringConfig(context.config, 'label', context.nodeId)
     const maxDepth = optionalIntegerConfig(context.config, 'maxDepth', context.nodeId)
@@ -254,7 +248,6 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
     const result = await agents.execute({
       runId: context.runId,
       nodeId: context.nodeId,
-      provider,
       prompt: renderAgentPrompt(prompt, context.inputs),
       signal: context.signal,
       ...(label === undefined ? {} : { label }),

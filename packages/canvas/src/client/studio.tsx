@@ -67,6 +67,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const [runResult, setRunResult] = useState<CanvasRunResult>()
   const [rightPanel, setRightPanel] = useState<RightPanel>('inspector')
   const [inputsText, setInputsText] = useState('{}')
+  const [paletteQuery, setPaletteQuery] = useState('')
   const [status, setStatus] = useState('READY / UNSAVED')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
@@ -102,6 +103,12 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
   const flow = useMemo(() => templateToFlow(template, definitions, trace), [template, definitions, trace])
   const selected = template.spec.nodes.find(node => node.id === selectedNode)
+  const filteredDefinitions = useMemo(() => {
+    const query = paletteQuery.trim().toLocaleLowerCase()
+    if (query.length === 0) return definitions
+    return definitions.filter(definition => [definition.title, definition.description, definition.uses, definition.toolName]
+      .some(value => value?.toLocaleLowerCase().includes(query)))
+  }, [definitions, paletteQuery])
 
   const save = useCallback(async (): Promise<CanvasWorkflowDraft | undefined> => execute('save draft', async () => {
     const result = draft === undefined
@@ -227,11 +234,11 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const edges = flow.edges
 
   return <div className="wf-studio" data-workflow-studio>
-    <style>{CANVAS_CSS}</style>
+    <style>{CANVAS_CSS + PRODUCT_CSS}</style>
     <header className="wf-topbar">
       <div className="wf-brand">
-        <span className="wf-brand-mark">D/</span>
-        <span><b>WORKFLOW</b><small>SIGNAL STUDIO</small></span>
+        <span className="wf-brand-mark">D</span>
+        <span><b>DSH WORKFLOW</b><small>GUARDED DAG STUDIO</small></span>
       </div>
       <div className="wf-doc-title">
         <span className="wf-status-dot" data-busy={busy} />
@@ -241,39 +248,49 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
         })} />
         <code>{template.metadata.id}</code>
       </div>
+      <div className="wf-guardrails" aria-label="Workflow guardrails">
+        <span><i />{template.spec.requires?.length ?? 0} 项依赖</span>
+        <span><i />审计开启</span>
+        <span><i />Schema 校验</span>
+      </div>
       <div className="wf-actions">
-        <button onClick={() => { setDraft(undefined); setTemplate(blankTemplate()); setTrace(undefined) }}>NEW</button>
-        <button onClick={() => void save()} disabled={busy}>SAVE</button>
-        <button onClick={() => void validate()} disabled={busy}>CHECK</button>
-        <button onClick={() => void showDiff()} disabled={busy || draft === undefined}>DIFF</button>
-        <button className="wf-primary" onClick={() => void publish()} disabled={busy}>PUBLISH ↗</button>
+        <button onClick={() => { setDraft(undefined); setTemplate(blankTemplate()); setTrace(undefined) }}>新建</button>
+        <button onClick={() => void save()} disabled={busy}>保存</button>
+        <button onClick={() => void validate()} disabled={busy}>校验</button>
+        <button onClick={() => void showDiff()} disabled={busy || draft === undefined}>差异</button>
+        <button className="wf-primary" onClick={() => void publish()} disabled={busy}>发布</button>
         {onClose === undefined ? null : <button className="wf-close" onClick={onClose} aria-label="Close studio">×</button>}
       </div>
     </header>
 
     <aside className="wf-palette">
-      <SectionLabel index="01" text="OPEN" />
+      <SectionLabel index="01" text="工作流" />
       <select value={draft?.id ?? ''} onChange={event => { if (event.target.value !== '') void loadDraft(event.target.value) }}>
-        <option value="">Select a draft…</option>
+        <option value="">选择一个草稿…</option>
         {catalog.map(item => <option key={item.id} value={item.id}>{item.name} · D{item.draftRevision}</option>)}
       </select>
-      <SectionLabel index="02" text="NODE CATALOG" />
+      <SectionLabel index="02" text="节点与工具" />
+      <div className="wf-palette-search">
+        <span>⌕</span>
+        <input value={paletteQuery} onChange={event => setPaletteQuery(event.target.value)} placeholder="搜索节点、Tool 或能力…" aria-label="Search workflow nodes" />
+      </div>
       <div className="wf-node-list">
-        {definitions.map((definition, index) => <button
+        {filteredDefinitions.map((definition, index) => <button
           key={definition.catalogId}
           className="wf-palette-node"
           onClick={() => mutate(addNode(template, definition, { x: 140 + index % 2 * 280, y: 100 + index * 36 }))}
         >
           <span>{nodeGlyph(definition)}</span>
           <b>{definition.title}</b>
-          <small>{definition.uses}</small>
+          <small>{definition.description}</small>
+          <em>{definition.kind === 'tool' ? 'DSH TOOL' : definition.uses}</em>
         </button>)}
       </div>
-      <div className="wf-palette-foot"><span>{definitions.length} TOOLS + NODES</span><span>V1α1</span></div>
+      <div className="wf-palette-foot"><span>{filteredDefinitions.length} / {definitions.length} 个节点</span><span>V1α1</span></div>
     </aside>
 
     <main className="wf-canvas">
-      <div className="wf-coordinate">GRAPH / {template.spec.nodes.length}N · {template.spec.edges.length}E</div>
+      <div className="wf-coordinate"><b>工作流画布</b><span>{template.spec.nodes.length} 个节点 · {template.spec.edges.length} 条连接</span></div>
       {definitions.length === 0
         ? <div className="wf-canvas-loading">INDEXING TOOLS + NODES…</div>
         : <ReactFlow
@@ -301,7 +318,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
           key={panel}
           data-active={rightPanel === panel}
           onClick={() => setRightPanel(panel)}
-        >{panel === 'inspector' ? 'NODE' : panel.toUpperCase()}</button>)}
+        >{panel === 'inspector' ? '配置' : panel === 'diagnostics' ? `问题${diagnostics.length > 0 ? ` ${diagnostics.length}` : ''}` : '变更'}</button>)}
       </nav>
       {rightPanel === 'inspector'
         ? selected === undefined
@@ -316,10 +333,10 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
     <section className="wf-trace">
       <div className="wf-trace-head">
-        <SectionLabel index="03" text="EXECUTION TRACE" />
+        <SectionLabel index="03" text="运行与审计" />
         <textarea value={inputsText} onChange={event => setInputsText(event.target.value)} aria-label="Run inputs JSON" />
-        <button className="wf-run" onClick={() => void runDraft()} disabled={busy}>▶ TEST RUN</button>
-        <button onClick={() => void refreshTrace()} disabled={busy || trace === undefined}>↻ TRACE</button>
+        <button className="wf-run" onClick={() => void runDraft()} disabled={busy}>▶ 试运行</button>
+        <button onClick={() => void refreshTrace()} disabled={busy || trace === undefined}>刷新轨迹</button>
         {runResult?.status === 'paused' && (runResult.needsAttention?.length ?? 0) === 0
           ? <button onClick={() => void resumeRun()} disabled={busy}>▶ RESUME</button>
           : null}
@@ -349,10 +366,11 @@ function WorkflowNodeView({ data, selected }: NodeProps<WorkflowFlowNode>) {
   const Custom = renderer
   const ports = data.definition?.outputPorts ?? ['default']
   return <article className="wf-graph-node" data-selected={selected} data-status={data.status ?? 'pending'}>
-    <div className="wf-node-cap"><span>{nodeGlyph(data.definition)}</span><em>{data.status ?? 'draft'}</em></div>
+    <div className="wf-node-cap"><span>{nodeGlyph(data.definition)}</span><em>{data.definition?.kind === 'tool' ? 'TOOL' : data.status ?? 'draft'}</em></div>
     {Custom === undefined
       ? <><h3>{data.template.title ?? data.definition?.title ?? data.template.id}</h3><code>{data.template.uses}</code></>
       : <Custom data={data} selected={selected} />}
+    <div className="wf-node-foot"><span>{data.status ?? 'draft'}</span><span>{data.definition?.capabilities.length ?? 0} capabilities</span></div>
     <Handle type="target" position={Position.Left} className="wf-handle" />
     {ports.map((port, index) => <Handle
       key={port}
@@ -531,6 +549,50 @@ function statusColor(status: string): string {
 function isObject(value: unknown): value is CanvasJsonObject {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
+
+const PRODUCT_CSS = String.raw`
+/* Guarded Workflow Studio: light-first, host-aware product skin. */
+.wf-studio{
+  --wf-bg:#f6f7fb;--wf-surface:#ffffff;--wf-surface-soft:#f1f3f7;--wf-surface-hover:#eef3ff;
+  --wf-border:#e2e6ed;--wf-border-strong:#cbd2dc;--wf-text:#171b24;--wf-muted:#667085;
+  --wf-brand:#2563eb;--wf-brand-strong:#1d4ed8;--wf-brand-soft:#eaf1ff;--wf-success:#159455;
+  --wf-warning:#b7791f;--wf-danger:#d64545;--wf-shadow:0 14px 42px rgba(27,39,66,.12);
+  --ink:var(--wf-text);--muted:var(--wf-muted);--panel:var(--wf-surface);--line:var(--wf-border);
+  --accent:var(--wf-brand);--green:var(--wf-success);color-scheme:light;background:var(--wf-bg);color:var(--wf-text);
+  font-family:var(--dsw-font-family),"Avenir Next","PingFang SC",sans-serif;
+  grid-template:64px minmax(0,1fr) 214px / 272px minmax(0,1fr) 348px;
+}
+.wf-topbar{height:64px;background:color-mix(in srgb,var(--wf-surface) 94%,transparent);border-color:var(--wf-border);box-shadow:0 1px 0 rgba(19,27,45,.03);backdrop-filter:blur(18px)}
+.wf-brand{width:272px;padding:0 20px;border-color:var(--wf-border);gap:11px}
+.wf-brand-mark{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--wf-brand);color:#fff;font:800 15px/1 var(--dsw-font-family),sans-serif;transform:none;box-shadow:0 7px 18px color-mix(in srgb,var(--wf-brand) 26%,transparent)}
+.wf-brand b{font-size:12px;letter-spacing:.035em;color:var(--wf-text)}.wf-brand small{font-size:8px;letter-spacing:.14em;color:var(--wf-muted);margin-top:2px}
+.wf-doc-title{gap:10px;padding:0 16px;max-width:min(38vw,520px)}.wf-status-dot{width:8px;height:8px;background:var(--wf-success);box-shadow:0 0 0 4px color-mix(in srgb,var(--wf-success) 14%,transparent)}.wf-status-dot[data-busy=true]{background:var(--wf-warning);box-shadow:0 0 0 4px color-mix(in srgb,var(--wf-warning) 14%,transparent)}
+.wf-doc-title input{font:650 15px/1.2 var(--dsw-font-family),sans-serif;color:var(--wf-text);min-width:160px}.wf-doc-title code{font:10px/1.2 var(--ds-font-family-code),monospace;color:var(--wf-muted);background:var(--wf-surface-soft);border:1px solid var(--wf-border);border-radius:6px;padding:4px 7px;overflow:hidden;text-overflow:ellipsis}
+.wf-guardrails{display:flex;align-items:center;gap:6px;margin-left:auto;white-space:nowrap}.wf-guardrails span{display:flex;align-items:center;gap:6px;padding:5px 8px;border:1px solid var(--wf-border);border-radius:999px;color:var(--wf-muted);font-size:9px;background:var(--wf-surface)}.wf-guardrails i{width:5px;height:5px;border-radius:50%;background:var(--wf-success)}
+.wf-actions{margin-left:12px;gap:5px;align-items:center;padding:0 12px 0 4px}.wf-actions button,.wf-trace button{height:34px;border:1px solid transparent;border-radius:8px;background:transparent;color:var(--wf-text);font:600 11px/1 var(--dsw-font-family),sans-serif;letter-spacing:0;padding:0 11px;transition:background .16s ease,border-color .16s ease,transform .16s ease}.wf-actions button:hover,.wf-trace button:hover{background:var(--wf-surface-soft);border-color:var(--wf-border)}
+.wf-actions .wf-primary{background:var(--wf-brand);color:#fff;border-color:var(--wf-brand);padding-inline:16px;box-shadow:0 6px 16px color-mix(in srgb,var(--wf-brand) 22%,transparent)}.wf-actions .wf-primary:hover{background:var(--wf-brand-strong);border-color:var(--wf-brand-strong);transform:translateY(-1px)}.wf-actions .wf-close{font-size:19px;color:var(--wf-muted);padding:0 8px}
+.wf-palette{padding:16px 14px 10px;background:var(--wf-surface);border-color:var(--wf-border)}.wf-section-label{gap:8px;color:var(--wf-text);font-size:11px;font-weight:650;letter-spacing:0;margin:3px 3px 10px;text-transform:none}.wf-section-label span{display:grid;place-items:center;width:18px;height:18px;border-radius:6px;background:var(--wf-brand-soft);color:var(--wf-brand);font-size:8px}
+.wf-palette select{height:38px;margin-bottom:18px;padding:0 11px;border:1px solid var(--wf-border);border-radius:9px;background:var(--wf-surface-soft);color:var(--wf-text);font:11px var(--dsw-font-family),sans-serif;outline:none}.wf-palette select:focus,.wf-palette-search:focus-within{border-color:var(--wf-brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--wf-brand) 12%,transparent)}
+.wf-palette-search{display:flex;align-items:center;height:38px;margin:0 0 10px;border:1px solid var(--wf-border);border-radius:9px;background:var(--wf-surface);color:var(--wf-muted);transition:border-color .16s ease,box-shadow .16s ease}.wf-palette-search span{padding-left:11px;font-size:17px}.wf-palette-search input{min-width:0;flex:1;border:0;outline:0;background:transparent;color:var(--wf-text);font:11px var(--dsw-font-family),sans-serif;padding:0 10px}
+.wf-node-list{gap:7px;padding:1px 1px 8px}.wf-palette-node{position:relative;grid-template-columns:32px minmax(0,1fr);padding:10px;border:1px solid transparent;border-radius:10px;background:transparent;color:var(--wf-text);transition:background .16s ease,border-color .16s ease,transform .16s ease;text-align:left}.wf-palette-node:hover{background:var(--wf-surface-hover);border-color:color-mix(in srgb,var(--wf-brand) 24%,var(--wf-border));transform:translateX(2px)}
+.wf-palette-node>span{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--wf-brand-soft);color:var(--wf-brand);font-size:13px;font-weight:750;grid-row:1/4}.wf-palette-node b{font-size:11px;font-weight:650;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wf-palette-node small{margin-top:3px;color:var(--wf-muted);font-size:9px;line-height:1.35;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}.wf-palette-node em{margin-top:5px;color:var(--wf-brand);font:650 7px/1 var(--ds-font-family-code),monospace;font-style:normal;letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.wf-palette-foot{padding:10px 3px 1px;border-color:var(--wf-border);color:var(--wf-muted);font-size:9px}
+.wf-canvas{background:var(--wf-bg)}.wf-canvas:before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(circle at 50% 32%,color-mix(in srgb,var(--wf-brand) 5%,transparent),transparent 42%)}.wf-coordinate{top:14px;left:16px;display:flex;align-items:center;gap:9px;padding:7px 10px;border:1px solid var(--wf-border);border-radius:8px;background:color-mix(in srgb,var(--wf-surface) 92%,transparent);box-shadow:0 5px 18px rgba(30,42,68,.06);color:var(--wf-muted);font:9px/1 var(--dsw-font-family),sans-serif;letter-spacing:0;backdrop-filter:blur(10px)}.wf-coordinate b{color:var(--wf-text);font-size:10px}.wf-coordinate span{border-left:1px solid var(--wf-border);padding-left:9px}
+.wf-canvas .react-flow__controls{overflow:hidden;border:1px solid var(--wf-border);border-radius:10px;background:var(--wf-surface);box-shadow:0 9px 26px rgba(27,39,66,.1)}.wf-canvas .react-flow__controls button{background:var(--wf-surface);color:var(--wf-text);border-bottom-color:var(--wf-border)}.wf-canvas .react-flow__controls button:hover{background:var(--wf-surface-soft)}.wf-canvas .react-flow__minimap{background:color-mix(in srgb,var(--wf-surface) 92%,transparent);border:1px solid var(--wf-border);border-radius:10px;box-shadow:0 9px 26px rgba(27,39,66,.08)}.wf-canvas .react-flow__edge-path{stroke:#aeb7c5;stroke-width:1.7}.wf-canvas .react-flow__edge.selected .react-flow__edge-path{stroke:var(--wf-brand);stroke-width:2.3}
+.wf-graph-node{width:224px;min-height:104px;padding:13px 14px 11px;border:1px solid var(--wf-border-strong);border-radius:11px;background:var(--wf-surface);box-shadow:0 10px 30px rgba(31,43,68,.1);color:var(--wf-text);overflow:hidden}.wf-graph-node:before{left:0;top:0;width:4px;height:100%;background:#98a2b3}.wf-graph-node[data-selected=true]{border-color:var(--wf-brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--wf-brand) 13%,transparent),0 14px 34px rgba(31,43,68,.14)}.wf-graph-node[data-status=succeeded]:before{background:var(--wf-success)}.wf-graph-node[data-status=running]:before,.wf-graph-node[data-status=waiting]:before{background:var(--wf-warning)}.wf-graph-node[data-status=failed]:before,.wf-graph-node[data-status=needs_attention]:before{background:var(--wf-danger)}
+.wf-node-cap{align-items:center;color:var(--wf-brand);font:700 10px/1 var(--dsw-font-family),sans-serif}.wf-node-cap>span{display:grid;place-items:center;width:26px;height:26px;border-radius:8px;background:var(--wf-brand-soft)}.wf-node-cap em{padding:4px 6px;border-radius:999px;background:var(--wf-surface-soft);color:var(--wf-muted);font:650 7px/1 var(--ds-font-family-code),monospace;letter-spacing:.05em}.wf-graph-node h3{font:650 13px/1.25 var(--dsw-font-family),sans-serif;margin:11px 0 5px}.wf-graph-node code{color:var(--wf-muted);font:8px/1.2 var(--ds-font-family-code),monospace}.wf-node-foot{display:flex;justify-content:space-between;align-items:center;margin-top:12px;padding-top:8px;border-top:1px solid var(--wf-border);color:var(--wf-muted);font-size:8px;text-transform:uppercase}.wf-node-foot span:first-child{color:var(--wf-success)}.wf-handle{width:9px!important;height:9px!important;background:var(--wf-surface)!important;border:2px solid var(--wf-brand)!important}
+.wf-inspector{background:var(--wf-surface);border-color:var(--wf-border)}.wf-inspector>nav{height:45px;padding:0 12px;border-color:var(--wf-border);gap:4px}.wf-inspector>nav button{flex:none;border:0;border-radius:7px;background:transparent;color:var(--wf-muted);font:600 10px/1 var(--dsw-font-family),sans-serif;letter-spacing:0;padding:0 12px}.wf-inspector>nav button:hover{background:var(--wf-surface-soft)}.wf-inspector>nav button[data-active=true]{color:var(--wf-brand);background:var(--wf-brand-soft);box-shadow:none}
+.wf-panel-body,.wf-diagnostics,.wf-diff{height:calc(100% - 45px);padding:20px}.wf-eyebrow{color:var(--wf-brand);font-size:9px;font-weight:700;letter-spacing:.08em}.wf-panel-body h2{font:700 20px/1.2 var(--dsw-font-family),sans-serif}.wf-uses{color:var(--wf-muted);font:9px var(--ds-font-family-code),monospace;margin-bottom:20px}.wf-panel-body label{color:var(--wf-muted);font-size:9px;font-weight:650;letter-spacing:.035em;margin-bottom:15px}.wf-panel-body input,.wf-panel-body textarea,.wf-schema-form select{border:1px solid var(--wf-border);border-radius:8px;background:var(--wf-surface-soft);color:var(--wf-text);font:10px/1.55 var(--ds-font-family-code),monospace;padding:9px 10px;outline:none}.wf-panel-body input:focus,.wf-panel-body textarea:focus,.wf-schema-form select:focus{border-color:var(--wf-brand);box-shadow:0 0 0 3px color-mix(in srgb,var(--wf-brand) 10%,transparent)}
+.wf-schema-form{border:1px solid var(--wf-border);border-radius:10px;padding:12px;margin-bottom:16px;background:color-mix(in srgb,var(--wf-surface-soft) 60%,transparent)}.wf-schema-form legend{color:var(--wf-brand);font-size:8px;font-weight:700}.wf-schema-form input[type=checkbox]{accent-color:var(--wf-brand)}.wf-danger{border:1px solid color-mix(in srgb,var(--wf-danger) 32%,var(--wf-border));border-radius:8px;background:color-mix(in srgb,var(--wf-danger) 8%,var(--wf-surface));color:var(--wf-danger);font:650 10px var(--dsw-font-family),sans-serif}.wf-danger:hover{background:color-mix(in srgb,var(--wf-danger) 13%,var(--wf-surface))}.wf-panel-empty{color:var(--wf-muted)}.wf-panel-empty b{color:var(--wf-text)}
+.wf-diagnostics>button{border:1px solid var(--wf-border);border-radius:9px;background:var(--wf-surface-soft);color:var(--wf-text)}.wf-diagnostics>button:hover{border-color:var(--wf-brand)}.wf-diagnostics>button>span{color:var(--wf-warning)}.wf-diagnostics>button[data-severity=error]>span{color:var(--wf-danger)}.wf-diagnostics p{color:var(--wf-muted)}.wf-diff-flags span{border-color:var(--wf-border);border-radius:999px;color:var(--wf-muted)}.wf-diff-flags span[data-on=true]{border-color:var(--wf-brand);background:var(--wf-brand-soft);color:var(--wf-brand)}.wf-diff section{border-color:var(--wf-border)}
+.wf-trace{background:var(--wf-surface);border-color:var(--wf-border);grid-template-rows:48px 1fr 24px}.wf-trace-head{border-color:var(--wf-border);align-items:center}.wf-trace-head .wf-section-label{min-width:272px;padding:0 17px}.wf-trace-head textarea{align-self:stretch;width:320px;border:0;border-left:1px solid var(--wf-border);border-right:1px solid var(--wf-border);background:var(--wf-surface-soft);color:var(--wf-text);font:9px/1.45 var(--ds-font-family-code),monospace;padding:8px 11px}.wf-trace-head .wf-run{margin-left:10px;background:var(--wf-brand);border-color:var(--wf-brand);color:#fff}.wf-trace-head .wf-run:hover{background:var(--wf-brand-strong)}.wf-run-state{margin-left:auto;margin-right:16px;border:1px solid var(--wf-border);border-radius:999px;background:var(--wf-surface-soft);color:var(--wf-muted);font:650 8px/1 var(--ds-font-family-code),monospace;padding:6px 9px}.wf-run-state.wf-completed{color:var(--wf-success);border-color:color-mix(in srgb,var(--wf-success) 32%,var(--wf-border));background:color-mix(in srgb,var(--wf-success) 7%,var(--wf-surface))}.wf-run-state.wf-failed,.wf-run-state.wf-paused{color:var(--wf-danger);border-color:color-mix(in srgb,var(--wf-danger) 30%,var(--wf-border))}
+.wf-events{gap:7px;padding:10px 14px}.wf-events button{flex-basis:188px;border:1px solid var(--wf-border);border-radius:9px;background:var(--wf-surface-soft);color:var(--wf-text);padding:8px}.wf-events button:hover{border-color:var(--wf-brand);background:var(--wf-surface-hover)}.wf-events button span{color:var(--wf-brand);font-weight:700}.wf-events button small{color:var(--wf-muted)}.wf-empty-line{color:var(--wf-muted);font-size:10px}.wf-statusbar{height:24px;border-top:1px solid var(--wf-border);background:var(--wf-surface-soft);color:var(--wf-muted);font:650 8px/1 var(--ds-font-family-code),monospace;letter-spacing:.035em;padding:0 11px}
+html[style*="color-scheme: dark"] .wf-studio{--wf-bg:#111318;--wf-surface:#181b21;--wf-surface-soft:#20242c;--wf-surface-hover:#222b3d;--wf-border:#2b303a;--wf-border-strong:#3b424f;--wf-text:#eef1f6;--wf-muted:#98a2b3;--wf-brand:#6d9cff;--wf-brand-strong:#8aafff;--wf-brand-soft:#1d2b47;--wf-success:#42c77a;--wf-warning:#e5ad4f;--wf-danger:#f07070;--wf-shadow:0 16px 46px rgba(0,0,0,.28);color-scheme:dark}
+html[style*="color-scheme: dark"] .wf-topbar{box-shadow:0 1px 0 #0005}html[style*="color-scheme: dark"] .wf-canvas:before{background:radial-gradient(circle at 50% 32%,rgba(68,105,180,.12),transparent 44%)}html[style*="color-scheme: dark"] .wf-graph-node{box-shadow:0 12px 34px rgba(0,0,0,.26)}
+@media(prefers-color-scheme:dark){html:not([style*="color-scheme: light"]) .wf-studio{--wf-bg:#111318;--wf-surface:#181b21;--wf-surface-soft:#20242c;--wf-surface-hover:#222b3d;--wf-border:#2b303a;--wf-border-strong:#3b424f;--wf-text:#eef1f6;--wf-muted:#98a2b3;--wf-brand:#6d9cff;--wf-brand-strong:#8aafff;--wf-brand-soft:#1d2b47;--wf-success:#42c77a;--wf-warning:#e5ad4f;--wf-danger:#f07070;--wf-shadow:0 16px 46px rgba(0,0,0,.28);color-scheme:dark}}
+@media(max-width:1400px){.wf-doc-title code{display:none}}
+@media(max-width:1180px){.wf-studio{grid-template-columns:232px minmax(0,1fr) 310px}.wf-brand{width:232px}.wf-guardrails{display:none}.wf-trace-head .wf-section-label{min-width:232px}.wf-actions button{padding-inline:8px}}
+@media(max-width:900px){.wf-studio{grid-template-columns:210px minmax(0,1fr) 280px}.wf-brand{width:210px}.wf-doc-title code{display:none}.wf-actions button:nth-child(-n+2){display:none}.wf-trace-head .wf-section-label{min-width:210px}.wf-trace-head textarea{width:240px}}
+`
 
 const CANVAS_CSS = String.raw`
 .wf-canvas .react-flow__minimap{width:150px!important;height:92px!important}.wf-canvas-loading{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:9px;letter-spacing:.16em}

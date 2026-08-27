@@ -33,14 +33,13 @@ requires:
   - { kind: capability, uses: dsh.tools.execute }
   - { kind: tool, uses: dms.query }
   - { kind: capability, uses: dsh.subagents.start }
-  - { kind: agent-provider, uses: general-purpose }
   - { kind: script-runtime, uses: dsh.expr@1 }
   - { kind: secret, uses: credential:analytics-readonly }
   - { kind: workflow, uses: normalize-result@3 }
 ```
 
 - NodeDefinition 的 `capabilities` 和 `dependencies(config)`、以及 secret binding 都由编译器自动解析；任一 `kind:uses` 未声明时产生 `WORKFLOW_REQUIREMENT_UNDECLARED`。
-- 同一依赖不能重复。Tool name、Agent provider、runtime 和 subworkflow revision 必须来自固定 config，不能由运行输入动态改写。
+- 同一依赖不能重复。Tool name、runtime 和 subworkflow revision 必须来自固定 config，不能由运行输入动态改写。Agent 节点始终继承 owning DSH Agent 的 scope，模板不选择底层执行实现。
 - `requires` 只收窄可调用范围，不授予任何权限。实际调用仍必须同时满足 owning Agent scope、部署策略与具体 DSH Tool/Node policy。
 - Engine 按 NodeDefinition `capabilities` 裁剪内置 gateway，并为自定义 Node 创建 scoped `context.capabilities`；未声明的 capability 不可见，声明但 Host 未安装也会 fail closed。
 - 第三方 NodeDefinition 是受信任代码；闭包中的宿主级 ambient authority 仍需由插件审计或进程 sandbox 约束。
@@ -50,7 +49,7 @@ requires:
 1. 普通外部能力必须注册为 DSH Tool，并统一使用 `dsh.tool@1`。Tool name 固定在 `with.name`，输入来自结构化 binding，执行继续经过 DSH scope、guard、credential、observer 与 output validation。Canvas 中每个 scope-visible Tool 只是这个通用节点的一个 catalog 条目，不产生新的运行时类型。
 2. 只有单次 JSON Tool 调用无法表达的暂停恢复、长任务 checkpoint、事务补偿或特殊控制流，才能注册自定义 `WorkflowNodeDefinition`。它可以通过 Host `WorkflowCapabilityRegistry` 绑定生命周期服务，但必须在 definition 和 `spec.requires` 中使用同一个 capability id。
 
-不存在第三种 Tool-backed Node Provider/Node Preset 执行层。脚本 runtime 是内置 `core.script@1` 的纯数据实现细节，也不能用于绕开 Tool policy。
+不存在第三种 Tool-backed Node Preset 执行层。脚本 runtime 是内置 `core.script@1` 的纯数据实现细节，也不能用于绕开 Tool policy。
 
 ## Node
 
@@ -121,7 +120,7 @@ secret:
   ref: CREDENTIAL_REFERENCE
 ```
 
-`output.node` 必须是当前节点的严格上游。`path` 是 string/integer 数组，不解析点号字符串。secret 只存 reference；值由执行时 credentials provider 解析，永不写入模板、event 或 checkpoint。
+`output.node` 必须是当前节点的严格上游。`path` 是 string/integer 数组，不解析点号字符串。secret 只存 reference；值由执行时 secret resolver 解析，永不写入模板、event 或 checkpoint。
 
 Binding 自身不提供表达式：它只负责把 workflow input、上游 output、literal 或 secret 精确送入节点。确定性派生逻辑应显式建模为 `core.script@1` 节点，禁止在 binding 中夹带模板代码或 JS。
 
@@ -213,7 +212,7 @@ layout:
 - 每个 child invocation id 由 parent run/node/item index 稳定派生。同一 invocation 必须绑定同一模板 semantic hash、inputs 和 depth；冲突 fail loud。
 - foreach checkpoint 保存每个 item 的 `pending/running/completed` frame。崩溃后 running item 恢复同一 child run，不创建第二个副作用执行。
 - `dsh.human-approval@1.with` 必须包含 `{ action, reason }`；任意 `inputs` 作为只读详情。节点在调用 approval seam 前提交 `waiting` checkpoint，结果走 `approved/rejected` 端口。
-- `dsh.agent@1.with` 必须包含 `{ provider, prompt }`，可选 `label/outputSchema/maxDepth`；输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
+- `dsh.agent@1.with` 必须包含 `{ prompt }`，可选 `label/outputSchema/maxDepth`；它继承 owning DSH Agent scope，输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
 
 ## 发布校验
 

@@ -37,7 +37,7 @@ export interface DshSubagentRuntimeLike {
       readonly persona: boolean
     }
   } | undefined
-  start(provider: string, request: {
+  start(target: string, request: {
     readonly label?: string
     readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
     readonly parent: DshAgentLike

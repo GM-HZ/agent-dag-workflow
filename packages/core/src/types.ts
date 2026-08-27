@@ -111,7 +111,6 @@ export interface WorkflowSecretGateway {
 export interface WorkflowAgentRequest {
   readonly runId: string
   readonly nodeId: string
-  readonly provider: string
   readonly prompt: string
   readonly label?: string
   readonly outputSchema?: JsonSchema

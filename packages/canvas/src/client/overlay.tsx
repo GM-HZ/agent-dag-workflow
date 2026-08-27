@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from 'react'
+import { useMemo, useRef, useSyncExternalStore } from 'react'
 import { createWorkflowCanvasApi, type WorkflowCanvasRemoteNamespace } from './api.js'
 import type { WorkflowCanvasUiController } from './controller.js'
 import { WorkflowStudio } from './studio.js'
@@ -14,18 +14,40 @@ export interface WorkflowCanvasOverlayProps {
   readonly controller: WorkflowCanvasUiController
 }
 
+/**
+ * Keep the authority session that opened Studio stable for the lifetime of the
+ * overlay. Starting a DSH Agent temporarily changes `sessions.current` to the
+ * child session; following that value would make in-flight Canvas RPCs switch
+ * principal (and the fail-closed host correctly rejects the child session).
+ */
+export function retainWorkflowCanvasSession(
+  open: boolean,
+  current: string | undefined,
+  retained: string | undefined,
+): string | undefined {
+  if (!open) return undefined
+  return retained ?? current
+}
+
+export function canLaunchWorkflowCanvas(current: string | undefined): boolean {
+  return current !== undefined
+}
+
 export function WorkflowCanvasOverlay({ remote, sessions, controller }: WorkflowCanvasOverlayProps) {
+  const api = useMemo(() => createWorkflowCanvasApi(remote), [remote])
   const snapshot = useSyncExternalStore(
     listener => sessions.subscribe(listener),
     () => sessions.getSnapshot(),
     () => sessions.getSnapshot(),
   )
   const ui = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
-  const sessionId = snapshot.current
+  const retainedSession = useRef<string | undefined>(undefined)
+  const sessionId = retainWorkflowCanvasSession(ui.open, snapshot.current, retainedSession.current)
+  retainedSession.current = sessionId
   if (ui.open && sessionId !== undefined) {
     return <WorkflowStudio
       key={ui.requestId}
-      api={createWorkflowCanvasApi(remote)}
+      api={api}
       sessionId={sessionId}
       {...(ui.target === undefined ? {} : { initialTarget: ui.target })}
       onClose={() => controller.close()}
@@ -34,8 +56,8 @@ export function WorkflowCanvasOverlay({ remote, sessions, controller }: Workflow
   return <button
     className="wf-launcher"
     data-workflow-canvas-launcher
-    disabled={sessionId === undefined}
-    title={sessionId === undefined ? 'Open a DSH session before launching Workflow Studio' : 'Open Workflow Signal Studio'}
+    disabled={!canLaunchWorkflowCanvas(snapshot.current)}
+    title={!canLaunchWorkflowCanvas(snapshot.current) ? 'Open a DSH session before launching Workflow Studio' : 'Open Workflow Signal Studio'}
     onClick={() => controller.open()}
   >
     <style>{LAUNCHER_CSS}</style>

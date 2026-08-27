@@ -1,7 +1,7 @@
 {
   "name": "@gm-hz/dsh-dag-workflow-sqlite",
-  "version": "0.1.5",
-  "description": "Node SQLite persistence providers for DSH workflow templates and runs",
+  "version": "0.2.0",
+  "description": "Node SQLite persistence for DSH workflow templates and runs",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
   "license": "MIT",

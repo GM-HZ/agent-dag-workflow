@@ -23,7 +23,7 @@ flowchart LR
 - **一个真源**：Agent、Engine 和 Canvas 都读写 `WorkflowTemplate`，不再维护第二套 Canvas DSL。
 - **精确解析**：节点使用 `type@version`，发布后的 Workflow 和子流程固定到不可变 revision。
 - **能力不越权**：`dsh.tool@1`、`dsh.agent@1`、`dsh.human-approval@1` 始终经过当前 DSH scope 的 tool、subagent、approval 和 owning Agent。
-- **依赖先声明**：动态节点的 capability、Tool、Agent provider、脚本 runtime、secret 和子流程必须出现在 `spec.requires`；模板声明只会收窄权限，不会授予新权限。
+- **依赖先声明**：动态节点的 capability、Tool、脚本 runtime、secret 和子流程必须出现在 `spec.requires`；Agent 节点继承当前 DSH Agent scope，模板声明只会收窄权限，不会授予新权限。
 - **结果先契约化**：节点可用 `expects.schema/maxBytes` 声明实例级结果契约，输出必须在写入 checkpoint 前通过确定性校验；需要业务语义复核时再显式连接 Agent 节点。
 - **逻辑可扩展、边界不模糊**：确定性 JSON 处理使用可插拔的 `core.script@1` runtime；网络、文件、密钥和外部副作用仍必须走 DSH Tool/Agent 节点。
 - **外部扩展只有两级**：普通外部能力注册为 DSH Tool，由通用 `dsh.tool@1` 执行；只有暂停恢复、长任务、事务补偿等特殊工作流语义才实现自定义 Node。
@@ -80,7 +80,7 @@ spec:
     answer: { output: { node: end, path: [answer] } }
 ```
 
-完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)，多 Agent 示例见 [research-report.workflow.yaml](examples/research-report.workflow.yaml)。真实外部数据的完整验收模板见 [weekly-ai-model-news.workflow.json](examples/weekly-ai-model-news.workflow.json)：DSH Tool 获取一周内 100 条候选，Agent 只返回评分/摘要 overlay，受限脚本严格合并、稳定排序并输出 Top 10。
+完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)。复杂场景统一收录在 [Showcase workflows](docs/showcase-workflows.md)：包括生产发布门禁、可恢复批量合同审查、多源尽调和 AI 模型周报，覆盖并行 Agent、Tool、受限脚本、审批、子 Workflow、foreach 恢复和审计追踪。真实外部数据的完整验收模板见 [weekly-ai-model-news.workflow.json](examples/weekly-ai-model-news.workflow.json)：13 路 DSH `web_search` 检索一周内候选，Agent 归一化最多 100 条并返回评分/摘要 overlay，受限脚本严格合并、稳定排序并输出 Top 10。
 
 ## 快速开始
 
@@ -90,7 +90,7 @@ spec:
 dsh plugin --profile web add @gm-hz/dsh-dag-workflow
 ```
 
-该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-dag-workflow/workflows.db`。从 `0.1.4` 及更早版本升级时，主包会在新路径不存在的前提下通过 SQLite backup API 迁移旧的 `dsh-workflow/workflows.db`，并保留旧文件作为备份。
+该命令会装配 DAG runtime、Agent authoring tools、`workflow-builder` Skill、SQLite 持久化和 Canvas Studio；默认数据库位于 DSH home 下的 `dsh-dag-workflow/workflows.db`。
 
 从源码开发和运行全部门禁需要 pnpm 11：
 
@@ -145,7 +145,7 @@ await ctx.plugin(DagWorkflow)
 | `ctx.workflowRuns` | 事件日志与 checkpoint |
 | `ctx.dagWorkflowEngine` | 启动、恢复和取消运行 |
 
-内存 Provider 适合开发和测试。生产环境先挂载 SQLite Provider，再让主插件复用外部服务：
+内存实现适合开发和测试。生产环境先挂载 SQLite 持久化实现，再让主插件复用外部服务：
 
 ```ts
 import {
@@ -155,8 +155,8 @@ import {
 } from '@gm-hz/dsh-dag-workflow-host'
 import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 import {
-  SqliteWorkflowRunsProvider,
-  SqliteWorkflowTemplatesProvider,
+  SqliteWorkflowRunsService,
+  SqliteWorkflowTemplatesService,
 } from '@gm-hz/dsh-dag-workflow-sqlite'
 
 const database = { path: './data/workflows.db' }
@@ -164,8 +164,8 @@ const database = { path: './data/workflows.db' }
 await ctx.plugin(WorkflowCapabilityRegistryService)
 await ctx.plugin(WorkflowScriptRuntimeRegistryService)
 await ctx.plugin(WorkflowNodeRegistryService)
-await ctx.plugin(SqliteWorkflowTemplatesProvider, database)
-await ctx.plugin(SqliteWorkflowRunsProvider, database)
+await ctx.plugin(SqliteWorkflowTemplatesService, database)
+await ctx.plugin(SqliteWorkflowRunsService, database)
 await ctx.plugin(DagWorkflow, {
   catalog: 'external',
   runStore: 'external',
@@ -195,7 +195,7 @@ workflow_run
 
 > 创建一个“研究主题 → 两路独立调研 → 汇总报告 → 人工确认”的 workflow。先展示校验结果和 diff，得到我确认后再发布，并运行发布的精确 revision。
 
-Skill 引导 Agent 按 `查询节点/Agent provider → 生成拓扑 → 创建或导入 draft → 校验 → diff → 发布 → 运行` 的顺序工作。大型模板使用 `workflow_draft_import` 传递完整 JSON 字符串，避免模型把 object 参数错误序列化。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
+Skill 引导 Agent 按 `查询节点和 Tool → 生成拓扑 → 创建或导入 draft → 校验 → diff → 发布 → 运行` 的顺序工作。大型模板使用 `workflow_draft_import` 传递完整 JSON 字符串，避免模型把 object 参数错误序列化。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
 
 ### 2. 从代码执行
 
@@ -231,7 +231,7 @@ if (result.status === 'completed') {
 
 可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。`sortBy` 支持对象数组的稳定多键排序，`joinBy` 用唯一 key 严格合并等长 overlay，并拒绝未知、重复、缺失 key 或覆盖原字段。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `dsh.tool@1` 或 `dsh.agent@1`，再把其结构化输出交给脚本节点。
 
-周报验收模板使用的 [AI news provider](packages/ai-news-provider/README.md) 是源码内私有参考包：它证明普通外部 provider 只需注册一个 DSH Tool，不需要实现 Workflow Node。该模板还演示了更强的 Agent 边界：Agent 只能产出 `{id, ...新增字段}`，脚本用 `joinBy` 将其与 Tool 原始记录合并，因此标题、URL、发布时间和来源无法被 Agent 静默改写。
+周报验收模板只使用 DSH 已有的 `web_search` Tool：Agent 先规划 13 组查询，Runtime 并行执行 Tool，随后将最多 100 条候选交给 Agent 结构化和评分。确定性脚本用 `joinBy` 将 `{id, ...新增字段}` overlay 合并回原记录，因此排序、截断和关键字段合并不由 Agent 隐式控制。
 
 动态依赖和结果契约属于模板语义并进入 semantic hash。执行时一个节点能看到的 gateway 或自定义 Host capability 会按其 NodeDefinition `capabilities` 裁剪；最终有效能力是“节点声明 ∩ Workflow requires ∩ owning Agent scope ∩ DSH policy”。
 
@@ -371,9 +371,8 @@ ctx.effect(() => ctx.workflowScripts.register({
 | [`@gm-hz/dsh-dag-workflow-core`](packages/core/README.md) | 协议、编译器、调度器、核心节点、Run Store contract |
 | [`@gm-hz/dsh-dag-workflow-catalog`](packages/catalog/README.md) | draft CAS、diff、不可变发布版本 |
 | [`@gm-hz/dsh-dag-workflow-host`](packages/dsh/README.md) | Cordis services、DSH adapters、Agent tools、Skill |
-| [`@gm-hz/dsh-dag-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint Provider |
+| [`@gm-hz/dsh-dag-workflow-sqlite`](packages/sqlite/README.md) | SQLite Catalog、事件和 checkpoint 持久化实现 |
 | [`@gm-hz/dsh-dag-workflow-canvas`](packages/canvas/README.md) | 授权 RPC、DSH Client manifest、XYFlow Studio |
-| [`@gm-hz/dsh-dag-workflow-ai-news-provider`](packages/ai-news-provider/README.md) | 私有验收 provider；通过普通 DSH Tool 提供一周 AI 新闻候选 |
 
 - [总体架构](docs/architecture.md)
 - [源码对照与设计取舍](docs/source-findings.md)

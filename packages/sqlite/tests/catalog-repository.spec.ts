@@ -23,9 +23,9 @@ import {
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   SqliteWorkflowCatalogRepository,
-  SqliteWorkflowRunsProvider,
+  SqliteWorkflowRunsService,
   SqliteWorkflowRunStore,
-  SqliteWorkflowTemplatesProvider,
+  SqliteWorkflowTemplatesService,
 } from '../src/index.js'
 
 const temporaryRoots: string[] = []
@@ -193,11 +193,11 @@ describe('SQLite workflow catalog repository', () => {
     const ctx = new Context()
     await ctx.plugin(WorkflowScriptRuntimeRegistryService)
     await ctx.plugin(WorkflowNodeRegistryService)
-    const provider = await ctx.plugin(SqliteWorkflowTemplatesProvider, { path: ':memory:' })
+    const service = await ctx.plugin(SqliteWorkflowTemplatesService, { path: ':memory:' })
 
     const draft = ctx.workflowTemplates.createDraft(template())
     expect(ctx.workflowTemplates.publish(draft.id, draft.revision).revision).toBe(1)
-    await provider.dispose()
+    await service.dispose()
     expect(ctx.get('workflowTemplates')).toBeUndefined()
   })
 
@@ -270,9 +270,9 @@ describe('SQLite workflow catalog repository', () => {
 
   it('publishes the SQLite run store as ctx.workflowRuns', async () => {
     const ctx = new Context()
-    const provider = await ctx.plugin(SqliteWorkflowRunsProvider, { path: ':memory:' })
+    const service = await ctx.plugin(SqliteWorkflowRunsService, { path: ':memory:' })
     expect(ctx.workflowRuns.listRecoverableRuns()).toEqual([])
-    await provider.dispose()
+    await service.dispose()
     expect(ctx.get('workflowRuns')).toBeUndefined()
   })
 })

@@ -157,7 +157,6 @@ function agentApprovalTemplate(): WorkflowTemplate {
     spec: {
       requires: [
         { kind: 'capability', uses: 'dsh.subagents.start' },
-        { kind: 'agent-provider', uses: 'spawn' },
         { kind: 'capability', uses: 'dsh.approval.request' },
         { kind: 'approval-action', uses: 'publish-report' },
       ],
@@ -174,7 +173,6 @@ function agentApprovalTemplate(): WorkflowTemplate {
           id: 'delegate',
           uses: 'dsh.agent@1',
           with: {
-            provider: 'spawn',
             prompt: 'Produce the answer.',
             label: 'workflow child',
             outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
@@ -349,8 +347,8 @@ describe('DSH Cordis plugin', () => {
     const capabilitiesPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowCapabilityRegistryService)
     const scriptsPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowScriptRuntimeRegistryService)
     const nodesPlugin = await ctx.plugin(DshWorkflowPlugin.WorkflowNodeRegistryService)
-    const templatesPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowTemplatesProvider)
-    const runsPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowRunsProvider)
+    const templatesPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowTemplatesService)
+    const runsPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowRunsService)
     const registry = ctx.workflowNodes.registry
     const capabilities = ctx.workflowCapabilities.registry
     const draft = ctx.workflowTemplates.createDraft(childTemplate('external-services'))
@@ -448,7 +446,7 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.skills.definitions).toEqual(new Map())
   })
 
-  it('executes the 100-item weekly news workflow with deterministic Top-10 and immutable source fields', async () => {
+  it('executes the built-in web_search weekly-news DAG with implicit current-Agent delegation', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
     await ctx.plugin(DshWorkflowPlugin)
@@ -456,64 +454,73 @@ describe('DSH Cordis plugin', () => {
     const to = '2026-08-25T23:59:59+08:00'
     const items = Array.from({ length: 100 }, (_, index) => {
       const publishedAt = `2026-08-${String(19 + (index % 7)).padStart(2, '0')}T${String(index % 24).padStart(2, '0')}:00:00+08:00`
-      return index % 2 === 0
-        ? {
-            id: `hn-${String(index).padStart(3, '0')}`,
-            title: `AI model news ${index}`,
-            url: `https://news.example/${index}`,
-            publishedAt,
-            source: 'Hacker News',
-            kind: 'news',
-            engagement: { points: index * 3, comments: index },
-          }
-        : {
-            id: `arxiv-${String(index).padStart(3, '0')}`,
-            title: `AI model paper ${index}`,
-            url: `https://arxiv.example/${index}`,
-            publishedAt,
-            source: 'arXiv',
-            kind: 'paper',
-            summary: `Source abstract ${index}`,
-          }
+      const url = `https://source.example/ai-model-${index}`
+      return {
+        id: url,
+        title: `AI model item ${index}`,
+        url,
+        publishedAt,
+        source: 'source.example',
+        kind: (['release', 'research', 'news', 'analysis'] as const)[index % 4]!,
+        summary: `Source-grounded summary ${index}`,
+      }
     })
+    const sources = [...items, ...Array.from({ length: 4 }, (_, index) => ({
+      url: `https://source.example/extra-${index}`,
+      title: `Extra result ${index}`,
+      snippet: `Extra snippet ${index}`,
+      publishedAt: from,
+    }))]
     ctx.tools.handler = async input => {
-      expect(input).toMatchObject({ name: 'ai_model_news_search', arguments: { from, to, limit: 100 } })
+      expect(input.name).toBe('web_search')
+      expect(input.arguments.queries).toEqual(expect.arrayContaining([expect.any(String)]))
+      expect(input.arguments.queries).toHaveLength(4)
+      const requestIndex = ctx.tools.requests.indexOf(input)
       return {
         isError: false,
         value: {
-          from,
-          to,
-          requestedLimit: 100,
-          candidateCount: 100,
-          availableCount: 140,
+          content: `Search batch ${requestIndex + 1}`,
+          sources: sources.slice(requestIndex * 8, requestIndex * 8 + 8).map(item => ({
+            url: item.url,
+            title: item.title,
+            snippet: 'summary' in item ? item.summary : item.snippet,
+            publishedAt: item.publishedAt,
+          })),
           truncated: true,
-          items,
-          sourceCounts: { hackerNews: 70, arxiv: 70 },
         },
       }
     }
     let childId = 0
-    ctx.subagents.handler = async (_provider, request) => {
+    ctx.subagents.handler = async (_target, request) => {
       const marker = '\n\nWorkflow node inputs (JSON):\n'
       const markerIndex = request.prompt[0]?.text.indexOf(marker) ?? -1
       if (markerIndex < 0) throw new Error('missing workflow input marker')
-      const inputs = JSON.parse(request.prompt[0]!.text.slice(markerIndex + marker.length)) as {
-        readonly items: readonly { readonly id: string }[]
-      }
-      const structured = request.label === 'score-weekly-ai-model-news'
-        ? {
-            scores: inputs.items.map((item, index) => ({
+      const inputs = JSON.parse(request.prompt[0]!.text.slice(markerIndex + marker.length)) as Record<string, unknown>
+      let structured: unknown
+      if (request.label === 'plan-weekly-ai-model-searches') {
+        structured = { batches: Array.from({ length: 13 }, (_, index) => ({
+          queries: Array.from({ length: 4 }, (_unused, query) => `AI model topic ${index}-${query} ${from} ${to}`),
+        })) }
+      } else if (request.label === 'normalize-weekly-ai-model-news') {
+        structured = { items }
+      } else if (request.label === 'score-weekly-ai-model-news') {
+        const candidates = inputs.items as readonly { readonly id: string }[]
+        structured = {
+            scores: candidates.map((item, index) => ({
               id: item.id,
               importanceScore: (index * 37) % 101,
               importanceReason: `importance ${index}`,
             })),
-          }
-        : {
-            summaries: inputs.items.map((item, index) => ({
+        }
+      } else {
+        const candidates = inputs.items as readonly { readonly id: string }[]
+        structured = {
+            summaries: candidates.map((item, index) => ({
               id: item.id,
               digest: `摘要 ${index + 1}`,
             })),
-          }
+        }
+      }
       childId += 1
       return {
         id: `child-${childId}`,
@@ -552,15 +559,22 @@ describe('DSH Cordis plugin', () => {
     for (const [index, item] of outputs.items.entries()) {
       expect(item).toEqual({ ...expected[index], rank: index + 1, digest: `摘要 ${index + 1}` })
     }
-    expect(ctx.tools.requests).toHaveLength(1)
+    expect(ctx.tools.requests).toHaveLength(13)
+    expect(ctx.tools.requests.every(request => request.name === 'web_search')).toBe(true)
+    expect(ctx.subagents.requests.every(args => args[0] === 'spawn')).toBe(true)
     expect(ctx.subagents.requests.map(args => args[1].label)).toEqual([
+      'plan-weekly-ai-model-searches',
+      'normalize-weekly-ai-model-news',
       'score-weekly-ai-model-news',
       'summarize-weekly-ai-model-news',
     ])
     const record = ctx.workflowRuns.loadRun(result.runId)
     expect(record?.checkpoint).toMatchObject({ status: 'completed' })
     expect(record?.checkpoint.nodeStates).toEqual(expect.objectContaining({
-      'fetch-news': 'succeeded',
+      'plan-searches': 'succeeded',
+      'search-01': 'succeeded',
+      'search-13': 'succeeded',
+      'normalize-news': 'succeeded',
       'score-news': 'succeeded',
       'rank-top-10': 'succeeded',
       'summarize-top-10': 'succeeded',
@@ -666,7 +680,7 @@ describe('DSH Cordis plugin', () => {
     const result = await run.result
 
     expect(result.status).toBe('cancelled')
-    expect(result).toMatchObject({ error: 'dag workflow provider disposed' })
+    expect(result).toMatchObject({ error: 'dag workflow service disposed' })
   })
 
   it('routes agent and approval nodes through their DSH capability seams', async () => {
@@ -764,11 +778,11 @@ describe('DSH Cordis plugin', () => {
         }),
       ]),
       scriptRuntimes: [expect.objectContaining({ uses: 'dsh.expr@1', deterministic: true })],
-      agentProviders: [expect.objectContaining({
-        name: 'spawn',
+      agent: expect.objectContaining({
+        mode: 'current',
         capabilities: expect.objectContaining({ outputSchema: true }),
         structuredOutputSchema: expect.objectContaining({ dialect: 'dsh.object-json-schema/v1' }),
-      })],
+      }),
     })
     const created = await call('workflow_draft_create', { template: authored })
     expect(created).toMatchObject({ id: 'tool-authored', revision: 1 })

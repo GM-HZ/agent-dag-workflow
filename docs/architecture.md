@@ -10,7 +10,7 @@ DSH DAG Workflow 是一组可组合插件，而不是一个拥有独立模型、
 
 1. **模板是唯一事实源。** Skill、Agent 工具、Canvas、CLI 和执行器读写同一份 `WorkflowTemplate`。
 2. **Canvas 是投影。** React Flow/Flowgram 坐标放在独立 `layout` 区域；运行编译器忽略它，语义图不包含 UI 库私有字段。
-3. **外部扩展只有两级。** 普通外部能力一律注册为 DSH Tool；只有 Tool 无法表达的工作流生命周期才实现自定义 Node，不引入 Tool-backed preset 或第二套 provider invocation 协议。
+3. **外部扩展只有两级。** 普通外部能力一律注册为 DSH Tool；只有 Tool 无法表达的工作流生命周期才实现自定义 Node，不引入 Tool-backed preset 或第二套调用协议。
 4. **发布版本不可变。** draft 可以编辑，published revision 固定模板内容、节点类型版本和语义 hash。
 5. **恢复不是重跑的别名。** ready queue、边状态、节点尝试、变量池、等待原因和 container frame 都属于 checkpoint。
 6. **默认按至少一次设计。** 外部副作用无法承诺 exactly-once；崩溃时状态不明的节点默认进入 `needs_attention`，除非节点声明可安全重试或具备幂等键。
@@ -37,7 +37,7 @@ flowchart TB
     Engine["ctx.dagWorkflowEngine"]
   end
 
-  subgraph Providers["Providers"]
+  subgraph Runtime["Runtime implementations"]
     Store["SQLite template/run store"]
     Scheduler["Local persistent scheduler"]
     CoreNodes["Core NodeDefinitions"]
@@ -78,7 +78,7 @@ flowchart TB
 1. 能以一次结构化调用表达的外部能力注册到 `ctx.tools`，统一由 `dsh.tool@1` 执行。Canvas 直接把 scope-visible Tool schema 显示为 palette 项，保存时仍是同一个通用 Tool 节点。
 2. 需要暂停恢复、长任务 checkpoint、事务补偿或特殊控制流时，注册完整 `WorkflowNodeDefinition`。自定义节点若需要 Host 生命周期服务，同时在 `ctx.workflowCapabilities` 注册绑定，并从节点的 scoped resolver 取得。
 
-`ctx.workflowCapabilities` 是自定义 Node 的安全 inject 投影，不是第三种业务 Provider；HTTP、数据库、消息、存储等普通调用不能借它绕开 DSH Tool policy。
+`ctx.workflowCapabilities` 是自定义 Node 的安全 inject 投影，不是第三种业务扩展层；HTTP、数据库、消息、存储等普通调用不能借它绕开 DSH Tool policy。
 
 ### 3.1 `ctx.workflowNodes`
 
@@ -238,7 +238,7 @@ HTTP、知识库、数据库不先做专属节点；它们通过 `dsh.tool@1` �
 skill 流程借鉴 Dify 的 planner/builder 拆分，但由 DSH Agent 完成：
 
 1. 澄清目标、输入、输出、外部副作用和人工确认点。
-2. 查询当前 scope 的节点/tool/Agent provider catalog 与结构化输出 Schema 方言，禁止臆造插件名或使用 provider 不支持的约束。
+2. 查询当前 scope 的节点/Tool catalog 与当前 Agent 支持的结构化输出 Schema 方言，禁止臆造插件名或使用不支持的约束。
 3. 先生成只含 node id/type/purpose/edges 的 topology plan。
 4. 再按节点 schema 填充 config 与 bindings；大型图可有界并行构建节点配置。
 5. 只做确定性修复，例如默认 layout、缺省端口、稳定 ID；有多种语义解释时回问用户。
@@ -267,7 +267,7 @@ packages/
   core/       # protocol/compiler/scheduler/core nodes/run-store contract
   catalog/    # draft CAS/diff/published revisions
   dsh/        # Cordis services, DSH nodes, Agent tools, bundled Skill
-  sqlite/     # template/run SQLite providers and migrations
+  sqlite/     # template/run SQLite persistence and migrations
   canvas/     # Typert Remote, shell overlay, XYFlow Studio
 ```
 

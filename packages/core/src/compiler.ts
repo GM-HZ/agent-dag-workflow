@@ -88,7 +88,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       for (const message of configErrors) diagnostics.push(diagnostic('NODE_CONFIG_INVALID', message, node.id, ['spec', 'nodes', index, 'with']))
       configValid = configErrors.length === 0
     } catch (error: unknown) {
-      diagnostics.push(diagnostic('NODE_PROVIDER_SCHEMA_INVALID', renderError(error), node.id))
+      diagnostics.push(diagnostic('NODE_DEFINITION_SCHEMA_INVALID', renderError(error), node.id))
     }
     if (configValid) {
       try {
@@ -109,7 +109,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
           }
         }
       } catch (error: unknown) {
-        diagnostics.push(diagnostic('NODE_PROVIDER_DEPENDENCY_INVALID', renderError(error), node.id, ['spec', 'nodes', index, 'with']))
+        diagnostics.push(diagnostic('NODE_DEPENDENCY_INVALID', renderError(error), node.id, ['spec', 'nodes', index, 'with']))
       }
     }
     if (node.expects !== undefined) {
@@ -243,7 +243,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
         requirements: nodeRequirements.get(nodeId) ?? Object.freeze([]),
       })
     } catch (error: unknown) {
-      diagnostics.push(diagnostic('NODE_PROVIDER_SCHEMA_INVALID', renderError(error), nodeId))
+      diagnostics.push(diagnostic('NODE_DEFINITION_SCHEMA_INVALID', renderError(error), nodeId))
     }
   }
   if (diagnostics.length > 0) return { diagnostics }

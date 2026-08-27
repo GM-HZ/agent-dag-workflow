@@ -18,7 +18,7 @@ const template: CanvasWorkflowTemplate = {
     inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, outputs: {},
     nodes: [
       { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-      { id: 'research', uses: 'dsh.agent@1', title: 'Collect evidence', with: { provider: 'spawn' }, inputs: {} },
+      { id: 'research', uses: 'dsh.agent@1', title: 'Collect evidence', with: { prompt: 'Collect evidence for the requested topic.' }, inputs: {} },
       { id: 'quality', uses: 'core.condition@1', title: 'Evidence ≥ 3?', with: { op: 'gte' }, inputs: {} },
       { id: 'approve', uses: 'dsh.human-approval@1', title: 'Editorial sign-off', with: { action: 'publish' }, inputs: {} },
       { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },

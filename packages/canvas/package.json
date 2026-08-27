@@ -1,6 +1,6 @@
 {
   "name": "@gm-hz/dsh-dag-workflow-canvas",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Authorized DSH Remote gateway and XYFlow visual studio for DAG workflows",
   "type": "module",
   "engines": {

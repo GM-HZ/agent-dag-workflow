@@ -1,6 +1,6 @@
 {
   "name": "@gm-hz/dsh-dag-workflow",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Installable DSH package for durable DAG workflows, Agent authoring, SQLite runs, and Canvas Studio",
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -11,8 +11,9 @@
     "build": "pnpm -r --if-present build && tsc -p tsconfig.build.json",
     "check": "pnpm build && pnpm typecheck && pnpm test",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
+    "showcase:install": "pnpm build && node examples/install-showcases.mjs",
     "prepare": "pnpm build",
-    "test": "pnpm -r --if-present test && vitest run tests/bundle.spec.ts tests/package-manifest.spec.ts",
+    "test": "pnpm -r --if-present test && vitest run tests/bundle.spec.ts tests/package-manifest.spec.ts tests/examples.spec.ts",
     "typecheck": "pnpm -r --if-present typecheck && tsc -p tsconfig.json --noEmit"
   },
   "main": "lib/index.js",
@@ -35,15 +36,16 @@
     "access": "public"
   },
   "dependencies": {
-    "@gm-hz/dsh-dag-workflow-canvas": "^0.1.5",
-    "@gm-hz/dsh-dag-workflow-host": "^0.1.5",
-    "@gm-hz/dsh-dag-workflow-sqlite": "^0.1.5"
+    "@gm-hz/dsh-dag-workflow-canvas": "^0.2.0",
+    "@gm-hz/dsh-dag-workflow-host": "^0.2.0",
+    "@gm-hz/dsh-dag-workflow-sqlite": "^0.2.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
+    "@gm-hz/dsh-dag-workflow-catalog": "workspace:^",
     "@gm-hz/dsh-dag-workflow-core": "workspace:^",
     "@types/node": "^22.20.0",
     "typescript": "^6.0.3",

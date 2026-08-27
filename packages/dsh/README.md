@@ -5,8 +5,8 @@
 - `ctx.workflowNodes`：可处置的 Workflow 节点注册服务。
 - `ctx.workflowCapabilities`：自定义 Node 的 Host 服务注册表；执行时只投影 NodeDefinition 已声明的能力。
 - `ctx.workflowScripts`：可处置的版本化纯脚本 runtime 注册服务，内置 `dsh.expr@1`。
-- `ctx.workflowTemplates`：默认内存 Catalog provider；生产环境可替换为 SQLite provider。
-- `ctx.workflowRuns`：默认内存 Run Store provider；生产环境可替换为 SQLite provider。
+- `ctx.workflowTemplates`：默认内存 Catalog 实现；生产环境可替换为 SQLite 实现。
+- `ctx.workflowRuns`：默认内存 Run Store 实现；生产环境可替换为 SQLite 实现。
 - `ctx.dagWorkflowEngine`：holder-owned DAG run 服务。
 - `dag-workflow/event`：供 Host/UI 观察的实时运行事件。
 - 十个 `workflow_*` authoring tools 与 model/user 均可调用的 bundled `workflow-builder` Skill。
@@ -19,7 +19,7 @@ import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
 await ctx.plugin(DagWorkflow)
 ```
 
-传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存 provider，并显式装配 `SqliteWorkflowTemplatesProvider` 与 `SqliteWorkflowRunsProvider`。
+传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存实现，并显式装配 `SqliteWorkflowTemplatesService` 与 `SqliteWorkflowRunsService`。
 
 生产环境可以同时配置 scoped secret bridge 与自动恢复 authority：
 
@@ -43,7 +43,7 @@ await ctx.plugin(DagWorkflow, {
 
 Authoring tools 包括 `workflow_nodes_list`、`workflow_draft_create/import/read/update/validate`、`workflow_validate`、`workflow_diff`、`workflow_publish`、`workflow_run`。`workflow_draft_import` 接收完整 `templateJson`，适合大型模板；更新时仍要求 draft revision CAS。它们作为普通 DSH tools 重新经过 scope、guard、approval 与 observer policy；published run 必须指定精确 revision。Skill 只引导调用这些工具，不自行读写 Catalog。
 
-`workflow_nodes_list` 同时返回 `scriptRuntimes`、可用 Agent providers 及其结构化输出能力/Schema 方言、节点 `dependencyKinds` 和可由默认配置推导的 `defaultRequirements`。第三方插件可调用 `ctx.workflowScripts.register()` 增加确定性业务语言；`core.script@1` 在编译期解析精确 `language@version` 并执行 runtime 的语义校验。Runtime 只负责纯 JSON 变换，任何 I/O 或 secret 访问仍由普通 DSH 节点承担。
+`workflow_nodes_list` 同时返回 `scriptRuntimes`、当前 DSH Agent 的结构化输出能力/Schema 方言、节点 `dependencyKinds` 和可由默认配置推导的 `defaultRequirements`。模板不选择 Agent 实现。第三方插件可调用 `ctx.workflowScripts.register()` 增加确定性业务语言；`core.script@1` 在编译期解析精确 `language@version` 并执行 runtime 的语义校验。Runtime 只负责纯 JSON 变换，任何 I/O 或 secret 访问仍由普通 DSH 节点承担。
 
 外部扩展固定为两级。普通 HTTP、数据库、消息和存储能力只注册到 `ctx.tools`，由 `dsh.tool@1` 统一执行；`workflow_nodes_list` 会按调用 Agent scope 返回这些 Tool。只有暂停恢复、进度 checkpoint、事务补偿等 Tool 无法表达的生命周期才注册 `ctx.workflowNodes`。此类自定义 Node 可以用 `ctx.workflowCapabilities.register()` 绑定 Host 服务，并通过 `execution.capabilities.require()` 获取 fail-closed 的节点级投影；它不是第二套 Tool invocation bus。
 
@@ -66,14 +66,14 @@ const recovered = ctx.dagWorkflowEngine.resume({
 })
 ```
 
-`parent` 在公共类型上接受任意 object，以兼容 DSH 尚未同步发布的 Agent 类型版本；运行边界会验证它确实暴露可追加的 Session。Provider 对 Tools/Agent 使用窄结构桥接，唯一硬 peer dependency 是与当前 Harness 一致的 `@deepseek-ai/cordis@^4.0.1`。
+`parent` 在公共类型上接受任意 object；运行边界会验证它确实暴露可追加的 Session。Host 对 Tools/Agent 使用窄结构桥接，唯一硬 peer dependency 是与当前 Harness 一致的 `@deepseek-ai/cordis@^4.0.1`。
 
 ## 生命周期
 
 - 无效模板与输入在 run 发布前同步抛错。
 - 已发布 run 的 `result` 始终 resolve。
 - consumer 持有并最终 `dispose()` run。
-- Provider 卸载时取消并等待全部活跃 run 收敛。
+- Host 插件卸载时取消并等待全部活跃 run 收敛。
 - 实时事件 listener 和 request observer 的错误全部被隔离，不改变运行结果。
 
 完整 run/node trace 由 `ctx.workflowRuns` 持久化。当前 DSH 尚未开放仓外

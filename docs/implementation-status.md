@@ -15,11 +15,11 @@
 | DSH Cordis `ctx.workflowCapabilities/workflowScripts/workflowNodes/dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、Tool 与自定义 Node 两级端到端测试 | 加入正式 DSH bundle patch |
 | 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
 | Run trace 与实时事件 | 完成 | SQLite run/node event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | DSH 开放仓外 Session event 注册前不写自定义 Session event |
-| Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis provider | 无 |
+| Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis service | 无 |
 | Run event store、checkpoint、crash recovery | 完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、ownerRef 与 Host 自动恢复协调器 | 无 |
 | `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
-| Agent CRUD/validate/diff/publish/run tools | 完成 | 10 个 `workflow_*` tools；大型 JSON import、draft validate、scope-visible node/tool/script runtime/Agent provider schemas、CAS、显式 revision run 集成测试 | 无 |
-| 真实 100→10 外部数据验收 | 完成 | `ai_model_news_search` Tool provider + weekly-news 模板；100 个候选/评分 overlay、稳定 Top10、摘要 overlay、防篡改 join、7 节点持久 trace 集成测试 | provider 为源码内私有参考包，不是通用 Core 依赖 |
+| Agent CRUD/validate/diff/publish/run tools | 完成 | 10 个 `workflow_*` tools；大型 JSON import、draft validate、scope-visible node/tool/script runtime/current-Agent schemas、CAS、显式 revision run 集成测试 | 无 |
+| 真实 100→10 外部数据验收 | 完成 | 内置 `web_search` 13 路 fan-out + weekly-news 模板；最多 100 个候选、评分 overlay、稳定 Top10、摘要 overlay、防篡改 join、20 节点持久 trace 集成测试 | 无额外插件依赖 |
 | `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
 | Canvas Host RPC 与 Client overlay | 完成 | `packages/canvas`：12 Remote descriptors、shell overlay、XYFlow、schema form、diagnostics、CAS/diff/publish/run/trace/resume、renderer registry、navigation controller | 无 |
 | 安全/权限/secret/idempotency review | 完成 | Canvas 实时顶层 Agent lookup、多用户附加 authority、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
@@ -29,7 +29,7 @@
 
 1. Service 方法会经 Proxy 调用，禁止原生 `#private`；测试已覆盖此项。
 2. 所有注册必须由 `ctx.effect()` 持有；核心节点在插件卸载后移除。
-3. Provider 卸载必须 cancel + await active runs，不能只删除 service key。
+3. Host 插件卸载必须 cancel + await active runs，不能只删除 service key。
 4. DSH 仍处于预览版本且包发布不同步；Tools/Agent 使用结构桥接，Cordis 使用精确兼容 peer range。
 5. 完整 trace 写入独立 Workflow Run Store；实时 listener 失败不能改变执行面。DSH 当前不允许安全注册仓外 Session event，因此不向 Session 日志写自定义类型。
 

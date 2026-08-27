@@ -17,4 +17,14 @@ describe('DSH Canvas client artifact', () => {
     expect(artifact).not.toMatch(/^\s*import\s/m)
     expect(artifact).not.toMatch(/^\s*export\s/m)
   })
+
+  it('ships the guarded light-first studio and follows the DSH theme signal', async () => {
+    const artifact = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
+
+    expect(artifact).toContain('GUARDED DAG STUDIO')
+    expect(artifact).toContain('Search workflow nodes')
+    expect(artifact).toContain('color-scheme: dark')
+    expect(artifact).toContain('color-scheme: light')
+    expect(artifact).toContain('prefers-color-scheme:dark')
+  })
 })

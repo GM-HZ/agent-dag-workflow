@@ -7,7 +7,6 @@ metadata:
 spec:
   requires:
     - { kind: capability, uses: dsh.subagents.start }
-    - { kind: agent-provider, uses: general-purpose }
   inputSchema:
     type: object
     additionalProperties: false
@@ -34,7 +33,6 @@ spec:
       uses: dsh.agent@1
       title: Collect evidence
       with:
-        provider: general-purpose
         prompt: Research the topic from multiple independent sources. Return concise evidence and source locations.
         outputSchema:
           type: object
@@ -71,7 +69,6 @@ spec:
       uses: dsh.agent@1
       title: Synthesize report
       with:
-        provider: general-purpose
         prompt: Synthesize the evidence into a clear report. Preserve uncertainty and source attribution.
         outputSchema:
           type: object

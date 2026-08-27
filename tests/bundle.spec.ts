@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -119,29 +119,6 @@ describe('installable DSH workflow package', () => {
       expect(second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
       expect(second.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
       await secondPlugin.dispose()
-    } finally {
-      rmSync(directory, { recursive: true, force: true })
-    }
-  })
-
-  it('migrates the legacy default database without deleting the backup', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'dsh-dag-workflow-migration-'))
-    const legacyDatabasePath = join(directory, 'dsh-workflow', 'workflows.db')
-    const databasePath = join(directory, 'dsh-dag-workflow', 'workflows.db')
-    try {
-      const legacy = await host()
-      const legacyPlugin = await legacy.plugin(Workflow, { databasePath: legacyDatabasePath })
-      legacy.workflowTemplates.createDraft(template())
-      await legacyPlugin.dispose()
-      expect(existsSync(legacyDatabasePath)).toBe(true)
-      expect(existsSync(databasePath)).toBe(false)
-
-      const migrated = await host()
-      const migratedPlugin = await migrated.plugin(Workflow, { databasePath, legacyDatabasePath })
-      expect(migrated.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
-      expect(existsSync(databasePath)).toBe(true)
-      expect(existsSync(legacyDatabasePath)).toBe(true)
-      await migratedPlugin.dispose()
     } finally {
       rmSync(directory, { recursive: true, force: true })
     }

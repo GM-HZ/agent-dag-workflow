@@ -5,21 +5,21 @@
 ### 已有能力
 
 - [`docs/architecture.md`](../ref_project/deepseek-harness/docs/architecture.md) 明确 DSH 没有特权 core，插件通过 service、typed event 与可逆 effect 组合；新增 UI/editor 应驱动 Agent 并从 durable event 渲染。
-- [`packages/workflow/workflow/README.md`](../ref_project/deepseek-harness/packages/workflow/workflow/README.md) 的现有 `ctx.workflowEngine` 执行模型编写的 orchestration script，`start()` 返回 holder-owned run，结果不 reject，engine provider 可替换。
+- [`packages/workflow/workflow/README.md`](../ref_project/deepseek-harness/packages/workflow/workflow/README.md) 的现有 `ctx.workflowEngine` 执行模型编写的 orchestration script，`start()` 返回 holder-owned run，结果不 reject，engine 实现可替换。
 - 同一 README 明确列出 `No journaling or resume`、`No saved or nested workflows`。因此新系统应补“版本化 DAG + 持久执行”，不应把现有 script seam 改成不兼容的多形请求。
 - [`packages/workflow/tool-workflow/src/types.ts`](../ref_project/deepseek-harness/packages/workflow/tool-workflow/src/types.ts) 用仓内已登记的 Session event 记录 run/member 生命周期；仓外插件目前无法登记自己的 Session event，也无法通过 `Session.append()` 设置 `ignorable`，因此 DAG 使用“完整 run store + 实时 Cordis event”，不污染 owning Session 日志。
 - [`packages/core/tools/src/index.ts`](../ref_project/deepseek-harness/packages/core/tools/src/index.ts) 的 `ctx.tools.execute()` 是 approval、guard、around/post policy、cancellation 与 observer 的执行边界。DAG tool node 直接调用 definition 会绕过安全策略，因此禁止。
 - DSH service `inject` 体现“依赖先声明、由组合器解析”的边界。本项目把该原则扩展到模板：NodeDefinition 声明 capability/resource，`spec.requires` 作为 revision 级 allowlist，运行时再与 owning Agent scope 和 DSH policy 求交集。
-- [`packages/skill/skill/README.md`](../ref_project/deepseek-harness/packages/skill/skill/README.md) 提供 scope-aware provider registry，适合把 workflow builder 做成普通 skill；生成器仍应通过 workflow tools 提交模板，避免 skill 私自实现存储与权限。
+- [`packages/skill/skill/README.md`](../ref_project/deepseek-harness/packages/skill/skill/README.md) 提供 scope-aware registry，适合把 workflow builder 做成普通 skill；生成器仍应通过 workflow tools 提交模板，避免 skill 私自实现存储与权限。
 - [`packages/client/modules/src/index.ts`](../ref_project/deepseek-harness/packages/client/modules/src/index.ts)、[`packages/client/ui-slots`](../ref_project/deepseek-harness/packages/client/ui-slots/README.md) 与 [`packages/client/ui-layout/src/client/index.ts`](../ref_project/deepseek-harness/packages/client/ui-layout/src/client/index.ts) 证明 Canvas 可作为独立 Client Cordis 插件加载。`shell.overlay` 是适合全屏 Studio 的 additive seat。
 - [`packages/goal/goal/src/index.ts`](../ref_project/deepseek-harness/packages/goal/goal/src/index.ts) 展示 `TypertRemoteService` 与 `@Remote` 的业务 service 模式，Canvas 的 template/run RPC 可按此实现。
 
 ### 对本项目的约束
 
 1. 新 service 使用 `ctx.dagWorkflowEngine` 等独立 key，避免碰撞现有 `ctx.workflowEngine`。
-2. 所有 node/client renderer/provider 注册返回 disposer，并有 HMR/unload 测试。
+2. 所有 node/client renderer/service 注册返回 disposer，并有 HMR/unload 测试。
 3. 每个 model-visible 最终结果必须进入 Session log；Canvas-only trace 可以留在 workflow run store。
-4. workflow run 接受后由 holder/engine 明确拥有资源，不能因 provider plugin 卸载留下悬空 promise。
+4. workflow run 接受后由 holder/engine 明确拥有资源，不能因 Host plugin 卸载留下悬空 promise。
 
 ## Coze Studio
 
@@ -56,7 +56,7 @@
 - Dify draft graph 是 React Flow 序列化结构，runtime 与 Canvas 耦合较深；DSH 模板使用 UI-neutral semantic graph + 独立 layout。
 - Dify generator 对 `{{#node.variable#}}` 做了大量 deterministic repair。DSH 从 v1 使用结构化 binding，减少字符串引用、重命名和生成修复成本。
 - Graphon 是 Python/thread queue 内核；本项目应借鉴状态语义，而不是在 TypeScript DSH 中嵌入 Python engine。
-- Coze Plugin Node 最终统一进入 `ExecuteTool`，Dify 也把 Node registry 与 Tool runtime protocol 分开；因此 DSH 不增加 Tool-backed preset/provider 执行层。普通外部集成全部使用 Tool，只有特殊工作流生命周期才实现自定义 Node。
+- Coze Plugin Node 最终统一进入 `ExecuteTool`，Dify 也把 Node registry 与 Tool runtime protocol 分开；因此 DSH 不增加 Tool-backed preset 执行层。普通外部集成全部使用 Tool，只有特殊工作流生命周期才实现自定义 Node。
 
 ## 综合取舍
 

@@ -37,7 +37,7 @@ const resumed = engine.resume({
 
 ## 能力依赖与结果契约
 
-外部集成只有两级：普通业务能力使用通用 `dsh.tool@1`；只有特殊工作流生命周期才实现自定义 `WorkflowNodeDefinition`。节点通过 `capabilities + dependencies(config)` 声明依赖，并由模板 `spec.requires` 精确 allowlist。编译器拒绝未声明的 capability、Tool、Agent provider、Runtime、secret 与 subworkflow。
+外部集成只有两级：普通业务能力使用通用 `dsh.tool@1`；只有特殊工作流生命周期才实现自定义 `WorkflowNodeDefinition`。节点通过 `capabilities + dependencies(config)` 声明依赖，并由模板 `spec.requires` 精确 allowlist。Agent 节点继承 owning DSH Agent scope；编译器拒绝未声明的 capability、Tool、Runtime、secret 与 subworkflow。
 
 自定义 Node 可以把 Host 服务注册到 `WorkflowCapabilityRegistry`，再通过 `context.capabilities.require(name)` 获取节点级安全投影。resolver 不会暴露 NodeDefinition 未声明的能力，并对已声明但未安装的绑定 fail closed。这个 registry 只服务自定义工作流语义；HTTP、数据库、消息等普通业务调用仍应走 DSH Tool。
 
@@ -71,7 +71,7 @@ sum min max unique sort sortBy withIndex joinBy mapGet filterEq json parseJson f
 
 ## 当前限制
 
-- Core 提供内存 Run Store 接口实现；生产持久化由 SQLite provider 提供。
+- Core 提供内存 Run Store 接口实现；生产持久化由 SQLite 实现提供。
 - 节点只执行一次；模板声明 `maxAttempts > 1` 会在编译期失败。
 - 取消和 timeout 是协作式的，节点实现必须观察 `AbortSignal`。
 - 生成 Skill 与 Canvas 分别由 `@gm-hz/dsh-dag-workflow-host` 和 `@gm-hz/dsh-dag-workflow-canvas` 提供，Core 不依赖 React/DSH Client。

@@ -19,4 +19,4 @@ const published = catalog.publish(next.id, next.revision)
 - published revision 独立单调递增，内容、节点版本、content hash 和 semantic hash 不可变。
 - semantic hash 排除 `layout`，content hash 包含完整模板。
 - `diff()` 分开报告 node、edge、layout 与 semantic 变化。
-- Repository 接口把原子 CAS/publish 交给存储 provider；内存实现用于测试，SQLite provider 单独实现。
+- Repository 接口把原子 CAS/publish 交给存储实现；内存实现用于测试，SQLite 实现单独提供。

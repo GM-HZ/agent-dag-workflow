@@ -168,6 +168,46 @@ describe('workflow compiler', () => {
     ]))
   })
 
+  it('uses the owning DSH Agent without accepting a template execution selector', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const template: WorkflowTemplate = {
+      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      metadata: { id: 'current-agent', name: 'Current Agent' },
+      spec: {
+        requires: [{ kind: 'capability', uses: 'dsh.subagents.start' }],
+        inputSchema: { type: 'object', additionalProperties: false },
+        outputSchema: {
+          type: 'object', additionalProperties: false, required: ['runId'], properties: { runId: { type: 'string' } },
+        },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'agent', uses: 'dsh.agent@1', with: { prompt: 'Produce an answer.' }, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { runId: { output: { node: 'agent', path: ['runId'] } } } },
+        ],
+        edges: [
+          { id: 'start-agent', source: 'start', target: 'agent' },
+          { id: 'agent-end', source: 'agent', target: 'end' },
+        ],
+        outputs: { runId: { output: { node: 'end', path: ['runId'] } } },
+      },
+    }
+
+    expect(compileWorkflow(template, registry).diagnostics).toEqual([])
+    const invalid = {
+      ...template,
+      spec: {
+        ...template.spec,
+        nodes: template.spec.nodes.map(node => node.id === 'agent'
+          ? { ...node, with: { ...node.with, provider: 'spawn' } }
+          : node),
+      },
+    } as WorkflowTemplate
+    expect(compileWorkflow(invalid, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'NODE_CONFIG_INVALID', nodeId: 'agent', message: expect.stringContaining('additional properties'),
+    }))
+  })
+
   it('rejects duplicate allowlist entries', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)

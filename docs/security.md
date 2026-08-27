@@ -5,7 +5,7 @@
 - `dsh.tool@1`、`dsh.agent@1`、`dsh.human-approval@1` 永远通过 DSH 的 Tool、subagent 和 approval service，模板发布不授予新权限。
 - Canvas Host 插件默认只从 Host 实时 Agent registry 接受仍附着的顶层 Agent，并拒绝缺失、脱离和 subagent identity；这个零配置边界只适合本地单用户 profile。
 - 浏览器的 `sessionId` 只是查找键，不是身份凭证。多人或多租户部署必须提供 `authorize`，并从 Host 自己的连接、用户、workspace 和 Session membership 状态做判断，不能因为 id 存在就允许；每个 RPC 都会携带 `agent/action/resourceId` 重新授权。
-- 当前 Catalog 是部署级 repository。多租户部署必须按租户隔离 provider/database，或在 authority 层实现同等强度的 resource ownership；不要共享一个无 ownership policy 的全局 catalog。
+- 当前 Catalog 是部署级 repository。多租户部署必须按租户隔离 service/database，或在 authority 层实现同等强度的 resource ownership；不要共享一个无 ownership policy 的全局 catalog。
 - `spec.requires` 是模板级 allowlist，不是 grant。编译器要求 NodeDefinition capability、固定 Tool/Agent/Runtime/subworkflow 和 secret 引用全部预声明；运行仍取 owning Agent scope 与 DSH policy 的交集。
 - Engine 只向节点暴露其 NodeDefinition `capabilities` 覆盖的 gateway；自定义 `context.capabilities` 同时隐藏未声明绑定，并拒绝已声明但 Host 未安装的绑定。未声明 `dsh.tools.execute` 的普通节点无法取得 Tool gateway。
 - 外部业务调用只有 DSH Tool 与自定义 Node 两级。`ctx.workflowCapabilities` 只允许自定义 Node 注入特殊生命周期服务，不能用作 HTTP/数据库/消息等普通业务调用的旁路，否则会绕开 Tool scope、guard 和审计。

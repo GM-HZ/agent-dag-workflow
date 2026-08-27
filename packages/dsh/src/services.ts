@@ -149,7 +149,7 @@ export abstract class WorkflowRunsService extends Service implements WorkflowRun
   abstract listRecoverableRuns(): readonly WorkflowRunRecord[]
 }
 
-export class InMemoryWorkflowRunsProvider extends WorkflowRunsService {
+export class InMemoryWorkflowRunsService extends WorkflowRunsService {
   private readonly store = new InMemoryWorkflowRunStore()
 
   createRun(record: WorkflowRunRecord): void { this.store.createRun(record) }
@@ -175,7 +175,7 @@ export abstract class WorkflowTemplatesService extends Service {
   abstract list(): readonly WorkflowCatalogSummary[]
 }
 
-export abstract class RepositoryWorkflowTemplatesProvider extends WorkflowTemplatesService {
+export abstract class RepositoryWorkflowTemplatesService extends WorkflowTemplatesService {
   private readonly catalog: WorkflowTemplateCatalog
 
   constructor(ctx: Context, repository: WorkflowCatalogRepository) {
@@ -195,7 +195,7 @@ export abstract class RepositoryWorkflowTemplatesProvider extends WorkflowTempla
   list(): readonly WorkflowCatalogSummary[] { return this.catalog.list() }
 }
 
-export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplatesProvider {
+export class InMemoryWorkflowTemplatesService extends RepositoryWorkflowTemplatesService {
   static inject = ['workflowNodes']
 
   constructor(ctx: Context) {
@@ -203,7 +203,7 @@ export class InMemoryWorkflowTemplatesProvider extends RepositoryWorkflowTemplat
   }
 }
 
-export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
+export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
   static inject = ['tools', 'subagents', 'approval', 'workflowCapabilities', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
 
   private readonly engine: CoreDagWorkflowEngine
@@ -254,7 +254,11 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
           if (!isDshAgentLike(request.owner)) {
             throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.agent requires the owning DSH Agent', { nodeId: request.nodeId })
           }
-          const run = await runtime.subagents.start(request.provider, {
+          const target = selectCurrentAgentTarget(runtime.subagents, {
+            structuredOutput: request.outputSchema !== undefined,
+            depthLimit: request.maxDepth !== undefined,
+          })
+          const run = await runtime.subagents.start(target, {
             prompt: [{ type: 'text', text: request.prompt }],
             parent: request.owner,
             signal: request.signal,
@@ -367,7 +371,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
     this.engine = engine
     ctx.effect(() => async () => {
       const runs = [...this.active.values()]
-      for (const run of runs) run.cancel('dag workflow provider disposed')
+      for (const run of runs) run.cancel('dag workflow service disposed')
       await Promise.all(runs.map(run => run.dispose()))
       this.active.clear()
     }, 'dsh-dag-workflow: active runs')
@@ -411,7 +415,7 @@ export class DagWorkflowEngineProvider extends DagWorkflowEngineService {
   }
 }
 
-export class WorkflowRecoveryCoordinatorProvider {
+export class WorkflowRecoveryCoordinator {
   static inject = ['workflowRuns', 'dagWorkflowEngine']
 
   constructor(ctx: Context, config: DshWorkflowPluginConfig) {
@@ -496,6 +500,25 @@ function ownerReference(config: DshWorkflowPluginConfig, parent: DshAgentLike): 
     throw new WorkflowExecutionError('RUN_OWNER_REFERENCE_INVALID', 'recovery.reference must return 1-1024 characters')
   }
   return reference
+}
+
+function selectCurrentAgentTarget(
+  runtime: DshSubagentRuntimeLike,
+  required: { readonly structuredOutput: boolean; readonly depthLimit: boolean },
+): string {
+  const listed = [...(runtime.list?.() ?? [])]
+  const compatible = listed.filter(name => {
+    const capabilities = runtime.getProvider?.(name)?.capabilities
+    return (!required.structuredOutput || capabilities?.outputSchema !== false)
+      && (!required.depthLimit || capabilities?.depthLimit !== false)
+  })
+  const candidates = compatible.length > 0 ? compatible : listed
+  for (const preferred of ['spawn', 'general-purpose']) {
+    if (candidates.includes(preferred)) return preferred
+  }
+  if (candidates[0] !== undefined) return candidates[0]
+  // Older DSH runtimes did not expose list(); spawn is their canonical child seam.
+  return 'spawn'
 }
 
 function renderError(error: unknown): string {

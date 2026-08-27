@@ -1,6 +1,6 @@
 {
   "name": "@gm-hz/dsh-dag-workflow-catalog",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Draft, CAS, validation and immutable revision catalog for DSH workflows",
   "type": "module",
   "engines": { "node": ">=22.19.0" },
