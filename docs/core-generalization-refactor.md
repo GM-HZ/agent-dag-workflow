@@ -37,6 +37,26 @@ import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 
 包名是工作名，发布前再检查 npm 可用性。Core、模板协议和序列化数据中不再出现 DSH 标识；DSH 只存在于 `dsh` Adapter 入口。
 
+### 1.1 最终 Review 结论
+
+本方案可以进入实现，但以以下收口为前提：
+
+1. `0.3.0` 聚焦通用 Core、Journal、CLI/SDK/DSH/MCP 宿主一致性和统一 Launch 契约，不同时交付生产级消息 Channel 与分布式调度平台；
+2. 所有新协议的持久化、Catalog 和 Runtime 公共边界采用异步接口，SQLite/Memory 只是同步实现的异步包装，避免后续接入服务端 Store 时再次破坏 API；
+3. 区分发布修订和开发期 inline template，但 run 创建时都固化 canonical template、semantic hash、engine version 和 NodeDefinition set hash；
+4. Trigger 创建 run 之前的接收、拒绝和去重事实进入独立 Ingress Journal，Workflow Journal 只记录已经拥有 `runId` 的执行事实；
+5. Script、Condition、Foreach、Tool/Agent 的边界成为编译和安全规则，而不只是一条文档建议。
+
+版本路线固定为：
+
+| 版本 | 交付范围 |
+| --- | --- |
+| `0.3.0` | 阶段 A-D；中立 Core、单包、Journal/Replay、统一 Launch、SDK/CLI/DSH/MCP |
+| `0.4.0` | 阶段 E；后台 Worker、Trigger Core、Cron/Webhook、完整 Live Stream |
+| `0.5.0` | 阶段 F；钉钉等 Channel、Canvas Trigger/Trace 体验 |
+
+后续版本仍在同一仓库和同一公开包内演进，不重新拆包。`0.3.0` 可以冻结 Trigger/Worker/Live Event 接口，但不得为了赶范围提供半可靠的生产 Adapter。
+
 ## 2. 产品定位
 
 重构后的产品不是另一个 Coze/Dify 平台，而是一个可嵌入任何 Agent Host 的持久化 DAG 执行内核：
@@ -190,6 +210,25 @@ flowchart TB
   Journal --> Observer
 ```
 
+### 5.1 统一事实模型
+
+实现、CLI、MCP、DSH 和 Canvas 统一使用以下名词，不再互换：
+
+| 实体 | 可变性 | 权威职责 |
+| --- | --- | --- |
+| WorkflowTemplate | 值对象 | JSON 流程定义，不代表已经发布 |
+| WorkflowDraft | 可变、CAS revision | 创作状态 |
+| WorkflowRevision | 不可变 | 可被生产调用的发布模板 |
+| WorkflowBindingRevision | 不可变 | 外部 Trigger 到固定 WorkflowRevision 的部署映射 |
+| WorkflowExecutionPlanSnapshot | run 内不可变 | 根模板、依赖闭包和实现版本锁 |
+| WorkflowRun | 状态机 | 一次具体执行的身份和当前状态 |
+| WorkflowEvent | 不可变、单 run 有序 | 已创建 run 的权威执行事实 |
+| WorkflowCheckpoint | 可替换快照 | 从 Journal 状态快速恢复 |
+| WorkflowIngressRecord | 不可变状态转换 | run 创建前的 Trigger 接收、拒绝、去重和关联 |
+| WorkflowLiveEvent | 临时 | 实时体验，不作为恢复依据 |
+
+Draft 的 revision、Published Workflow revision、Binding revision、Event seq 和 Store schema version 是五个不同版本维度，类型和字段名必须区分。任何 API 不使用含糊的裸 `revision`，除非所在对象已经明确限定语义。
+
 ## 6. 中立模板协议
 
 ### 6.1 Envelope
@@ -272,6 +311,17 @@ JSON Schema 已能表达默认值、说明、枚举和自定义 UI metadata，�
 
 需要环境配置时，模板声明 `requires` 和不透明引用，Host 在实际 Tool/Agent 调用时解析。需要触发用户、群、定时窗口等业务数据时，Binding 显式映射到 Workflow Input。这样模板在 CLI、MCP、DSH 和后台 Worker 中仍具有同一语义，也不会因可变共享状态破坏 DAG、恢复和 Replay。
 
+数据绑定只允许三种来源：
+
+```ts
+type WorkflowValueBinding =
+  | { literal: JsonValue }
+  | { input: { path: readonly (string | number)[] } }
+  | { output: { nodeId: string; path: readonly (string | number)[] } }
+```
+
+Secret 不属于 JSON 数据面，不提供通用 `{ secret: ... }` binding。需要凭据的 `tool.call@1`、`agent.run@1` 或可信自定义节点只能在静态 `with` 中声明 `connectionRef`/`credentialRef` 等不透明引用，由 Gateway 在调用最后一刻解析。Secret 明文不能进入 Script、节点普通输入、Journal、Checkpoint、Live Event 或 Workflow 输出。
+
 ### 6.5 循环与批处理
 
 `core.script@1` 和 `core.foreach@1` 解决的是两类不同问题：
@@ -283,6 +333,22 @@ JSON Schema 已能表达默认值、说明、枚举和自定义 UI metadata，�
 | 直到外部条件满足才继续 | 暂不支持通用 `while` | 容易产生无限运行、可变中间状态和不可预测副作用 |
 
 因此 foreach 是核心能力，不能被脚本替代。它必须保持 `maxItems`、`maxConcurrency`、固定子工作流修订、逐项 invocationId 和 checkpoint。通用 `loop/while` 不进入首版；若真实 Case 证明需要，只增加有明确 `maxIterations`、deadline、每轮 checkpoint 和退出条件的 `core.repeat@1`，永远不支持无界循环。
+
+### 6.6 Script 与调度原语的硬边界
+
+是否做成标准节点不取决于 JavaScript 能否表达，而取决于该逻辑是否改变 Scheduler 的权威状态：
+
+| 语义 | 归属 | 原因 |
+| --- | --- | --- |
+| JSON map/filter/reduce/sort、复杂布尔计算 | `core.script@1` | 纯计算，可作为一次原子节点安全重算 |
+| 根据结果选择 DAG 端口 | `core.condition@1` | Engine 必须记录 taken/skipped edge 并处理 join |
+| 对 item 执行 Tool/Agent/子工作流 | `core.foreach@1` | Engine 必须管理逐项并发、checkpoint、retry 和 invocationId |
+| 网络、数据库、文件、消息、模型 | `tool.call@1` / `agent.run@1` | 必须经过 requires、Authority、Policy 和审计 |
+| 暂停等待外部决定 | `human.approval@1` 或可信生命周期节点 | 必须保存 waiting 状态并支持恢复 |
+
+禁止 Script 直接调用 Tool、Agent、WorkflowRuntime 或自定义 NodeDefinition。也不接受“Script 返回动态节点列表并由 Engine 执行”的隐式动态图：它无法在发布时完整校验依赖、权限、拓扑、成本和 Canvas。复杂条件可以先由 Script 输出布尔值或枚举，再由 Condition 选择静态端口；纯数组循环留在 Script，含外部调用的循环必须进入 Foreach。
+
+这条边界是本项目相对万能代码节点的核心差异：用确定、可恢复、可审计的调度状态约束不确定的外部能力。
 
 ## 7. Host-neutral 执行接口
 
@@ -315,16 +381,38 @@ interface WorkflowToolGateway {
   list?(authority: unknown): Promise<readonly WorkflowToolDescriptor[]>
   execute(request: WorkflowToolRequest): Promise<JsonValue>
 }
+
+interface WorkflowToolRequest {
+  runId: string
+  nodeId: string
+  invocationId: string
+  uses: string
+  inputs: JsonObject
+  authority: unknown
+  signal: AbortSignal
+}
 ```
 
 MCP Tool 在 Host 注册为普通 Tool。模板不包含 MCP Client、Server Token 或连接实现。
 
 受控本地命令也注册为固定 Tool，例如 `local.git.status`，模板不能传入任意可执行文件和 shell 字符串。
 
+外部调用遵守固定提交顺序：
+
+```text
+commit capability.requested → Gateway.execute(invocationId)
+→ commit capability.completed + response artifact
+→ validate output → commit node.output-committed
+```
+
+进程若在 Gateway 返回、`capability.completed` 提交之前崩溃，状态属于 unknown。只有 Gateway 明确承诺同一 `invocationId` 幂等，或节点声明为纯读取，Core 才能自动重试；否则进入 `needs_attention`。`retry.maxAttempts` 不能把非幂等外部调用自动变安全。
+
 ### 7.3 Agent 与 Skill
 
 ```ts
 interface WorkflowAgentRequest {
+  runId: string
+  nodeId: string
   invocationId: string
   prompt: string
   inputs: JsonObject
@@ -348,26 +436,76 @@ Runtime Skill 进入 `spec.requires`：
 ```
 
 Skill 不作为一个可以绕过 Agent/Tool 策略的独立执行节点。
+`tools` 和 `skills` 是该次 Agent invocation 的进一步收窄 allowlist，必须同时属于模板 `requires` 和当前 Authority 可见集合；Agent 不能在运行中自行扩大。
 
 ### 7.4 WorkflowRuntime 门面
 
 所有入口复用同一个 API：
 
 ```ts
+type WorkflowLaunchTarget =
+  | { type: 'published'; id: string; revision: number }
+  | { type: 'inline'; template: WorkflowTemplate }
+
+interface WorkflowLaunchRequest {
+  target: WorkflowLaunchTarget
+  inputs: JsonObject
+  authorityRef: string
+  origin: WorkflowRunOrigin
+  idempotencyKey?: string
+  deliveryRef?: string
+}
+
+interface WorkflowRunHandle {
+  readonly runId: string
+  readonly result: Promise<WorkflowRunResult>
+  live(options?: { signal?: AbortSignal }): AsyncIterable<WorkflowLiveEvent>
+  cancel(reason?: string): Promise<void>
+}
+
+interface WorkflowExecutionPlanSnapshot {
+  root: { id: string; revision?: number; semanticHash: string; template: WorkflowTemplate }
+  dependencies: readonly {
+    id: string
+    revision: number
+    semanticHash: string
+    template: WorkflowTemplate
+  }[]
+  engineVersion: string
+  nodeDefinitionSetHash: string
+}
+
 interface WorkflowRuntime {
   validate(template: WorkflowTemplate, context?: ValidationContext): WorkflowValidationResult
   createDraft(request: CreateDraftRequest): Promise<WorkflowDraft>
   updateDraft(request: UpdateDraftRequest): Promise<WorkflowDraft>
   publish(request: PublishRequest): Promise<WorkflowRevision>
-  launch(request: WorkflowLaunchRequest): WorkflowRun
-  resume(request: WorkflowResumeRequest): WorkflowRun
+  launch(request: WorkflowLaunchRequest): Promise<WorkflowRunHandle>
+  resume(request: WorkflowResumeRequest): Promise<WorkflowRunHandle>
   getRun(runId: string): Promise<WorkflowRunSummary | undefined>
   readEvents(runId: string, query?: EventQuery): Promise<WorkflowEventPage>
-  replay(request: WorkflowReplayRequest): WorkflowRun
+  replay(request: WorkflowReplayRequest): Promise<WorkflowRunHandle>
 }
 ```
 
 CLI、MCP、DSH 工具和 Canvas 只是该门面的授权适配，不复制业务逻辑。
+
+`published` 是生产、Trigger、Workflow Call 和可共享运行的默认目标。`inline` 只允许 SDK/CLI 的显式开发策略使用；它不能被 Trigger Binding 引用。无论目标来自哪里，`run.accepted` 前都必须把根模板和全部固定 `workflow.call`/`foreach` 依赖闭包编译为 `WorkflowExecutionPlanSnapshot`。恢复期间只读取该不可变计划，不重新读取“最新模板”，也不假设 Catalog 中的历史 revision 永远存在。
+
+`nodeDefinitionSetHash` 不对运行时函数源码做不稳定 hash，而由 Registry 对已注册定义的 `{ uses, schemaHash, implementationDigest }` 排序计算；`implementationDigest` 由构建产物或可信 Adapter manifest 提供。缺失 digest 的自定义节点只能用于明确标记为 non-replayable 的开发运行，不能发布为生产 Workflow。
+
+`launch()` 总是先持久化 run 再返回 Handle。调用者等待 `result` 就是前台运行，只保存 `runId` 就是后台运行，不额外创造两套 start/background API。`live()` 是非权威体验通道；进程重启后通过 `getRun()`/`readEvents()` 恢复事实。
+
+### 7.5 Run 状态机
+
+```text
+accepted → queued → running → completed
+                    ├→ paused(reason: approval/wait/needs_attention) → queued/running
+                    ├→ failed
+                    └→ cancelled
+```
+
+`needs_attention` 是节点状态，不另造一个 run terminal status；含该节点的 run 进入带 reason 的 `paused`。`accepted` 表示模板、输入、Authority reference 和幂等键已原子保存；`queued` 表示等待 Worker；嵌入式运行可以在同一事务后立即进入 `running`。Terminal 状态只有 `completed`、`failed` 和 `cancelled`，对 terminal run 的 resume 必须幂等返回原结果或明确拒绝，不能创建隐式新 run。
 
 ## 8. Execution Journal、Checkpoint 与 Trace
 
@@ -396,6 +534,8 @@ interface WorkflowEventEnvelope {
     id: string
     revision?: number
     semanticHash: string
+    engineVersion: string
+    nodeDefinitionSetHash: string
   }
   node?: {
     id: string
@@ -418,8 +558,7 @@ interface WorkflowEventEnvelope {
 首批事件：
 
 ```text
-trigger.received / trigger.deduplicated / trigger.rejected
-run.accepted / run.started / run.resumed
+run.accepted / run.queued / run.started / run.resumed
 node.scheduled / node.started / node.progress
 capability.requested / capability.completed / capability.failed
 node.output-validated / node.output-committed
@@ -428,6 +567,8 @@ edge.taken / edge.skipped
 checkpoint.committed
 run.completed / run.failed / run.cancelled / run.paused
 ```
+
+`trigger.received`、`trigger.rejected` 和 `trigger.deduplicated` 发生在 run 创建之前，没有合法 `runId`，因此不属于该 Event Envelope。它们进入第 9 节的 Ingress Journal；成功 launch 后由 Ingress Record 关联 `runId`，Workflow Journal 从 `run.accepted` 开始。
 
 必须区分“外部调用已返回”和“节点输出已提交”。进程在两者之间崩溃时，恢复流程才能准确判断是使用录制结果、人工决定还是安全重试。
 
@@ -481,23 +622,25 @@ interface WorkflowCapturePolicy {
 
 `live` 只能称为 rerun，不能承诺 Agent、网络和数据库结果完全相同。Core 不记录隐藏思维链，只记录显式 Prompt、结构化输入、Tool 调用、公开内容和结构化输出，并遵守 Capture Policy。
 
+`inspect` 不要求当前 Engine/NodeDefinition 与历史一致；`recorded` 必须加载匹配的 execution plan 和兼容实现 digest，否则只能展示历史结果，不能声称重新计算等价；`live` 使用当前发布计划创建新 run，并明确记录与来源 run 的版本/hash 差异。
+
 ### 8.6 Journal 查询接口
 
 避免 `loadRun()` 一次加载全部历史：
 
 ```ts
 interface WorkflowJournalStore {
-  createRun(record: WorkflowRunRecord): void
-  commit(request: WorkflowCommitRequest): void
-  getRun(runId: string): WorkflowRunSummary | undefined
-  getCheckpoint(runId: string): WorkflowRunCheckpoint | undefined
-  readEvents(runId: string, query: { afterSeq?: number; limit?: number }): WorkflowEventPage
-  readArtifacts(refs: readonly WorkflowArtifactRef[]): readonly WorkflowArtifact[]
-  listRecoverableRuns(query?: RecoverableRunQuery): readonly WorkflowRunSummary[]
+  createRun(record: WorkflowRunRecord): Promise<void>
+  commit(request: WorkflowCommitRequest): Promise<void>
+  getRun(runId: string): Promise<WorkflowRunSummary | undefined>
+  getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
+  readEvents(runId: string, query: { afterSeq?: number; limit?: number }): Promise<WorkflowEventPage>
+  readArtifacts(refs: readonly WorkflowArtifactRef[]): Promise<readonly WorkflowArtifact[]>
+  listRecoverableRuns(query?: RecoverableRunQuery): Promise<readonly WorkflowRunSummary[]>
 }
 ```
 
-实时订阅放在 `WorkflowEventBus`，不要求每种 Store 都实现长连接。
+所有 Store 接口都以异步形式定义。Memory/SQLite 可以立即 resolve，PostgreSQL、远程 Artifact Store 和多 Worker Coordinator 不需要为接入而改变 Core API。实时订阅放在 `WorkflowEventBus`，不要求每种 Store 都实现长连接。
 
 ### 8.7 流式输出
 
@@ -527,25 +670,14 @@ Host Adapter 可以将同一 Live Stream 投影为 SSE、WebSocket、MCP progres
 
 ### 9.1 Trigger 是统一外部入站协议
 
-Workflow 是一个可被调用、可被事件触发的发布实体。所有入口最终都转换为同一个启动请求：
-
-```ts
-interface WorkflowLaunchRequest {
-  workflow: { id: string; revision: number }
-  inputs: JsonObject
-  authorityRef: string
-  origin: WorkflowRunOrigin
-  idempotencyKey?: string
-  replyTo?: JsonObject
-}
-```
+Workflow 是一个可被调用、可被事件触发的发布实体。所有入口最终都转换为第 7.4 节的 `WorkflowLaunchRequest`。
 
 入口分为两类：
 
 - **直接调用**：SDK、CLI、MCP Tool、DSH/普通 Agent 已经知道目标 workflow 和输入，直接生成 `WorkflowLaunchRequest`；
 - **事件触发**：Cron、Webhook、消息和事件总线先生成 `WorkflowTriggerEnvelope`，再通过 `WorkflowBinding` 选定固定发布修订、映射输入和 Authority。
 
-二者在 Input Schema 校验、幂等 launch、run 创建和 Journal 写入处汇合，不维护两套执行路径。
+二者在 Input Schema 校验、幂等 launch、run 创建和 Journal 写入处汇合，不维护两套执行路径。Trigger 只能指向 `published` target；inline template 不能接受外部事件。
 
 ### 9.2 Trigger 不属于 DAG 拓扑
 
@@ -555,7 +687,7 @@ Trigger 使用独立的 `WorkflowBinding`，避免同一个流程为了不同入
 {
   "apiVersion": "workflow.gm-hz.dev/v1alpha1",
   "kind": "WorkflowBinding",
-  "metadata": { "id": "weekly-ai-cron" },
+  "metadata": { "id": "weekly-ai-cron", "revision": 2 },
   "spec": {
     "workflow": { "id": "weekly-ai-news", "revision": 3 },
     "trigger": {
@@ -572,6 +704,8 @@ Trigger 使用独立的 `WorkflowBinding`，避免同一个流程为了不同入
 ```
 
 同一发布修订可以同时绑定 Cron、Webhook、钉钉命令和 Agent 控制入口。
+
+Binding revision 发布后不可修改；更新 Cron、映射、Authority 或回复策略都会产生新 revision。Input Mapping 只能使用与 Script 相同的纯 JSON 表达式，从 `payload`、可信 `metadata` 和 literal 生成 Workflow Input，不能调用 Tool、读取环境变量或动态选择 workflow revision。Binding 必须在启用前完成映射编译和目标 Input Schema 校验。
 
 ### 9.3 Trigger Envelope
 
@@ -590,6 +724,8 @@ interface WorkflowTriggerEnvelope {
 }
 ```
 
+Envelope 是 Adapter 完成验签后的可信内部对象，不直接反序列化外部 JSON。`authorityRef` 必须来自 Adapter 的身份映射，不能接受 payload 自报；`metadata` 只包含经过 allowlist 的协议字段。
+
 统一处理流水线：
 
 ```text
@@ -597,9 +733,34 @@ interface WorkflowTriggerEnvelope {
     → 输入映射 → Input Schema 校验 → 创建 run → 保存回执
 ```
 
-Trigger 默认按至少一次投递设计。`source + sourceEventId + binding revision` 形成幂等键；重复事件返回已有 run，不创建第二次副作用。
+Trigger 默认按至少一次投递设计。`deployment + source + sourceEventId + binding revision` 形成服务端幂等键；重复事件返回已有 Ingress Record/run，不创建第二次副作用，不能直接信任外部请求提供的幂等键。
 
-### 9.4 Channel、MCP、Skill 与结果投递
+### 9.4 Ingress Journal
+
+Trigger 在 run 创建前也必须可审计，因此使用独立、权威的 Ingress Store：
+
+```ts
+interface WorkflowIngressRecord {
+  triggerId: string
+  binding: { id: string; revision: number }
+  source: string
+  sourceEventId: string
+  status: 'received' | 'rejected' | 'deduplicated' | 'launched'
+  reasonCode?: string
+  runId?: string
+  receivedAt: number
+}
+
+interface WorkflowIngressStore {
+  acceptOrGet(record: WorkflowIngressRecord): Promise<WorkflowIngressRecord>
+  markLaunched(triggerId: string, runId: string): Promise<void>
+  markRejected(triggerId: string, reasonCode: string): Promise<void>
+}
+```
+
+Ingress accept/deduplicate 与 run create 必须由同一数据库事务完成，或通过 Outbox/幂等 Launch 协议达到等价效果，不能留下“事件已接收但永远没有 run”且不可恢复的空洞。
+
+### 9.5 Channel、MCP、Skill 与结果投递
 
 Trigger 类似 Channel 的统一入站协议，但不等于完整 Channel：
 
@@ -610,11 +771,13 @@ Trigger 类似 Channel 的统一入站协议，但不等于完整 Channel：
 | Launch Service | 校验并幂等创建 run |
 | Result Delivery | 将回执、进度或终态结果投递回来源 |
 
-钉钉、飞书、微信属于双向 Channel Adapter，可以同时实现 Trigger ingress 和 Result Delivery。简单回复使用 `replyTo` 关联；复杂主动发送仍调用显式声明的消息 Tool，不能让 Trigger 获得额外发送权限。
+钉钉、飞书、微信属于双向 Channel Adapter，可以同时实现 Trigger ingress 和 Result Delivery。简单回复使用不透明 `deliveryRef` 关联，回复凭据保存在 Channel Adapter 自己的加密 Store 中，不能进入模板或 Journal；复杂主动发送仍调用显式声明的消息 Tool，不能让 Trigger 获得额外发送权限。
 
 MCP 有两个角色：它既可以提供 workflow 控制面，也可以将已发布 workflow 投影成普通 MCP Tool。Skill 不是传输协议或 Trigger；它负责指导 Agent 创作模板或执行任务，Agent 最终仍通过 SDK、MCP、CLI 等入口发起明确调用。来源信息可以记录 `skillRef`，但不能因此绕过 `requires`、Authority 或 Host policy。
 
-### 9.5 钉钉
+Result Delivery 本身也是外部副作用，使用 `runId + deliveryRef + phase` 作为 invocationId，记录投递 attempt 和最终状态。重复终态通知不得重复发送；无法确认的投递进入 Adapter operator attention，不改变 Workflow 已完成的事实。
+
+### 9.6 钉钉
 
 支持两种入口：
 
@@ -623,7 +786,7 @@ MCP 有两个角色：它既可以提供 workflow 控制面，也可以将已发
 
 钉钉 Adapter 负责签名、用户/群身份映射、消息去重和最终回执；它不能授予模板未声明或 Authority 未拥有的能力。高风险工作流仍通过 `human.approval@1` 或 Host policy 明确确认。
 
-### 9.6 后台执行与多进程边界
+### 9.7 后台执行与多进程边界
 
 “多进程”不是每个节点 `fork` 一个进程，也不应暴露为模板功能。Core Engine 可以继续在单个 Worker 进程内调度 DAG；生产级 Trigger 需要的是多个 Worker 竞争同一持久化运行队列时仍保持一致的协调语义：
 
@@ -640,6 +803,16 @@ Cron、Webhook 和钉钉进入生产前必须具备：
 - Trigger 回执和最终结果关联。
 
 单进程 SQLite 是本地和嵌入式 reference runtime，可以完成全部语义验证；多 Worker 部署后再增加服务端 Store/Queue Adapter。Core 现在必须冻结 lease、claim、幂等和恢复契约，但 `0.3.0` 不需要同时交付一个分布式调度平台，也不能宣称 exactly-once。
+
+```ts
+interface WorkflowRunCoordinator {
+  claim(request: { workerId: string; leaseMs: number }): Promise<WorkflowRunClaim | undefined>
+  heartbeat(request: { runId: string; leaseToken: string; leaseMs: number }): Promise<boolean>
+  release(request: { runId: string; leaseToken: string }): Promise<void>
+}
+```
+
+后台 Commit 除 `expectedSeq` 外还必须携带有效 `leaseToken`。Lease 只防止并发 Worker 同时推进，不证明外部副作用 exactly-once；副作用仍依赖 invocationId、Gateway 幂等能力和 unknown-state 策略。
 
 ## 10. DSH、CLI、MCP 和 Canvas
 
@@ -714,6 +887,9 @@ Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
 8. Replay 默认不产生外部副作用；
 9. 未知副作用状态必须进入 `needs_attention`，不能自动猜测成功或失败；
 10. Journal Capture Policy 不能由不受信任模板放宽。
+11. NodeDefinition 和 Script Runtime 只能由部署者安装的可信代码注册，模板不能携带或下载实现代码；
+12. 同一 `uses@version` 的执行语义发布后保持稳定，破坏性行为变化必须升级节点 major version；
+13. Template、Binding、Trigger payload 和 Agent 输出都按不可信输入处理，先做大小、深度、Schema 和 allowlist 校验。
 
 ## 12. Migration 策略
 
@@ -762,6 +938,8 @@ Migration 是稳定内核的核心能力，但必须按对象拆开，不能用�
 | In-flight Checkpoint | 首版不自动迁移 | run 固定 engine/checkpoint schema；升级前 drain，或由旧 Worker 完成 |
 
 当前 SQLite 已有版本化 Store migration，这是正确基础，需要增加真实旧库 fixture、崩溃回滚和重复启动测试。模板 migration 只服务真实用户数据，不为尚未发布的初期协议保留永久兼容分支。NodeDefinition 后续可选提供 authoring-time `migrate(fromVersion, config)`，转换结果必须生成新的模板修订和 semantic hash。
+
+NodeDefinition 的 schema 和语义属于版本契约：同一 `tool.call@1`、`core.foreach@1` 不能在升级后静默改变已发布模板含义。兼容 Bug 修复也要在 run 中记录 `engineVersion` 与 `nodeDefinitionSetHash`；需要改变输入、输出或恢复语义时发布 `@2`，并通过 authoring-time migrator 生成新 revision。
 
 不尝试迁移正在执行到一半的任意节点栈。若 Worker 遇到不支持的 checkpoint schema，必须明确拒绝并进入 operator attention；生产升级通过版本化 Worker、drain 和灰度解决，而不是猜测旧状态含义。
 
@@ -820,6 +998,14 @@ Launch/Trigger 协议 + Migration 契约
 
 ## 14. 实施阶段
 
+### 实施原则
+
+- 每个 PR 只做一种变化：机械移动、协议变化、运行语义、Adapter 迁移不能混在同一提交；
+- 每一步结束时根包都能 build/test/pack，并至少保留一个可运行纵向 Case；
+- 新协议替换一个调用面后立刻删除对应旧类型、别名、fixture 和文档，不建立双写/双读；
+- 未达到当前阶段退出门禁，不进入下一阶段，也不发布带有“暂时绕过”的版本；
+- Trigger、Live Stream 和 Worker 接口在 `0.3.0` 可以标记 experimental，但 Core 数据模型不得依赖尚未实现的 Adapter。
+
 ### 阶段 A：单包基线
 
 - 将现有 workspace 收敛为一个公开 package；
@@ -853,7 +1039,7 @@ Launch/Trigger 协议 + Migration 契约
 
 退出门禁：可以在不调用外部 Tool/Agent 的情况下 Recorded Replay 一个复杂运行，并得到相同确定性终态。
 
-### 阶段 D：三宿主验证
+### 阶段 D：多宿主验证
 
 - Embedded SDK；
 - CLI；
@@ -861,13 +1047,14 @@ Launch/Trigger 协议 + Migration 契约
 - MCP 控制面；
 - Host Adapter conformance suite。
 
-退出门禁：同一个模板在 SDK、CLI、DSH、MCP 四个入口产生一致的编译结果、依赖拒绝、节点状态和输出契约。
+退出门禁：同一个模板在 SDK、CLI、DSH、MCP 四个入口产生一致的编译结果、依赖拒绝、节点状态和输出契约；inline target 只在允许的开发入口运行，published target 在所有入口固定 revision 和 hash。
 
 ### 阶段 E：后台与 Trigger Core
 
 - background run；
 - 原子 claim、Worker lease、heartbeat 和 CAS；
 - Trigger Binding/Envelope 与统一 Launch API；
+- Ingress Journal 与 Outbox/原子 launch；
 - 幂等 ingress；
 - Cron 和 Webhook reference adapter。
 
@@ -892,7 +1079,9 @@ Launch/Trigger 协议 + Migration 契约
 - 取消、超时、并发和 retry mode；
 - deterministic script sandbox；
 - Script 数据循环与 foreach 外部调用循环的边界；
-- 不允许隐式环境变量和可变全局状态。
+- 不允许隐式环境变量、通用 Secret binding 和可变全局状态；
+- Script 不能产生动态节点或调用 Runtime/Gateway；
+- published/inline target 固化相同 canonical snapshot 与 hash。
 
 ### 15.2 Store 与故障注入
 
@@ -903,6 +1092,8 @@ Launch/Trigger 协议 + Migration 契约
 - waiting checkpoint；
 - Worker lease 过期接管；
 - 双 Worker claim/CAS 冲突；
+- 异步 Store conformance（Memory、SQLite 以及 fake remote store）；
+- engine/node-definition hash 不匹配时拒绝错误恢复；
 - Artifact 损坏和 hash 不一致。
 
 ### 15.3 Adapter Conformance
@@ -934,7 +1125,11 @@ Launch/Trigger 协议 + Migration 契约
 - 输入映射错误；
 - 固定发布修订；
 - 同一事件并发投递；
+- run 创建前 rejected/deduplicated 进入 Ingress Journal；
+- Ingress accept 后 launch 崩溃可以通过 Outbox/幂等恢复；
+- 外部 payload 伪造 authorityRef/idempotencyKey 不生效；
 - 回执失败和重试；
+- Result Delivery invocationId 去重；
 - Cron 时区和错过执行策略。
 
 ### 15.6 Stream 与 Migration
@@ -998,7 +1193,10 @@ Launch/Trigger 协议 + Migration 契约
 12. Store 和模板 Migration 具备明确、可测试、非静默的升级路径；
 13. 全部 Adapter、故障注入、安全和复杂端到端测试通过；
 14. 代码中没有旧协议兼容分支和重复 Provider/Tool 总线；
-15. README、架构、CLI、MCP、DSH 和 Trigger 文档描述同一套事实模型。
+15. Script 无法绕过 Condition/Foreach/Gateway 调度和能力审计；
+16. run 固化 canonical template、engine version 与 NodeDefinition set hash；
+17. Ingress Journal 与 Workflow Journal 之间不存在不可恢复的 launch 空洞；
+18. README、架构、CLI、MCP、DSH 和 Trigger 文档描述同一套事实模型。
 
 ## 19. 当前明确决策
 
@@ -1019,5 +1217,50 @@ Launch/Trigger 协议 + Migration 契约
 - 不把 DSH Session Log 当作权威运行记录；
 - 不保留 0.2 协议的运行时兼容代码；
 - 不在通用 Core 中处理宿主凭据和最终授权。
+- 数据面不提供通用 Secret binding，Gateway 只接收和解析不透明 credential/config reference；
+- Runtime、Store、Catalog 和 Coordinator 对外边界统一异步；
+- Launch 同时支持受策略限制的 inline target 和固定 published target，run 内始终保存不可变快照；
+- Trigger pre-run 事实使用独立 Ingress Journal；
+- `0.3.0` 只交付阶段 A-D，不包含生产级 Channel 和多 Worker Adapter。
 
-发布前仍需确认的只有品牌包名、npm 可用性、默认 Artifact 保留期限，以及 `0.3.0` 是否一次包含 Trigger Adapter；这些决策不影响上述核心边界。
+发布前仍需确认的只有品牌包名、npm 可用性和默认 Artifact 保留期限。`0.3.0` 的范围已经关闭，不再把 Trigger Adapter 临时塞入首个通用版本。
+
+## 20. 首轮实施清单
+
+按以下 PR/提交序列开始，不并行维护新旧架构：
+
+1. **Baseline**：固定当前复杂 Case、SQLite v1/v2 fixture、`npm pack` 和本机 DSH 验收结果；
+2. **Mechanical single-package**：只移动目录、合并 manifest、建立 subpath exports，行为和协议不变；
+3. **Neutral protocol**：一次性替换 API Version、标准节点名、Value Binding 和 `requires`，转换全部仓库 fixture 后删除旧 Parser/别名；
+4. **Async runtime/store**：引入 LaunchTarget、RunHandle、状态机、canonical snapshot、engine/node-definition hash，并将 Memory/SQLite/Catalog API 异步化；
+5. **Authority and gateways**：落地 Tool/Agent/Skill/Approval 接口、invocation commit 顺序和 unknown-state 规则，再迁移 DSH Adapter；
+6. **Journal and replay**：实现 Event Envelope、Artifact、分页、inspect/recorded/live 和故障注入；
+7. **Host vertical slice**：同一个“AI 模型周报”发布修订通过 SDK、CLI、DSH、MCP 运行，比较输出契约和 Journal；
+8. **Delete and close**：删除旧 workspace package、DSH Core 标识、重复文档和临时转换代码，执行完整 conformance、pack 和本机 DSH 回归。
+
+第 1-2 步不改语义，第 3 步开始破坏性新协议，第 4-8 步只在新协议上实现。首轮不实现钉钉、飞书、Cron Worker、分布式 Store 或完整 token stream；只保留已经冻结的接口和测试 fixture，防止核心重构被外围功能拖慢。
+
+### 20.1 当前代码迁移落点
+
+| 当前实现 | 目标目录/动作 |
+| --- | --- |
+| `packages/core` | `src/core`；先机械移动，再替换 API Version、Binding、Runtime/Store 类型 |
+| `packages/catalog` | `src/catalog`；Repository 全异步，发布时生成 dependency lock/plan 输入 |
+| `packages/sqlite` | `src/storage/sqlite`；实现异步 Store 接口并保留现有 schema migration fixture |
+| `packages/dsh` | `src/adapters/dsh`；owner/session/tool/subagent/skill 只在 Adapter 内出现 |
+| `packages/canvas` | `src/canvas`；消费中立 NodeDefinition、Template 和 Journal projection |
+| 根 bundle package | 根 `src/index.ts` 与 `dsh` subpath；删除对内部已发布 npm 子包的依赖 |
+
+协议替换必须成组完成：
+
+```text
+dsh.workflow/v1alpha1     → workflow.gm-hz.dev/v1alpha1
+core.subworkflow@1        → workflow.call@1
+dsh.tool@1                → tool.call@1
+dsh.agent@1               → agent.run@1
+generic secret binding    → static credential/config reference resolved by Gateway
+owner / ownerRef          → authority / authorityRef
+WorkflowStartRequest      → WorkflowLaunchRequest + WorkflowRunHandle
+```
+
+每替换一组，同时修改 Core、Catalog、SQLite fixture、Canvas、DSH Adapter、示例和 Skill；仓库搜索确认旧标识为零后才合并，不能留下只在测试或 UI 中继续生成旧协议的缝隙。
