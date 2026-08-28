@@ -1,45 +1,8 @@
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
-import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
-import {
-  WorkflowNodeRegistryService,
-  WorkflowCapabilityRegistryService,
-  WorkflowScriptRuntimeRegistryService,
-} from '@gm-hz/dsh-dag-workflow-host'
-import {
-  SqliteWorkflowRunsService,
-  SqliteWorkflowTemplatesService,
-} from '@gm-hz/dsh-dag-workflow-sqlite'
+export * from './core/index.js'
+export * from './catalog/index.js'
 
-export interface Config {
-  /** SQLite file path. The DSH bundle patch supplies a durable path under DSH_HOME. */
-  readonly databasePath?: string
-}
-
-export const name = 'gm-hz-dsh-dag-workflow'
-export const inject = ['tools', 'subagents', 'approval', 'skills']
-
-export async function apply(ctx: Context, config: Config = {}): Promise<void> {
-  const path = config.databasePath ?? ':memory:'
-  if (typeof path !== 'string' || path.length === 0) {
-    throw new Error('dsh-dag-workflow databasePath must be a non-empty string')
-  }
-  if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
-
-  if (ctx.get('workflowScripts') === undefined) await ctx.plugin(WorkflowScriptRuntimeRegistryService)
-  if (ctx.get('workflowCapabilities') === undefined) await ctx.plugin(WorkflowCapabilityRegistryService)
-  if (ctx.get('workflowNodes') === undefined) await ctx.plugin(WorkflowNodeRegistryService)
-  if (ctx.get('workflowTemplates') === undefined) {
-    await ctx.plugin(SqliteWorkflowTemplatesService, { path })
-  }
-  if (ctx.get('workflowRuns') === undefined) {
-    await ctx.plugin(SqliteWorkflowRunsService, { path })
-  }
-  await ctx.plugin(DagWorkflow, {
-    catalog: 'external',
-    runStore: 'external',
-  })
-}
-
-export type * from '@gm-hz/dsh-dag-workflow-host'
+export { SqliteWorkflowCatalogRepository } from './storage/sqlite/catalog-repository.js'
+export type { SqliteWorkflowCatalogOptions } from './storage/sqlite/catalog-repository.js'
+export { SQLITE_APPLICATION_ID, SQLITE_SCHEMA_VERSION } from './storage/sqlite/database.js'
+export { SqliteWorkflowRunStore } from './storage/sqlite/run-store.js'
+export type { SqliteWorkflowRunStoreOptions } from './storage/sqlite/run-store.js'

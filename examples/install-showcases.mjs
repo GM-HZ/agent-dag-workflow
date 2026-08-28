@@ -7,9 +7,9 @@ import {
   parseWorkflowTemplate,
   registerCoreNodes,
   WorkflowNodeRegistry,
-} from '@gm-hz/dsh-dag-workflow-core'
-import { WorkflowTemplateCatalog } from '@gm-hz/dsh-dag-workflow-catalog'
-import { SqliteWorkflowCatalogRepository } from '@gm-hz/dsh-dag-workflow-sqlite'
+} from '../lib/core/index.js'
+import { WorkflowTemplateCatalog } from '../lib/catalog/index.js'
+import { SqliteWorkflowCatalogRepository } from '../lib/storage/sqlite/index.js'
 
 const examplesDirectory = fileURLToPath(new URL('./', import.meta.url))
 const showcaseFiles = [

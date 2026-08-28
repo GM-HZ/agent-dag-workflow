@@ -3,7 +3,7 @@ import {
   DagWorkflowEngine,
   registerCoreNodes,
   WorkflowNodeRegistry,
-} from '../packages/core/lib/index.js'
+} from '../lib/core/index.js'
 
 const template = JSON.parse(await readFile(new URL('./approval-gate.workflow.json', import.meta.url), 'utf8'))
 const registry = new WorkflowNodeRegistry()

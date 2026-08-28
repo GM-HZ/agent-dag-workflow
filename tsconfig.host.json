@@ -1,13 +1,14 @@
 {
-  "extends": "./tsconfig.base.json",
+  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "lib",
+    "emitDeclarationOnly": true,
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo",
     "paths": {
-      "@deepseek-ai/dsh-typert-protocol": ["./packages/canvas/typert-protocol.d.ts"]
+      "@deepseek-ai/dsh-typert-protocol": ["./types/typert-protocol.d.ts"]
     }
   },
-  "files": [],
-  "references": [
-    { "path": "./packages/canvas/tsconfig.host.json" }
-  ]
+  "files": ["src/canvas/index.ts", "src/canvas/host.ts", "src/canvas/types.ts"]
 }

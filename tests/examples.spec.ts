@@ -6,7 +6,7 @@ import {
   parseWorkflowTemplate,
   registerCoreNodes,
   WorkflowNodeRegistry,
-} from '@gm-hz/dsh-dag-workflow-core'
+} from '../src/core/index.js'
 
 const examplesDirectory = fileURLToPath(new URL('../examples/', import.meta.url))
 const workflowFiles = readdirSync(examplesDirectory)

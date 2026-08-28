@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { WorkflowTemplate } from '@gm-hz/dsh-dag-workflow-core'
+import type { WorkflowTemplate } from '../src/core/index.js'
 import type {
   DshApprovalRuntimeLike,
   DshSkillRuntimeLike,
@@ -10,9 +10,9 @@ import type {
   DshToolRuntimeInput,
   DshToolRuntimeResult,
   DshWorkflowToolDefinition,
-} from '@gm-hz/dsh-dag-workflow-host'
+} from '../src/adapters/dsh/index.js'
 import { describe, expect, it } from 'vitest'
-import * as Workflow from '../src/index.js'
+import * as Workflow from '../lib/adapters/dsh/bundle.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {

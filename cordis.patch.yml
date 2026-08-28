@@ -1,8 +1,5 @@
 - insert:
-    - id: gm-hz-dsh-dag-workflow
-      name: '@gm-hz/dsh-dag-workflow'
+    - id: gm-hz-agent-dag-workflow
+      name: '@gm-hz/agent-dag-workflow/dsh'
       config:
-        databasePath: !!js dshHomePath('dsh-dag-workflow/workflows.db')
-
-    - id: gm-hz-dsh-dag-workflow-canvas
-      name: '@gm-hz/dsh-dag-workflow-canvas'
+        databasePath: !!js dshHomePath('agent-dag-workflow/workflows.db')

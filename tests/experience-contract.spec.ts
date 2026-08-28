@@ -1,11 +1,11 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
-const studio = readFileSync(new URL('../packages/canvas/src/client/studio.tsx', import.meta.url), 'utf8')
-const overlay = readFileSync(new URL('../packages/canvas/src/client/overlay.tsx', import.meta.url), 'utf8')
-const client = readFileSync(new URL('../packages/canvas/src/client/index.ts', import.meta.url), 'utf8')
-const model = readFileSync(new URL('../packages/canvas/src/client/model.ts', import.meta.url), 'utf8')
-const skill = readFileSync(new URL('../packages/dsh/skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')
+const studio = readFileSync(new URL('../src/canvas/client/studio.tsx', import.meta.url), 'utf8')
+const overlay = readFileSync(new URL('../src/canvas/client/overlay.tsx', import.meta.url), 'utf8')
+const client = readFileSync(new URL('../src/canvas/client/index.ts', import.meta.url), 'utf8')
+const model = readFileSync(new URL('../src/canvas/client/model.ts', import.meta.url), 'utf8')
+const skill = readFileSync(new URL('../skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')
 
 describe('user experience contract', () => {
   it('uses one product name and Chinese workflow terminology in the shipped UI', () => {
