@@ -54,3 +54,4 @@ export { registerWorkflowAuthoring, WorkflowAuthoringService, workflowToolDefini
 export type * from './types.js'
 export { createDshToolGateway } from './tool-gateway.js'
 export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './tool-gateway.js'
+export { SqliteWorkflowRunsService, SqliteWorkflowTemplatesService } from '../../storage/sqlite/cordis.js'

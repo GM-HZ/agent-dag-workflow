@@ -168,7 +168,7 @@ describe('workflow compiler', () => {
     ]))
   })
 
-  it('uses the owning DSH Agent without accepting a template execution selector', () => {
+  it('uses the Host execution Authority without accepting a template execution selector', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const template: WorkflowTemplate = {

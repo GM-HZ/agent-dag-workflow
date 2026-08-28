@@ -1,4 +1,4 @@
-# @gm-hz/dsh-dag-workflow-canvas
+# @gm-hz/agent-dag-workflow/canvas
 
 Host-scoped Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1alpha1.
 
@@ -21,7 +21,7 @@ The package contributes its generated Typert Remote client and XYFlow editor thr
 Custom node visuals can be installed from a Client plugin:
 
 ```tsx
-import { workflowNodeRenderers } from '@gm-hz/dsh-dag-workflow-canvas/client'
+import { workflowNodeRenderers } from '@gm-hz/agent-dag-workflow/client'
 
 ctx.effect(() => workflowNodeRenderers.register('acme.review@1', ReviewNode))
 ```
@@ -36,4 +36,4 @@ ctx.workflowCanvasUi.open({
 })
 ```
 
-The Studio projects every DSH Tool visible in the resolved Agent scope directly into the palette. Adding one always materializes the generic `tool.call@1` node with a fixed `with.name` and exact Tool requirements; custom NodeDefinitions remain the only second extension level. The Studio also provides node/edge editing, definition-supplied default config, dependency allowlist (`spec.requires`), per-node expected output contracts, multiline script editing, top-level JSON Schema config fields plus a raw lossless JSON fallback, diagnostics, optimistic draft save, semantic/layout diff, publish, draft test-run, persisted trace, and explicit retry/fail decisions for unknown side effects.
+The Studio projects every DSH Tool visible in the resolved Agent scope directly into the palette. Adding one always materializes the generic `tool.call@1` node with fixed `with.uses` and exact Tool requirements; custom NodeDefinitions remain the only second extension level. The Studio also provides node/edge editing, definition-supplied default config, dependency allowlist (`spec.requires`), per-node expected output contracts, multiline script editing, top-level JSON Schema config fields plus a raw lossless JSON fallback, diagnostics, optimistic draft save, semantic/layout diff, publish, draft test-run, persisted trace, and explicit retry/fail decisions for unknown side effects.

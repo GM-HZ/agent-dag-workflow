@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 describe('DSH Canvas client artifact', () => {
   it('exports package.json so the DSH client scanner can discover dsh.client', () => {
     const require = createRequire(import.meta.url)
-    expect(require.resolve('@gm-hz/agent-dag-workflow/package.json')).toMatch(/dsh-workflow\/package\.json$/)
+    expect(require.resolve('@gm-hz/agent-dag-workflow/package.json')).toMatch(/package\.json$/)
   })
 
   it('ships as one DSH module-loader bundle instead of raw ESM', async () => {

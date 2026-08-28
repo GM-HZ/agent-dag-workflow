@@ -1,4 +1,4 @@
-# @gm-hz/dsh-dag-workflow-catalog
+# @gm-hz/agent-dag-workflow/catalog
 
 Workflow Template 的 draft、乐观并发和不可变发布版本领域层。
 
@@ -6,10 +6,10 @@ Workflow Template 的 draft、乐观并发和不可变发布版本领域层。
 const repository = new InMemoryWorkflowCatalogRepository()
 const catalog = new WorkflowTemplateCatalog(repository, workflowNodeRegistry)
 
-const draft = catalog.createDraft(template)
-const next = catalog.updateDraft(draft.id, draft.revision, editedTemplate)
-const diagnostics = catalog.validate(next.template)
-const published = catalog.publish(next.id, next.revision)
+const draft = await catalog.createDraft(template)
+const next = await catalog.updateDraft(draft.id, draft.revision, editedTemplate)
+const diagnostics = await catalog.validate(next.template)
+const published = await catalog.publish(next.id, next.revision)
 ```
 
 ## 语义

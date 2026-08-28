@@ -79,7 +79,7 @@ describe('workflow script runtime registry', () => {
       ],
       depth: 0,
       subworkflowMaxDepth: 8,
-      checkpointProgress() {},
+      async checkpointProgress() {},
     })).resolves.toEqual({
       outputs: { accepted: true, payload: { orderId: 'order-1' } },
     })

@@ -16,7 +16,7 @@ export class WorkflowRunStoreError extends Error {
 export class InMemoryWorkflowRunStore implements WorkflowRunStore {
   private readonly records = new Map<string, WorkflowRunRecord>()
 
-  createRun(record: WorkflowRunRecord): void {
+  async createRun(record: WorkflowRunRecord): Promise<void> {
     if (this.records.has(record.runId)) throw new WorkflowRunStoreError('RUN_ALREADY_EXISTS', `workflow run already exists: ${record.runId}`)
     if (record.checkpoint.seq !== 0 || record.events.length !== 0 || record.checkpoint.runId !== record.runId) {
       throw new WorkflowRunStoreError('RUN_COMMIT_INVALID', 'new workflow run must start at checkpoint seq 0 with no events')
@@ -24,7 +24,7 @@ export class InMemoryWorkflowRunStore implements WorkflowRunStore {
     this.records.set(record.runId, snapshotRecord(record))
   }
 
-  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly import('./types.js').WorkflowEvent[]): void {
+  async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly import('./types.js').WorkflowEvent[]): Promise<void> {
     const current = this.records.get(runId)
     if (current === undefined) throw new WorkflowRunStoreError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
     if (current.checkpoint.seq !== expectedSeq) {
@@ -38,11 +38,34 @@ export class InMemoryWorkflowRunStore implements WorkflowRunStore {
     }))
   }
 
-  loadRun(runId: string): WorkflowRunRecord | undefined {
+  async loadRun(runId: string): Promise<WorkflowRunRecord | undefined> {
     return this.records.get(runId)
   }
 
-  listRecoverableRuns(): readonly WorkflowRunRecord[] {
+  async getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined> {
+    return this.records.get(runId)?.checkpoint
+  }
+
+  async getRunMetadata(runId: string): Promise<import('./types.js').WorkflowRunMetadata | undefined> {
+    const record = this.records.get(runId)
+    return record === undefined ? undefined : snapshotJsonValue({
+      runId: record.runId,
+      templateId: record.template.metadata.id,
+      semanticHash: record.semanticHash,
+      plan: record.plan,
+      execution: record.execution,
+      launch: record.launch,
+      createdAt: record.createdAt,
+    }) as unknown as import('./types.js').WorkflowRunMetadata
+  }
+
+  async readEvents(runId: string, query: { readonly afterSeq?: number; readonly limit?: number } = {}): Promise<readonly import('./types.js').WorkflowEvent[]> {
+    const after = query.afterSeq ?? 0
+    const limit = Math.min(1001, Math.max(1, query.limit ?? 100))
+    return this.records.get(runId)?.events.filter(event => event.seq > after).slice(0, limit) ?? []
+  }
+
+  async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> {
     return [...this.records.values()]
       .filter(record => record.checkpoint.status === 'running' || record.checkpoint.status === 'paused')
       .sort((left, right) => left.createdAt - right.createdAt)

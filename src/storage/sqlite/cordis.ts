@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { RepositoryWorkflowTemplatesService, WorkflowRunsService } from '../../adapters/dsh/services.js'
-import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunRecord } from '../../core/index.js'
+import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunMetadata, WorkflowRunRecord } from '../../core/index.js'
 import { SqliteWorkflowCatalogRepository, type SqliteWorkflowCatalogOptions } from './catalog-repository.js'
 import { SqliteWorkflowRunStore, type SqliteWorkflowRunStoreOptions } from './run-store.js'
 
@@ -25,10 +25,13 @@ export class SqliteWorkflowRunsService extends WorkflowRunsService {
     ctx.effect(() => () => { this.store.close() }, 'dsh-dag-workflow: close SQLite run store')
   }
 
-  createRun(record: WorkflowRunRecord): void { this.store.createRun(record) }
-  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void {
-    this.store.commit(runId, expectedSeq, checkpoint, events)
+  async createRun(record: WorkflowRunRecord): Promise<void> { await this.store.createRun(record) }
+  async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
+    await this.store.commit(runId, expectedSeq, checkpoint, events)
   }
-  loadRun(runId: string): WorkflowRunRecord | undefined { return this.store.loadRun(runId) }
-  listRecoverableRuns(): readonly WorkflowRunRecord[] { return this.store.listRecoverableRuns() }
+  async loadRun(runId: string): Promise<WorkflowRunRecord | undefined> { return this.store.loadRun(runId) }
+  async getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined> { return this.store.getRunMetadata(runId) }
+  async getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined> { return this.store.getCheckpoint(runId) }
+  async readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]> { return this.store.readEvents(runId, query) }
+  async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> { return this.store.listRecoverableRuns() }
 }

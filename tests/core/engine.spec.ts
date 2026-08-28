@@ -8,7 +8,6 @@ import {
   type WorkflowToolRequest,
   type WorkflowTemplate,
 } from '../../src/core/index.js'
-import { createDshToolGateway, type DshToolExecutionInput } from '../../src/adapters/dsh/index.js'
 import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
 
 const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
@@ -20,7 +19,7 @@ describe('DAG workflow engine', () => {
     const execute = vi.fn(async (request: WorkflowToolRequest) => ({ echo: request.inputs.message ?? null }))
     const engine = new DagWorkflowEngine(registry, { tools: { execute } })
 
-    const result = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
+    const result = await (await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } })).result
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
@@ -43,7 +42,7 @@ describe('DAG workflow engine', () => {
       },
     })
 
-    const result = await engine.start({ execution: testExecution, template: branchingWorkflowTemplate(), inputs: { enabled: true } }).result
+    const result = await (await engine.start({ execution: testExecution, template: branchingWorkflowTemplate(), inputs: { enabled: true } })).result
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
@@ -62,25 +61,11 @@ describe('DAG workflow engine', () => {
       tools: { async execute() { throw new Error('policy denied') } },
     })
 
-    const result = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
+    const result = await (await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } })).result
 
     expect(result).toMatchObject({ status: 'failed', error: 'policy denied' })
     expect(result.nodeStates.call).toBe('failed')
     expect(result.events).toContainEqual(expect.objectContaining({ type: 'node.failed', nodeId: 'call' }))
-  })
-
-  it('adapts the public ctx.tools.execute result contract', async () => {
-    const execute = vi.fn(async (input: DshToolExecutionInput) => ({ isError: false as const, value: { received: input.arguments } }))
-    const gateway = createDshToolGateway(execute)
-    const signal = new AbortController().signal
-
-    const authority = { session: 'test' }
-    await expect(gateway.execute({
-      runId: 'run-1', nodeId: 'node-1', invocationId: 'run-1:node-1:1', uses: 'search',
-      inputs: { q: 'dsh' }, config: { uses: 'search' }, authority, signal,
-    }))
-      .resolves.toEqual({ received: { q: 'dsh' } })
-    expect(execute).toHaveBeenCalledWith({ callId: 'run-1:node-1:1', name: 'search', arguments: { q: 'dsh' }, agent: authority, signal })
   })
 
   it('rejects generic secret bindings before compilation', () => {
@@ -145,7 +130,7 @@ describe('DAG workflow engine', () => {
       },
     }
 
-    const result = await new DagWorkflowEngine(registry).start({ execution: testExecution, template, inputs: { name: 'Lin', scores: [2, 3, 5] } }).result
+    const result = await (await new DagWorkflowEngine(registry).start({ execution: testExecution, template, inputs: { name: 'Lin', scores: [2, 3, 5] } })).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { message: 'Hello Lin', total: 10 } })
     expect(result.nodeStates.transform).toBe('succeeded')
@@ -178,7 +163,7 @@ describe('DAG workflow engine', () => {
     }
     const engine = new DagWorkflowEngine(registry, { tools: { async execute() { return { echo: 42 } } } })
 
-    const result = await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } }).result
+    const result = await (await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } })).result
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('must be string') })
     expect(result.nodeStates.call).toBe('failed')
@@ -215,7 +200,7 @@ describe('DAG workflow engine', () => {
     }
     const engine = new DagWorkflowEngine(registry, { tools: { async execute() { return null } } })
 
-    await expect(engine.start({ execution: testExecution, template, inputs: {} }).result).resolves.toMatchObject({
+    await expect((await engine.start({ execution: testExecution, template, inputs: {} })).result).resolves.toMatchObject({
       status: 'completed', outputs: { isolated: true },
     })
   })
@@ -279,7 +264,7 @@ describe('DAG workflow engine', () => {
       async run(queue: string, value: string) { return `${queue}:${value}` },
     })
 
-    await expect(new DagWorkflowEngine(registry, { capabilities }).start({ execution: testExecution, template, inputs: {} }).result)
+    await expect((await new DagWorkflowEngine(registry, { capabilities }).start({ execution: testExecution, template, inputs: {} })).result)
       .resolves.toMatchObject({ status: 'completed', outputs: { result: 'critical:payload' } })
   })
 
@@ -300,7 +285,7 @@ describe('DAG workflow engine', () => {
       tools: { async execute() { return { echo: 'this output is intentionally too large' } } },
     })
 
-    const result = await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } }).result
+    const result = await (await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } })).result
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('limit is 16') })
     expect(result.nodeStates.call).toBe('failed')

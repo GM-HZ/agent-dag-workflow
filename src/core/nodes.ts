@@ -10,6 +10,7 @@ import { stableJsonStringify } from './json.js'
 import { validateStructuredObjectSchema } from './structured-output-schema.js'
 
 const objectSchema = { type: 'object' } as const
+const CORE_IMPLEMENTATION_DIGEST = '@gm-hz/agent-dag-workflow:1.0.0:core-v1'
 
 export const startNodeDefinition: WorkflowNodeDefinition = {
   type: 'core.start',
@@ -23,6 +24,7 @@ export const startNodeDefinition: WorkflowNodeDefinition = {
   outputPorts: ['success'],
   capabilities: [],
   retry: 'safe',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   async execute(context) {
     return { outputs: context.workflowInputs }
   },
@@ -40,6 +42,7 @@ export const endNodeDefinition: WorkflowNodeDefinition = {
   outputPorts: ['success'],
   capabilities: [],
   retry: 'safe',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   async execute(context) {
     return { outputs: context.inputs }
   },
@@ -75,6 +78,7 @@ export const conditionNodeDefinition: WorkflowNodeDefinition = {
   requiredOutputPorts: ['true', 'false'],
   capabilities: [],
   retry: 'safe',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   async execute(context) {
     const operator = context.config.operator
     if (typeof operator !== 'string') throw new WorkflowExecutionError('CONDITION_CONFIG', 'condition operator is missing', { nodeId: context.nodeId })
@@ -123,6 +127,7 @@ export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegist
     capabilities: ['workflow.script.execute'],
     dependencyKinds: ['script-runtime'],
     retry: 'safe',
+    implementationDigest: CORE_IMPLEMENTATION_DIGEST,
     dependencies(config) {
       return typeof config.language === 'string' ? [{ kind: 'script-runtime', uses: config.language }] : []
     },
@@ -182,6 +187,7 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
   capabilities: ['gateway.tool.execute'],
   dependencyKinds: ['tool'],
   retry: 'never',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   dependencies(config) {
     return typeof config.uses === 'string' ? [{ kind: 'tool', uses: config.uses }] : []
   },
@@ -237,6 +243,7 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
   capabilities: ['gateway.agent.execute'],
   dependencyKinds: ['tool', 'skill'],
   retry: 'never',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   dependencies(config) {
     return [
       ...(Array.isArray(config.tools) ? config.tools.filter((value): value is string => typeof value === 'string').map(uses => ({ kind: 'tool', uses })) : []),
@@ -311,6 +318,7 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   dependencyKinds: ['approval-action'],
   retry: 'safe',
   execution: 'human-wait',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   dependencies(config) {
     return typeof config.action === 'string' ? [{ kind: 'approval-action', uses: config.action }] : []
   },
@@ -362,6 +370,7 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
   capabilities: ['gateway.workflow.call'],
   dependencyKinds: ['workflow'],
   retry: 'safe',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   dependencies(config) {
     return subworkflowDependency(config)
   },
@@ -427,6 +436,7 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
   capabilities: ['gateway.workflow.call'],
   dependencyKinds: ['workflow'],
   retry: 'safe',
+  implementationDigest: CORE_IMPLEMENTATION_DIGEST,
   dependencies(config) {
     return subworkflowDependency(config)
   },
@@ -444,7 +454,7 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
     }
     const concurrency = Math.min(optionalIntegerConfig(context.config, 'maxConcurrency', context.nodeId) ?? 4, Math.max(1, items.length))
     const frames = restoreForEachFrames(context.progress, items.length, context.nodeId)
-    checkpointFrames()
+    await checkpointFrames()
     let cursor = 0
     let firstError: unknown
     const stop = new AbortController()
@@ -455,7 +465,7 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
         while (index < frames.length && frames[index]!.status === 'completed') index = cursor++
         if (index >= frames.length) return
         frames[index] = { index, status: 'running' }
-        checkpointFrames()
+        await checkpointFrames()
         try {
           const result = await subworkflows.execute({
             parentRunId: context.runId,
@@ -470,7 +480,7 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
             signal,
           })
           frames[index] = { index, status: 'completed', runId: result.runId, outputs: result.outputs }
-          checkpointFrames()
+          await checkpointFrames()
         } catch (error: unknown) {
           firstError ??= error
           stop.abort('foreach child failed')
@@ -490,8 +500,8 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
       },
     }
 
-    function checkpointFrames(): void {
-      context.checkpointProgress({ version: 1, kind: 'foreach', items: frames })
+    async function checkpointFrames(): Promise<void> {
+      await context.checkpointProgress({ version: 1, kind: 'foreach', items: frames })
     }
   },
 }

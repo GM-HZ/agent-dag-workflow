@@ -34,19 +34,18 @@ requires:
   - { kind: tool, uses: dms.query }
   - { kind: capability, uses: gateway.agent.execute }
   - { kind: script-runtime, uses: json.expr@1 }
-  - { kind: secret, uses: credential:analytics-readonly }
   - { kind: workflow, uses: normalize-result@3 }
 ```
 
-- NodeDefinition 的 `capabilities` 和 `dependencies(config)`、以及 secret binding 都由编译器自动解析；任一 `kind:uses` 未声明时产生 `WORKFLOW_REQUIREMENT_UNDECLARED`。
-- 同一依赖不能重复。Tool name、runtime 和 subworkflow revision 必须来自固定 config，不能由运行输入动态改写。Agent 节点始终继承 owning DSH Agent 的 scope，模板不选择底层执行实现。
-- `requires` 只收窄可调用范围，不授予任何权限。实际调用仍必须同时满足 owning Agent scope、部署策略与具体 DSH Tool/Node policy。
+- NodeDefinition 的 `capabilities` 和 `dependencies(config)` 由编译器自动解析；任一 `kind:uses` 未声明时产生 `WORKFLOW_REQUIREMENT_UNDECLARED`。
+- 同一依赖不能重复。Tool name、runtime 和 subworkflow revision 必须来自固定 config，不能由运行输入动态改写。Agent 节点使用 Launch 时解析出的 Authority，模板不选择底层执行实现。
+- `requires` 只收窄可调用范围，不授予任何权限。实际调用仍必须同时满足 Authority、部署策略与具体 Host Tool/Node policy。
 - Engine 按 NodeDefinition `capabilities` 裁剪内置 gateway，并为自定义 Node 创建 scoped `context.capabilities`；未声明的 capability 不可见，声明但 Host 未安装也会 fail closed。
 - 第三方 NodeDefinition 是受信任代码；闭包中的宿主级 ambient authority 仍需由插件审计或进程 sandbox 约束。
 
 ## 外部扩展的两级模型
 
-1. 普通外部能力必须注册为 DSH Tool，并统一使用 `tool.call@1`。Tool name 固定在 `with.name`，输入来自结构化 binding，执行继续经过 DSH scope、guard、credential、observer 与 output validation。Canvas 中每个 scope-visible Tool 只是这个通用节点的一个 catalog 条目，不产生新的运行时类型。
+1. 普通外部能力必须注册为 Host Tool，并统一使用 `tool.call@1`。Tool name 固定在 `with.uses`，输入来自结构化 binding，执行继续经过 Host scope、guard、credential、observer 与 output validation。Canvas 中每个当前 Authority 可见的 Tool 只是这个通用节点的一个 catalog 条目，不产生新的运行时类型。
 2. 只有单次 JSON Tool 调用无法表达的暂停恢复、长任务 checkpoint、事务补偿或特殊控制流，才能注册自定义 `WorkflowNodeDefinition`。它可以通过 Host `WorkflowCapabilityRegistry` 绑定生命周期服务，但必须在 definition 和 `spec.requires` 中使用同一个 capability id。
 
 不存在第三种 Tool-backed Node Preset 执行层。脚本 runtime 是内置 `core.script@1` 的纯数据实现细节，也不能用于绕开 Tool policy。
@@ -116,14 +115,11 @@ output:
   path: [field, nestedField, 0]
 ```
 
-```yaml
-secret:
-  ref: CREDENTIAL_REFERENCE
-```
+`output.nodeId` 必须是当前节点的严格上游。`path` 是 string/integer 数组，不解析点号字符串。
 
-`output.node` 必须是当前节点的严格上游。`path` 是 string/integer 数组，不解析点号字符串。secret 只存 reference；值由执行时 secret resolver 解析，永不写入模板、event 或 checkpoint。
+Secret 不属于 JSON 数据面，因此 Binding 不支持 `secret`。需要凭据的可信外部节点只能在静态 `with` 中保存 `credentialRef`/`connectionRef` 等不透明引用，由 Host Gateway 在调用最后一刻解析；明文值不能进入普通节点输入、Event、Checkpoint 或 Artifact。
 
-Binding 自身不提供表达式：它只负责把 workflow input、上游 output、literal 或 secret 精确送入节点。确定性派生逻辑应显式建模为 `core.script@1` 节点，禁止在 binding 中夹带模板代码或 JS。
+Binding 自身不提供表达式：它只负责把 workflow input、上游 output 或 literal 精确送入节点。确定性派生逻辑应显式建模为 `core.script@1` 节点，禁止在 binding 中夹带模板代码或 JS。
 
 ## 确定性脚本节点
 
@@ -143,18 +139,18 @@ Binding 自身不提供表达式：它只负责把 workflow input、上游 outpu
     orders: { input: { path: [orders] } }
 ```
 
-- `language` 必须是精确的 `language@integer-version`，并在当前 Host scope 的 `ctx.workflowScripts` 中可解析。
+- `language` 必须是精确的 `language@integer-version`，并在当前 Runtime 的 `WorkflowScriptRuntimeRegistry` 中可解析。
 - 编译器先执行 runtime `validate(source)`；语法或业务规则错误产生 `NODE_CONFIG_SEMANTIC_INVALID`。
 - runtime 只能接收节点 inputs、AbortSignal 和 `maxOperations`，输出必须是一个 lossless JSON object。
 - 内置 `json.expr@1` 是纯表达式 DSL，不是 JavaScript；禁止 I/O、动态调用、prototype key、时间和随机数。
-- 第三方 runtime 是受信任插件扩展点。模板的声明不能给 runtime 新增 authority；需要外部系统或 secret 时必须使用相应 DSH 节点。
+- 第三方 runtime 是受信任部署扩展点。模板的声明不能给 runtime 新增 Authority；需要外部系统或 Secret 时必须使用 Host Tool/自定义节点，并只传递不透明引用。
 
 ## 动态结果的两级校验
 
-1. Core 确定性边界：lossless JSON、secret leak、NodeDefinition output schema、节点 `expects`、字节上限。
+1. Core 确定性边界：lossless JSON、NodeDefinition output schema、节点 `expects`、字节上限。
 2. 可选 Agent 语义复核：作为显式 `agent.run@1` 节点，并为其结构化判断声明 `outputSchema/expects`。
 
-Agent 复核是业务判断，不是权限授予，也不能替代第一层。外部数据即使被 Agent 判断为合法，后续动态调用仍需重新满足 `requires + owning Agent scope + DSH policy`。
+Agent 复核是业务判断，不是权限授予，也不能替代第一层。外部数据即使被 Agent 判断为合法，后续动态调用仍需重新满足 `requires + Authority + Host policy`。
 
 ## Edge
 
@@ -213,7 +209,7 @@ layout:
 - 每个 child invocation id 由 parent run/node/item index 稳定派生。同一 invocation 必须绑定同一模板 semantic hash、inputs 和 depth；冲突 fail loud。
 - foreach checkpoint 保存每个 item 的 `pending/running/completed` frame。崩溃后 running item 恢复同一 child run，不创建第二个副作用执行。
 - `human.approval@1.with` 必须包含 `{ action, reason }`；任意 `inputs` 作为只读详情。节点在调用 approval seam 前提交 `waiting` checkpoint，结果走 `approved/rejected` 端口。
-- `agent.run@1.with` 必须包含 `{ prompt }`，可选 `label/outputSchema/maxDepth`；它继承 owning DSH Agent scope，输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
+- `agent.run@1.with` 必须包含 `{ prompt }`，可选 `outputSchema/tools/skills`；它使用当前 Launch Authority，输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
 
 ## 发布校验
 
@@ -223,11 +219,11 @@ layout:
 2. ID、edge、start/end、DAG 与 container topology 检查。
 3. `uses` 精确解析与 NodeDefinition availability 检查。
 4. Node config/input/output/expectation schema 与 definition 语义检查，包括 script runtime/source availability。
-5. NodeDefinition capability、固定 resource、secret binding 与 `spec.requires` 完整性检查。
+5. NodeDefinition capability、固定 resource 与 `spec.requires` 完整性检查。
 6. Binding 必填项、workflow input、上游性、field path 与可静态判定的 JSON Schema 类型兼容检查；不确定的开放 schema 保留到运行时 validator。
 7. Branch port 完整性与每条成功路径 output 可物化检查。
 8. Subworkflow revision 存在、依赖无环、深度上限检查。
-9. Secret reference 可解析性检查，但不读取或保存 secret value。
+9. `credentialRef`/`connectionRef` 等不透明引用只在 Host Gateway 内解析；Core 不读取或保存 Secret value。
 10. Template policy 不高于 deployment ceiling 检查。
 11. Semantic hash 与 content hash 计算。
 

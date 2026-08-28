@@ -6,7 +6,9 @@ import {
   type WorkflowDiagnostic,
   type WorkflowNodeDefinition,
   type WorkflowRun,
-  type WorkflowRunRecord,
+  type WorkflowRunCheckpoint,
+  type WorkflowRunMetadata,
+  type WorkflowEvent,
   type WorkflowRunResult,
   type WorkflowTemplate,
 } from '../core/index.js'
@@ -43,35 +45,40 @@ import type {
 } from './types.js'
 
 interface WorkflowCanvasTemplateHost {
-  createDraft(template: WorkflowTemplate): WorkflowDraft
-  readDraft(id: string): WorkflowDraft
-  updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft
-  validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[]
-  diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff
-  publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision
-  getPublished(id: string, revision?: number): PublishedWorkflowRevision
-  list(): readonly WorkflowCatalogSummary[]
+  createDraft(template: WorkflowTemplate): Promise<WorkflowDraft>
+  readDraft(id: string): Promise<WorkflowDraft>
+  updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft>
+  validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]>
+  diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff>
+  publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision>
+  getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
+  list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
 interface WorkflowCanvasEngineHost {
   start(request: {
-    readonly template: WorkflowTemplate
+    readonly template?: WorkflowTemplate
+    readonly target?: import('../runtime/index.js').WorkflowLaunchTarget
     readonly inputs: import('../core/index.js').JsonObject
     readonly parent: WorkflowCanvasPrincipal['agent']
     readonly signal: AbortSignal
-  }): WorkflowRun
+  }): Promise<WorkflowRun>
   resume(request: {
     readonly runId: string
     readonly parent: WorkflowCanvasPrincipal['agent']
     readonly signal: AbortSignal
     readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
-  }): WorkflowRun
+  }): Promise<WorkflowRun>
 }
 
 type WorkflowCanvasHostContext = Context & {
   readonly workflowNodes: { list(): readonly WorkflowNodeDefinition[] }
   readonly workflowTemplates: WorkflowCanvasTemplateHost
-  readonly workflowRuns: { loadRun(runId: string): WorkflowRunRecord | undefined }
+  readonly workflowRuns: {
+    getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined>
+    getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
+    readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]>
+  }
   readonly dagWorkflowEngine: WorkflowCanvasEngineHost
   readonly tools: WorkflowCanvasToolCatalogLike
   readonly agents: { get(id: string): unknown }
@@ -158,25 +165,25 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   @Remote
   async templates(sessionId: string): Promise<readonly CanvasCatalogSummary[]> {
     await this.guard(sessionId, 'templates:list')
-    return snapshotJsonValue(this.host.workflowTemplates.list()) as unknown as readonly CanvasCatalogSummary[]
+    return snapshotJsonValue(await this.host.workflowTemplates.list()) as unknown as readonly CanvasCatalogSummary[]
   }
 
   @Remote
   async createDraft(sessionId: string, request: CanvasDraftCreateRequest): Promise<CanvasWorkflowDraft> {
     await this.guard(sessionId, 'draft:create', request.template.metadata.id)
-    return snapshotJsonValue(this.host.workflowTemplates.createDraft(asTemplate(request.template))) as unknown as CanvasWorkflowDraft
+    return snapshotJsonValue(await this.host.workflowTemplates.createDraft(asTemplate(request.template))) as unknown as CanvasWorkflowDraft
   }
 
   @Remote
   async readDraft(sessionId: string, request: CanvasDraftReadRequest): Promise<CanvasWorkflowDraft> {
     await this.guard(sessionId, 'draft:read', request.id)
-    return snapshotJsonValue(this.host.workflowTemplates.readDraft(request.id)) as unknown as CanvasWorkflowDraft
+    return snapshotJsonValue(await this.host.workflowTemplates.readDraft(request.id)) as unknown as CanvasWorkflowDraft
   }
 
   @Remote
   async updateDraft(sessionId: string, request: CanvasDraftUpdateRequest): Promise<CanvasWorkflowDraft> {
     await this.guard(sessionId, 'draft:update', request.id)
-    return snapshotJsonValue(this.host.workflowTemplates.updateDraft(
+    return snapshotJsonValue(await this.host.workflowTemplates.updateDraft(
       request.id,
       request.expectedRevision,
       asTemplate(request.template),
@@ -189,29 +196,27 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   }> {
     await this.guard(sessionId, 'draft:validate', request.template.metadata.id)
     return {
-      diagnostics: snapshotJsonValue(this.host.workflowTemplates.validate(asTemplate(request.template))) as unknown as readonly CanvasWorkflowDiagnostic[],
+      diagnostics: snapshotJsonValue(await this.host.workflowTemplates.validate(asTemplate(request.template))) as unknown as readonly CanvasWorkflowDiagnostic[],
     }
   }
 
   @Remote
   async diff(sessionId: string, request: CanvasDraftDiffRequest): Promise<CanvasTemplateDiff> {
     await this.guard(sessionId, 'draft:diff', request.id)
-    return snapshotJsonValue(this.host.workflowTemplates.diff(request.id, asTemplate(request.candidate))) as unknown as CanvasTemplateDiff
+    return snapshotJsonValue(await this.host.workflowTemplates.diff(request.id, asTemplate(request.candidate))) as unknown as CanvasTemplateDiff
   }
 
   @Remote
   async publish(sessionId: string, request: CanvasDraftPublishRequest): Promise<CanvasPublishedRevision> {
     await this.guard(sessionId, 'draft:publish', request.id)
-    return snapshotJsonValue(this.host.workflowTemplates.publish(request.id, request.expectedRevision)) as unknown as CanvasPublishedRevision
+    return snapshotJsonValue(await this.host.workflowTemplates.publish(request.id, request.expectedRevision)) as unknown as CanvasPublishedRevision
   }
 
   @Remote
   async run(sessionId: string, request: CanvasRunRequest, signal: AbortSignal): Promise<CanvasRunResult> {
     const principal = await this.guard(sessionId, 'run:start', request.id)
-    const published = this.host.workflowTemplates.getPublished(request.id, request.revision)
-    if (published.revision !== request.revision) throw new Error(`published revision mismatch for ${request.id}`)
-    return settle(this.host.dagWorkflowEngine.start({
-      template: published.template,
+    return settle(await this.host.dagWorkflowEngine.start({
+      target: { type: 'published', id: request.id, revision: request.revision },
       inputs: snapshotJsonObject(request.inputs),
       parent: principal.agent,
       signal,
@@ -221,7 +226,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   @Remote
   async runDraft(sessionId: string, request: CanvasDraftRunRequest, signal: AbortSignal): Promise<CanvasRunResult> {
     const principal = await this.guard(sessionId, 'run:start', request.template.metadata.id)
-    return settle(this.host.dagWorkflowEngine.start({
+    return settle(await this.host.dagWorkflowEngine.start({
       template: asTemplate(request.template),
       inputs: snapshotJsonObject(request.inputs),
       parent: principal.agent,
@@ -232,7 +237,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   @Remote
   async resume(sessionId: string, request: CanvasResumeRequest, signal: AbortSignal): Promise<CanvasRunResult> {
     const principal = await this.guard(sessionId, 'run:resume', request.runId)
-    return settle(this.host.dagWorkflowEngine.resume({
+    return settle(await this.host.dagWorkflowEngine.resume({
       runId: request.runId,
       parent: principal.agent,
       signal,
@@ -245,12 +250,20 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   @Remote
   async trace(sessionId: string, request: CanvasTraceRequest): Promise<CanvasTrace> {
     await this.guard(sessionId, 'run:trace', request.runId)
-    const record = this.host.workflowRuns.loadRun(request.runId)
-    if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
-    const checkpoint = record.checkpoint
+    const [record, checkpoint] = await Promise.all([
+      this.host.workflowRuns.getRunMetadata(request.runId),
+      this.host.workflowRuns.getCheckpoint(request.runId),
+    ])
+    if (record === undefined || checkpoint === undefined) throw new Error(`workflow run not found: ${request.runId}`)
+    const events: WorkflowEvent[] = []
+    for (;;) {
+      const page = await this.host.workflowRuns.readEvents(request.runId, { afterSeq: events.at(-1)?.seq ?? 0, limit: 1000 })
+      events.push(...page)
+      if (page.length < 1000) break
+    }
     return {
       runId: record.runId,
-      templateId: record.template.metadata.id,
+      templateId: record.templateId,
       semanticHash: record.semanticHash,
       createdAt: record.createdAt,
       status: checkpoint.status,
@@ -259,7 +272,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       edgeStates: checkpoint.edgeStates,
       nodeOutputs: checkpoint.nodeOutputs,
       nodeProgress: checkpoint.nodeProgress,
-      events: record.events.map(event => snapshotJsonObject(event)),
+      events: events.map(event => snapshotJsonObject(event)),
       ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
     }
   }

@@ -4,7 +4,7 @@
   "metadata": {
     "id": "weekly-ai-model-news",
     "name": "Weekly AI Model News Top 10",
-    "description": "Use only the built-in DSH web_search Tool, fan out thirteen searches, normalize up to 100 recent AI-model items, rank them deterministically, and produce a Chinese Top-10 digest."
+    "description": "Use the Host-provided web_search Tool, fan out thirteen searches, normalize up to 100 recent AI-model items, rank them deterministically, and produce a Chinese Top-10 digest."
   },
   "spec": {
     "requires": [

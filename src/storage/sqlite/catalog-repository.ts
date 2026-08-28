@@ -23,38 +23,42 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
     this.db.close()
   }
 
-  createDraft(materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
+  async createDraft(materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft> {
     return transaction(this.db, () => {
       const id = materialized.template.metadata.id
-      if (this.readDraft(id) !== undefined) throw new WorkflowCatalogError('CATALOG_ALREADY_EXISTS', `workflow draft already exists: ${id}`)
+      if (this.readDraftSync(id) !== undefined) throw new WorkflowCatalogError('CATALOG_ALREADY_EXISTS', `workflow draft already exists: ${id}`)
       this.db.prepare(`INSERT INTO workflow_drafts
         (id, revision, template_json, content_hash, semantic_hash, created_at, updated_at)
         VALUES (?, 1, ?, ?, ?, ?, ?)`)
         .run(id, encodeTemplate(materialized.template), materialized.contentHash, materialized.semanticHash, now, now)
-      return this.readDraft(id)!
+      return this.readDraftSync(id)!
     })
   }
 
-  readDraft(id: string): WorkflowDraft | undefined {
+  async readDraft(id: string): Promise<WorkflowDraft | undefined> {
+    return this.readDraftSync(id)
+  }
+
+  private readDraftSync(id: string): WorkflowDraft | undefined {
     const row = this.db.prepare(`SELECT id, revision, template_json, content_hash, semantic_hash, created_at, updated_at
       FROM workflow_drafts WHERE id = ?`).get(id)
     return row === undefined ? undefined : decodeDraft(row)
   }
 
-  updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
+  async updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft> {
     return transaction(this.db, () => {
       const result = this.db.prepare(`UPDATE workflow_drafts SET
         revision = revision + 1, template_json = ?, content_hash = ?, semantic_hash = ?, updated_at = ?
         WHERE id = ? AND revision = ?`)
         .run(encodeTemplate(materialized.template), materialized.contentHash, materialized.semanticHash, now, id, expectedRevision)
       if (result.changes === 0) this.throwMissingOrConflict(id, expectedRevision)
-      return this.readDraft(id)!
+      return this.readDraftSync(id)!
     })
   }
 
-  publishDraft(id: string, expectedDraftRevision: number, now: number): PublishedWorkflowRevision {
+  async publishDraft(id: string, expectedDraftRevision: number, now: number): Promise<PublishedWorkflowRevision> {
     return transaction(this.db, () => {
-      const draft = this.readDraft(id)
+      const draft = this.readDraftSync(id)
       if (draft === undefined) throw new WorkflowCatalogError('CATALOG_NOT_FOUND', `workflow draft not found: ${id}`)
       if (draft.revision !== expectedDraftRevision) throw revisionConflict(id, expectedDraftRevision, draft.revision)
       const latest = integerColumn(this.db.prepare('SELECT COALESCE(MAX(revision), 0) AS value FROM workflow_revisions WHERE id = ?').get(id), 'value')
@@ -63,11 +67,15 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
         (id, revision, source_draft_revision, template_json, content_hash, semantic_hash, published_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
         .run(id, revision, draft.revision, encodeTemplate(draft.template), draft.contentHash, draft.semanticHash, now)
-      return this.readPublished(id, revision)!
+      return this.readPublishedSync(id, revision)!
     })
   }
 
-  readPublished(id: string, revision?: number): PublishedWorkflowRevision | undefined {
+  async readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined> {
+    return this.readPublishedSync(id, revision)
+  }
+
+  private readPublishedSync(id: string, revision?: number): PublishedWorkflowRevision | undefined {
     const row = revision === undefined
       ? this.db.prepare(`SELECT id, revision, source_draft_revision, template_json, content_hash, semantic_hash, published_at
           FROM workflow_revisions WHERE id = ? ORDER BY revision DESC LIMIT 1`).get(id)
@@ -76,7 +84,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
     return row === undefined ? undefined : decodePublished(row)
   }
 
-  list(): readonly WorkflowCatalogSummary[] {
+  async list(): Promise<readonly WorkflowCatalogSummary[]> {
     return this.db.prepare(`SELECT d.id, d.revision AS draft_revision, d.template_json, d.updated_at,
       (SELECT MAX(r.revision) FROM workflow_revisions r WHERE r.id = d.id) AS published_revision
       FROM workflow_drafts d ORDER BY d.id`).all().map(row => {
@@ -94,7 +102,7 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
   }
 
   private throwMissingOrConflict(id: string, expected: number): never {
-    const draft = this.readDraft(id)
+    const draft = this.readDraftSync(id)
     if (draft === undefined) throw new WorkflowCatalogError('CATALOG_NOT_FOUND', `workflow draft not found: ${id}`)
     throw revisionConflict(id, expected, draft.revision)
   }

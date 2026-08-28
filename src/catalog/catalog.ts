@@ -31,17 +31,17 @@ export class WorkflowTemplateCatalog {
     this.now = options.now ?? Date.now
   }
 
-  createDraft(template: WorkflowTemplate): WorkflowDraft {
+  async createDraft(template: WorkflowTemplate): Promise<WorkflowDraft> {
     const materialized = materializeWorkflowTemplate(template)
     assertDraftEnvelope(materialized.template)
     return this.repository.createDraft(materialized, this.now())
   }
 
-  readDraft(id: string): WorkflowDraft {
-    return this.repository.readDraft(id) ?? notFound(id)
+  async readDraft(id: string): Promise<WorkflowDraft> {
+    return await this.repository.readDraft(id) ?? notFound(id)
   }
 
-  updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft {
+  async updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft> {
     const materialized = materializeWorkflowTemplate(template)
     assertDraftEnvelope(materialized.template)
     if (materialized.template.metadata.id !== id) {
@@ -50,43 +50,43 @@ export class WorkflowTemplateCatalog {
     return this.repository.updateDraft(id, expectedRevision, materialized, this.now())
   }
 
-  validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[] {
+  async validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]> {
     const diagnostics = [...compileWorkflow(template, this.nodes).diagnostics]
     if (!diagnostics.some(item => item.code === 'TEMPLATE_NOT_LOSSLESS_JSON')) {
-      diagnostics.push(...this.validatePublishedDependencies(template))
+      diagnostics.push(...await this.validatePublishedDependencies(template))
     }
     return diagnostics
   }
 
-  diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff {
-    return diffWorkflowTemplates(this.readDraft(id).template, candidate)
+  async diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff> {
+    return diffWorkflowTemplates((await this.readDraft(id)).template, candidate)
   }
 
-  publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision {
-    const draft = this.readDraft(id)
+  async publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision> {
+    const draft = await this.readDraft(id)
     if (draft.revision !== expectedDraftRevision) {
       throw new WorkflowCatalogError('CATALOG_REVISION_CONFLICT', `workflow ${id} expected draft revision ${expectedDraftRevision}, actual ${draft.revision}`)
     }
-    const diagnostics = this.validate(draft.template)
+    const diagnostics = await this.validate(draft.template)
     if (diagnostics.some(diagnostic => diagnostic.severity === 'error')) {
       throw new WorkflowCatalogError('CATALOG_PUBLISH_INVALID', `workflow ${id} cannot be published`, diagnostics)
     }
     return this.repository.publishDraft(id, expectedDraftRevision, this.now())
   }
 
-  getPublished(id: string, revision?: number): PublishedWorkflowRevision {
-    return this.repository.readPublished(id, revision) ?? notFound(`${id}@${revision ?? 'latest'}`)
+  async getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision> {
+    return await this.repository.readPublished(id, revision) ?? notFound(`${id}@${revision ?? 'latest'}`)
   }
 
-  list(): readonly WorkflowCatalogSummary[] {
+  async list(): Promise<readonly WorkflowCatalogSummary[]> {
     return this.repository.list()
   }
 
-  private validatePublishedDependencies(root: WorkflowTemplate): WorkflowDiagnostic[] {
+  private async validatePublishedDependencies(root: WorkflowTemplate): Promise<WorkflowDiagnostic[]> {
     const diagnostics: WorkflowDiagnostic[] = []
-    const latest = this.repository.readPublished(root.metadata.id)
+    const latest = await this.repository.readPublished(root.metadata.id)
     const rootKey = dependencyKey(root.metadata.id, (latest?.revision ?? 0) + 1)
-    const visit = (template: WorkflowTemplate, depth: number, inheritedLimit: number, stack: ReadonlySet<string>): void => {
+    const visit = async (template: WorkflowTemplate, depth: number, inheritedLimit: number, stack: ReadonlySet<string>): Promise<void> => {
       const localLimit = Math.min(inheritedLimit, template.spec.policies?.subworkflowMaxDepth ?? 8)
       for (const dependency of dependenciesOf(template)) {
         const nextDepth = depth + 1
@@ -103,15 +103,15 @@ export class WorkflowTemplateCatalog {
           diagnostics.push(dependencyDiagnostic('SUBWORKFLOW_DEPENDENCY_CYCLE', `published dependency cycle reaches ${key}`, dependency.nodeId))
           continue
         }
-        const published = this.repository.readPublished(dependency.id, dependency.revision)
+        const published = await this.repository.readPublished(dependency.id, dependency.revision)
         if (published === undefined) {
           diagnostics.push(dependencyDiagnostic('SUBWORKFLOW_REVISION_NOT_FOUND', `published workflow revision not found: ${key}`, dependency.nodeId))
           continue
         }
-        visit(published.template, nextDepth, localLimit, new Set([...stack, key]))
+        await visit(published.template, nextDepth, localLimit, new Set([...stack, key]))
       }
     }
-    visit(root, 0, root.spec.policies?.subworkflowMaxDepth ?? 8, new Set([rootKey]))
+    await visit(root, 0, root.spec.policies?.subworkflowMaxDepth ?? 8, new Set([rootKey]))
     return diagnostics
   }
 }

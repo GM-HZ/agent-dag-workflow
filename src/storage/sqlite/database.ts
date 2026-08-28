@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 
-export const SQLITE_SCHEMA_VERSION = 4
+export const SQLITE_SCHEMA_VERSION = 9
 export const SQLITE_APPLICATION_ID = 1_146_308_695
 
 export interface SqliteWorkflowOptions {
@@ -44,11 +44,17 @@ function initializeOrMigrate(db: DatabaseSync): void {
   if (version === 0 && applicationId === 0 && objectCount === 0) {
     createCatalogTables(db)
     createRunTables(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
     db.exec(`PRAGMA application_id = ${SQLITE_APPLICATION_ID}; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 1 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
     if (names.join(',') !== 'workflow_drafts,workflow_revisions') throw new Error('workflow database v1 schema objects do not match the migration source')
     createRunTables(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 2 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
@@ -57,17 +63,91 @@ function initializeOrMigrate(db: DatabaseSync): void {
     }
     db.exec(`ALTER TABLE workflow_runs ADD COLUMN owner_ref TEXT;`)
     addExecutionContext(db)
+    addExecutionPlan(db)
+    addLaunchMetadata(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 3 && applicationId === SQLITE_APPLICATION_ID) {
     addExecutionContext(db)
+    addExecutionPlan(db)
+    addLaunchMetadata(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 4 && applicationId === SQLITE_APPLICATION_ID) {
+    addExecutionPlan(db)
+    addLaunchMetadata(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 5 && applicationId === SQLITE_APPLICATION_ID) {
+    addLaunchMetadata(db)
+    createArtifactTables(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 6 && applicationId === SQLITE_APPLICATION_ID) {
+    addLaunchMetadata(db)
+    createIngressTables(db)
+    createRunQueueTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 7 && applicationId === SQLITE_APPLICATION_ID) {
+    addLaunchMetadata(db)
+    createRunQueueTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 8 && applicationId === SQLITE_APPLICATION_ID) {
+    createRunQueueTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
   const names = tableNames(db)
-  if (names.join(',') !== 'workflow_drafts,workflow_revisions,workflow_run_events,workflow_runs') {
+  if (names.join(',') !== 'workflow_artifacts,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
     throw new Error('workflow database required schema objects do not match this build')
   }
+}
+
+function createRunQueueTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE workflow_run_queue (
+      run_id TEXT PRIMARY KEY,
+      enqueued_at INTEGER NOT NULL,
+      worker_id TEXT,
+      lease_token TEXT,
+      lease_expires_at INTEGER,
+      CHECK ((worker_id IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL)
+        OR (worker_id IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL))
+    ) STRICT;
+  `)
+}
+
+function createIngressTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE workflow_ingress (
+      trigger_id TEXT PRIMARY KEY,
+      dedupe_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL CHECK (status IN ('received', 'rejected', 'launched')),
+      record_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT;
+  `)
+}
+
+function createArtifactTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE workflow_artifacts (
+      digest TEXT PRIMARY KEY CHECK (length(digest) = 64),
+      size INTEGER NOT NULL CHECK (size >= 0),
+      media_type TEXT NOT NULL,
+      redacted INTEGER NOT NULL CHECK (redacted IN (0, 1)),
+      content BLOB NOT NULL,
+      created_at INTEGER NOT NULL
+    ) STRICT;
+  `)
 }
 
 function createCatalogTables(db: DatabaseSync): void {
@@ -100,8 +180,10 @@ function createRunTables(db: DatabaseSync): void {
       run_id TEXT PRIMARY KEY,
       template_json TEXT NOT NULL,
       semantic_hash TEXT NOT NULL CHECK (length(semantic_hash) = 64),
+      plan_json TEXT NOT NULL,
       inputs_json TEXT NOT NULL,
       execution_json TEXT NOT NULL,
+      launch_json TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       checkpoint_json TEXT NOT NULL,
       checkpoint_seq INTEGER NOT NULL CHECK (checkpoint_seq >= 0),
@@ -120,6 +202,15 @@ function createRunTables(db: DatabaseSync): void {
 function addExecutionContext(db: DatabaseSync): void {
   const fallback = '{"authorityRef":"migration:unavailable","origin":{"type":"migration"}}'
   db.exec(`ALTER TABLE workflow_runs ADD COLUMN execution_json TEXT NOT NULL DEFAULT '${fallback}';`)
+}
+
+function addExecutionPlan(db: DatabaseSync): void {
+  const fallback = '{"root":{"id":"migration-unavailable","semanticHash":"migration-unavailable","template":{}},"dependencies":[],"engineVersion":"migration-unavailable","nodeDefinitionSetHash":"migration-unavailable","replayable":false}'
+  db.exec(`ALTER TABLE workflow_runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT '${fallback}';`)
+}
+
+function addLaunchMetadata(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE workflow_runs ADD COLUMN launch_json TEXT NOT NULL DEFAULT '{}';`)
 }
 
 function tableNames(db: DatabaseSync): string[] {

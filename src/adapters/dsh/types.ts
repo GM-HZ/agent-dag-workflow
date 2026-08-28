@@ -7,6 +7,7 @@ import type {
   WorkflowStartRequest,
   WorkflowTemplate,
 } from '../../core/index.js'
+import type { WorkflowLaunchTarget } from '../../runtime/index.js'
 
 export interface DshSessionLike {
   append(type: string, data: unknown): unknown
@@ -113,15 +114,17 @@ export interface DshSkillRuntimeLike {
   }): () => void
 }
 
-export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'execution'> {
-  readonly template: WorkflowTemplate
+export type DshDagWorkflowStartRequest = Omit<WorkflowStartRequest, 'execution' | 'template' | 'plan' | 'recordedNodeOutputs'> & {
   readonly inputs: JsonObject
   readonly parent: object
-}
+} & (
+  | { readonly template: WorkflowTemplate; readonly target?: never }
+  | { readonly target: WorkflowLaunchTarget; readonly template?: never }
+)
 
 export interface DshDagWorkflowEngine {
-  start(request: DshDagWorkflowStartRequest): WorkflowRun
-  resume(request: DshDagWorkflowResumeRequest): WorkflowRun
+  start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun>
+  resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun>
 }
 
 export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest, 'execution'> {

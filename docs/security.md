@@ -1,37 +1,39 @@
-# 安全与恢复边界
+# 安全、审计与恢复边界
 
-## Authority
+## Authority 与依赖
 
-- `tool.call@1`、`agent.run@1`、`human.approval@1` 永远通过 DSH 的 Tool、subagent 和 approval service，模板发布不授予新权限。
-- Canvas Host 插件默认只从 Host 实时 Agent registry 接受仍附着的顶层 Agent，并拒绝缺失、脱离和 subagent identity；这个零配置边界只适合本地单用户 profile。
-- 浏览器的 `sessionId` 只是查找键，不是身份凭证。多人或多租户部署必须提供 `authorize`，并从 Host 自己的连接、用户、workspace 和 Session membership 状态做判断，不能因为 id 存在就允许；每个 RPC 都会携带 `agent/action/resourceId` 重新授权。
-- 当前 Catalog 是部署级 repository。多租户部署必须按租户隔离 service/database，或在 authority 层实现同等强度的 resource ownership；不要共享一个无 ownership policy 的全局 catalog。
-- `spec.requires` 是模板级 allowlist，不是 grant。编译器要求 NodeDefinition capability、固定 Tool/Agent/Runtime/subworkflow 和 secret 引用全部预声明；运行仍取 owning Agent scope 与 DSH policy 的交集。
-- Engine 只向节点暴露其 NodeDefinition `capabilities` 覆盖的 gateway；自定义 `context.capabilities` 同时隐藏未声明绑定，并拒绝已声明但 Host 未安装的绑定。未声明 `gateway.tool.execute` 的普通节点无法取得 Tool gateway。
-- 外部业务调用只有 DSH Tool 与自定义 Node 两级。`ctx.workflowCapabilities` 只允许自定义 Node 注入特殊生命周期服务，不能用作 HTTP/数据库/消息等普通业务调用的旁路，否则会绕开 Tool scope、guard 和审计。
-- 第三方 NodeDefinition 是受信任 Host 插件，可以通过闭包持有 ambient authority；`requires` 无法替代插件代码审计或进程 sandbox。
+- `WorkflowLaunchRequest.authorityRef` 是可持久化引用，`authority` 是 Host 解析出的瞬时权限对象。Core 不把 Session、Token 或凭据对象写入 Run。
+- `spec.requires` 是模板级 allowlist，不是 grant。实际能力是模板声明、NodeDefinition 声明、Authority 和 Host policy 的交集。
+- Engine 只向节点投影其 NodeDefinition `capabilities` 声明的 Gateway。自定义节点访问未声明或未安装的 Capability 会 fail closed。
+- 外部业务调用只有两级：普通能力走 `WorkflowToolGateway`；只有暂停恢复、长进度或特殊端口等生命周期语义才注册自定义 Node。Capability Resolver 不能成为绕过 Tool policy 的第二条业务调用总线。
+- 第三方 NodeDefinition 和 Script Runtime 是部署者安装的受信任代码，可能通过闭包持有 ambient authority。模板 allowlist 不能替代代码审计或进程隔离。
+- DSH Canvas 的 `sessionId` 只是查找键，不是多租户凭证。多人部署必须实现 `authorize`，并按用户、workspace、Session membership、action 和 resource 逐次授权。
 
-## Secrets
+## Secret 与外部数据
 
-- 模板、event 和 checkpoint 只保存 secret reference。
-- DSH 插件仅在配置 `resolveSecret` 后启用 secret binding。回调取得 owning Agent、run/node id 与 AbortSignal，应再次执行 credential scope policy。
-- Core 在节点调用完成后对输出执行 secret leak gate；包含已解析 secret 原值的输出以 `SECRET_OUTPUT_LEAK` 失败，错误不包含 secret。
-- 节点/Tool 不应主动复制、编码或变换 credential 到输出。Core 无法可靠识别加密、hash、切片等派生泄露；Tool 插件仍负责自己的输出脱敏。
+- Binding 不支持通用 Secret。模板只能保存 `credentialRef`、`connectionRef` 等不透明静态引用，由 Host Gateway 在调用最后一刻解析。
+- Secret 明文不得进入 Workflow Input、节点 Output、Event、Checkpoint、Artifact 或 Live Event。Core 无法识别 Secret 的 hash、编码或切片等派生泄漏，Gateway 仍必须负责输出脱敏。
+- Template、Trigger payload、Tool 结果和 Agent 结果都按不可信 JSON 处理。它们必须经过大小限制、lossless JSON materialization 和 Schema 校验。
+- Agent 语义复核是显式业务节点，不授予权限，也不能替代结构 Schema、依赖门禁或 prompt-injection 隔离。
 
-## Persistence and replay
+## Journal、Artifact 与 Replay
 
-- Store commit 使用 checkpoint seq CAS；事件与 checkpoint 在 SQLite 同一事务中提交。
-- `retry: never` 的运行中节点在崩溃后进入 `needs_attention`，不会静默重放；operator 必须明确 `retry/fail`。
-- child invocation id 和 foreach item index 稳定派生，重启后命中同一 child run。
-- Run 只持久化可序列化 `authorityRef`，不持久化 Agent/Session object。自动恢复用 Host `recovery.resolve` 重新取得 Authority；无法解析 Authority 和 paused run 不自动开始。
-- 这套语义是 at-least-once + 显式不确定性，不声称 exactly-once。Tool 若支持业务幂等，应继续使用自己的 idempotency key。
-- 节点输出必须先通过 NodeDefinition schema 与实例 `expects` 才能进入 checkpoint。Agent 语义 review 是业务节点，不能作为安全 Schema、权限或 prompt-injection 边界。
-- 非确定 Agent 不应重写外部来源记录。推荐只返回以稳定 `id` 标识的评分/摘要 overlay，再由 `json.expr@1` 的 `joinBy` 做一一对应合并；缺失、未知、重复 id 或覆盖原字段会 fail closed，并完整进入 run trace。
+- Event 与对应 Checkpoint 在 Store 中按 `expectedSeq` CAS 原子提交；Event Envelope 包含 run、node、invocation、workflow hash、origin 和 correlation。
+- Capture Policy 由部署配置，模板不能放宽。`replayable` 模式用内容寻址 Artifact 保存允许捕获的外部结果；缺失、脱敏、digest/内容不一致时 Recorded Replay 必须拒绝。
+- `inspect` 不执行；`recorded` 跳过外部节点并重算确定性下游；`live` 重新调用当前发布计划的外部能力。三者不能混称为 Replay。
+- `retry: never` 的运行中外部节点在崩溃后进入 `needs_attention`，操作者必须显式选择 retry/fail。
+- 稳定 invocationId、Ingress 幂等键和 Journal CAS 降低重复执行，但不构成外部副作用 exactly-once。Gateway 应实现业务幂等并处理 unknown state。
 
-## Resource limits
+## Trigger 与 Worker
+
+- 外部 Trigger 不能指定最终 Authority、Workflow revision 或幂等键。Adapter 先验签并生成可信 Envelope，Ingress 根据来源和消息 id 派生去重键，Binding 再固定映射到发布修订与 Authority。
+- Run launch 与 Ingress 状态之间的崩溃间隙由确定性 idempotency key + `recoverPending` 收敛，不通过猜测执行结果处理。
+- Reference Worker 使用 claim/lease/heartbeat；Runtime 仍以 Journal CAS 防止并发提交。生产分布式 Store 必须增加服务端 fencing token，不能把单进程 Coordinator 当作分布式锁。
+- Result Delivery 使用稳定 invocationId，并区分成功、失败和 unknown attempt；重试不能生成新的业务身份。
+
+## 资源限制
 
 - 模板策略限制并发节点、节点运行数、总时长、输出字节、foreach item/concurrency 与 subworkflow depth。
-- 普通图必须是 DAG；无 `eval`，condition 只使用固定 operator。
-- `core.script@1` 内置 `json.expr@1` 只做纯 JSON 变换，限制 source 大小和 evaluator operation 数，观察 AbortSignal，并拒绝 prototype key 与动态函数调用。
-- `ctx.workflowScripts` 中的第三方 runtime 与其他 Host 插件一样属于受信任代码。`deterministic: true` 是可调度/恢复契约，不是 sandbox 或权限证明；部署者必须审计 runtime，不能在其中暗藏 I/O、环境变量或 secret 访问。
-- 所有输入、模板、进度与输出先 materialize 为 lossless JSON；prototype、function、symbol、循环引用与非有限数值被拒绝。
+- 普通图必须是 DAG；无无界 `while`。Condition 只使用固定 operator。
+- `core.script@1` 的内置 `json.expr@1` 只做纯 JSON 变换，限制 source 大小和 evaluator operation 数，观察 AbortSignal，并拒绝 I/O、环境变量、时间、随机数、prototype key、动态函数和 `eval`。
+- 所有输入、模板、进度与输出先物化为 lossless JSON；function、symbol、循环引用与非有限数值会被拒绝。

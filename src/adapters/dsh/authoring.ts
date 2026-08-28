@@ -102,15 +102,15 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
     }), true),
     tool('workflow_draft_create', 'Create a workflow draft after materializing a lossless JSON snapshot. Drafts may be structurally incomplete.', {
       template: { ...templateProperty, required: true },
-    }, async args => snapshotJsonValue(ctx.workflowTemplates.createDraft(templateArg(args, 'template')))),
+    }, async args => snapshotJsonValue(await ctx.workflowTemplates.createDraft(templateArg(args, 'template')))),
     tool('workflow_draft_read', 'Read the current immutable snapshot and CAS revision of a workflow draft.', {
       id: { ...idProperty, required: true },
-    }, async args => snapshotJsonValue(ctx.workflowTemplates.readDraft(stringArg(args, 'id'))), true),
+    }, async args => snapshotJsonValue(await ctx.workflowTemplates.readDraft(stringArg(args, 'id'))), true),
     tool('workflow_draft_update', 'Replace a workflow draft using optimistic concurrency. Pass the exact expected revision returned by the last read or update.', {
       id: { ...idProperty, required: true },
       expectedRevision: { ...revisionProperty, required: true },
       template: { ...templateProperty, required: true },
-    }, async args => snapshotJsonValue(ctx.workflowTemplates.updateDraft(
+    }, async args => snapshotJsonValue(await ctx.workflowTemplates.updateDraft(
       stringArg(args, 'id'),
       integerArg(args, 'expectedRevision'),
       templateArg(args, 'template'),
@@ -121,27 +121,27 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
     }, async args => {
       const template = templateJsonArg(args)
       const expectedRevision = optionalIntegerArg(args, 'expectedRevision')
-      return snapshotJsonValue(expectedRevision === undefined
+      return snapshotJsonValue(await (expectedRevision === undefined
         ? ctx.workflowTemplates.createDraft(template)
-        : ctx.workflowTemplates.updateDraft(template.metadata.id, expectedRevision, template))
+        : ctx.workflowTemplates.updateDraft(template.metadata.id, expectedRevision, template)))
     }),
     tool('workflow_draft_validate', 'Validate the current immutable draft by id without resending the complete template.', {
       id: { ...idProperty, required: true },
     }, async args => {
-      const draft = ctx.workflowTemplates.readDraft(stringArg(args, 'id'))
-      return { revision: draft.revision, diagnostics: snapshotJsonValue(ctx.workflowTemplates.validate(draft.template)) }
+      const draft = await ctx.workflowTemplates.readDraft(stringArg(args, 'id'))
+      return { revision: draft.revision, diagnostics: snapshotJsonValue(await ctx.workflowTemplates.validate(draft.template)) }
     }, true),
     tool('workflow_validate', 'Compile a candidate workflow and return stable diagnostics. Never infer success from an empty tool error.', {
       template: { ...templateProperty, required: true },
-    }, async args => ({ diagnostics: snapshotJsonValue(ctx.workflowTemplates.validate(templateArg(args, 'template'))) }), true),
+    }, async args => ({ diagnostics: snapshotJsonValue(await ctx.workflowTemplates.validate(templateArg(args, 'template'))) }), true),
     tool('workflow_diff', 'Compare a candidate against the current draft and separate semantic, layout, node, and edge changes.', {
       id: { ...idProperty, required: true },
       candidate: { ...templateProperty, required: true },
-    }, async args => snapshotJsonValue(ctx.workflowTemplates.diff(stringArg(args, 'id'), templateArg(args, 'candidate'))), true),
+    }, async args => snapshotJsonValue(await ctx.workflowTemplates.diff(stringArg(args, 'id'), templateArg(args, 'candidate'))), true),
     tool('workflow_publish', 'Publish an immutable revision only when full validation succeeds and the expected draft revision still matches.', {
       id: { ...idProperty, required: true },
       expectedRevision: { ...revisionProperty, required: true },
-    }, async args => snapshotJsonValue(ctx.workflowTemplates.publish(stringArg(args, 'id'), integerArg(args, 'expectedRevision')))),
+    }, async args => snapshotJsonValue(await ctx.workflowTemplates.publish(stringArg(args, 'id'), integerArg(args, 'expectedRevision')))),
     tool('workflow_run', 'Run one exact published revision, or an explicit inline template test, as the calling Agent. Exactly one of id or template is required.', {
       id: idProperty,
       revision: revisionProperty,
@@ -157,10 +157,10 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       if (hasId === hasTemplate) throw new Error('workflow_run requires exactly one of id or template')
       if (!hasId && candidate.revision !== undefined) throw new Error('workflow_run revision is valid only with id')
       if (hasId && candidate.revision === undefined) throw new Error('workflow_run requires an explicit revision with id')
-      const template = hasId
-        ? ctx.workflowTemplates.getPublished(stringArg(args, 'id'), optionalIntegerArg(args, 'revision')).template
-        : templateArg(args, 'template')
-      const run = ctx.dagWorkflowEngine.start({ template, inputs: input, parent, signal: execution.signal })
+      const target = hasId
+        ? { type: 'published' as const, id: stringArg(args, 'id'), revision: integerArg(args, 'revision') }
+        : { type: 'inline' as const, template: templateArg(args, 'template') }
+      const run = await ctx.dagWorkflowEngine.start({ target, inputs: input, parent, signal: execution.signal })
       const result = await settleRun(run)
       return snapshotJsonValue({
         runId: result.runId,
@@ -276,7 +276,7 @@ export function renderWorkflowToolOutput(name: string, value: JsonValue): string
   return stableJsonStringify(value)
 }
 
-async function settleRun(run: ReturnType<Context['dagWorkflowEngine']['start']>) {
+async function settleRun(run: Awaited<ReturnType<Context['dagWorkflowEngine']['start']>>) {
   let result: Awaited<typeof run.result> | undefined
   let executionError: unknown
   try { result = await run.result } catch (error: unknown) { executionError = error }

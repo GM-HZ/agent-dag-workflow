@@ -348,14 +348,14 @@ describe('DSH Cordis plugin', () => {
     const runsPlugin = await ctx.plugin(DshWorkflowPlugin.InMemoryWorkflowRunsService)
     const registry = ctx.workflowNodes.registry
     const capabilities = ctx.workflowCapabilities.registry
-    const draft = ctx.workflowTemplates.createDraft(childTemplate('external-services'))
+    const draft = await ctx.workflowTemplates.createDraft(childTemplate('external-services'))
 
     const plugin = await ctx.plugin(DshWorkflowPlugin, { catalog: 'external', runStore: 'external' })
 
     expect(ctx.workflowNodes.registry).toBe(registry)
     expect(ctx.workflowCapabilities.registry).toBe(capabilities)
-    expect(ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
-    const run = ctx.dagWorkflowEngine.start({
+    expect(await ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
+    const run = await ctx.dagWorkflowEngine.start({
       template: childTemplate('external-run'),
       inputs: { message: 'persisted' },
       parent: { session: new StubSession() },
@@ -364,8 +364,8 @@ describe('DSH Cordis plugin', () => {
     await run.dispose()
     await plugin.dispose()
     expect(ctx.workflowNodes.registry).toBe(registry)
-    expect(ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
-    expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+    expect(await ctx.workflowTemplates.readDraft(draft.id)).toMatchObject({ id: draft.id, revision: 1 })
+    expect((await ctx.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('completed')
 
     await runsPlugin.dispose()
     await templatesPlugin.dispose()
@@ -384,7 +384,7 @@ describe('DSH Cordis plugin', () => {
     const observed: string[] = []
     ctx.on('dag-workflow/event', event => { observed.push(event.type) })
 
-    const run = ctx.dagWorkflowEngine.start({ template: template(), inputs: { message: 'hello' }, parent })
+    const run = await ctx.dagWorkflowEngine.start({ template: template(), inputs: { message: 'hello' }, parent })
     const result = await run.result
 
     expect(result.status).toBe('completed')
@@ -403,14 +403,14 @@ describe('DSH Cordis plugin', () => {
       'tool.call@1',
       'workflow.call@1',
     ])
-    const draft = ctx.workflowTemplates.createDraft(template())
-    const published = ctx.workflowTemplates.publish(draft.id, draft.revision)
-    expect(ctx.workflowTemplates.getPublished(draft.id).revision).toBe(published.revision)
+    const draft = await ctx.workflowTemplates.createDraft(template())
+    const published = await ctx.workflowTemplates.publish(draft.id, draft.revision)
+    expect((await ctx.workflowTemplates.getPublished(draft.id)).revision).toBe(published.revision)
     expect(observed).toContain('run.completed')
     // Downstream Session event types cannot currently be registered with DSH.
     // Persist the complete trace in workflowRuns and keep the owning Session clean.
     expect(session.events).toEqual([])
-    expect(ctx.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+    expect((await ctx.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('completed')
     expect([...tools.definitions.keys()].sort()).toEqual([
       'workflow_diff',
       'workflow_draft_create',
@@ -427,7 +427,7 @@ describe('DSH Cordis plugin', () => {
       invocation: { modelInvocable: true, userInvocable: true },
       content: expect.stringContaining('workflow_nodes_list'),
     })
-    const replayed = await ctx.dagWorkflowEngine.resume({ runId: run.id, parent }).result
+    const replayed = await (await ctx.dagWorkflowEngine.resume({ runId: run.id, parent })).result
     expect(replayed).toMatchObject({ status: 'completed', outputs: { answer: 'hello' } })
     expect(tools.requests).toHaveLength(1)
 
@@ -527,11 +527,11 @@ describe('DSH Cordis plugin', () => {
     }
     const workflow = parseWorkflowTemplate(readFileSync(new URL('../../examples/weekly-ai-model-news.workflow.json', import.meta.url), 'utf8'))
 
-    const result = await ctx.dagWorkflowEngine.start({
+    const result = await (await ctx.dagWorkflowEngine.start({
       template: workflow,
       inputs: { from, to },
       parent: { session: new StubSession() },
-    }).result
+    })).result
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
@@ -565,7 +565,7 @@ describe('DSH Cordis plugin', () => {
       'score-news',
       'summarize-top-10',
     ])
-    const record = ctx.workflowRuns.loadRun(result.runId)
+    const record = await ctx.workflowRuns.loadRun(result.runId)
     expect(record?.checkpoint).toMatchObject({ status: 'completed' })
     expect(record?.checkpoint.nodeStates).toEqual(expect.objectContaining({
       'plan-searches': 'succeeded',
@@ -631,7 +631,7 @@ describe('DSH Cordis plugin', () => {
       },
     }
 
-    const run = ctx.dagWorkflowEngine.start({
+    const run = await ctx.dagWorkflowEngine.start({
       template: customTemplate,
       inputs: { value: 'payload' },
       parent: { session: new StubSession() },
@@ -650,12 +650,12 @@ describe('DSH Cordis plugin', () => {
     const session = new StubSession()
     const warn = vi.spyOn(ctx.logger, 'warn').mockImplementation(() => undefined)
 
-    const result = await ctx.dagWorkflowEngine.start({
+    const result = await (await ctx.dagWorkflowEngine.start({
       template: template(),
       inputs: { message: 'still-runs' },
       parent: { session },
       onEvent: () => { throw new Error('observer broke') },
-    }).result
+    })).result
 
     expect(result.status).toBe('completed')
     expect(session.events).toEqual([])
@@ -670,7 +670,7 @@ describe('DSH Cordis plugin', () => {
       input.signal.addEventListener('abort', () => { reject(new Error(String(input.signal.reason))) }, { once: true })
     }).then(value => ({ isError: false as const, value }))
     const plugin = await ctx.plugin(DshWorkflowPlugin)
-    const run = ctx.dagWorkflowEngine.start({ template: template(), inputs: { message: 'wait' }, parent: { session: new StubSession() } })
+    const run = await ctx.dagWorkflowEngine.start({ template: template(), inputs: { message: 'wait' }, parent: { session: new StubSession() } })
     await vi.waitFor(() => { expect(tools.requests).toHaveLength(1) })
 
     await plugin.dispose()
@@ -686,7 +686,7 @@ describe('DSH Cordis plugin', () => {
     await ctx.plugin(DshWorkflowPlugin)
     const parent: DshAgentLike = { session: new StubSession() }
 
-    const result = await ctx.dagWorkflowEngine.start({ template: agentApprovalTemplate(), inputs: {}, parent }).result
+    const result = await (await ctx.dagWorkflowEngine.start({ template: agentApprovalTemplate(), inputs: {}, parent })).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'child answer', approved: true } })
     expect(ctx.subagents.requests).toHaveLength(1)
@@ -705,7 +705,7 @@ describe('DSH Cordis plugin', () => {
       callId: expect.stringMatching(/:approve:\d+$/),
       reason: expect.stringContaining('child answer'),
     }))
-    const record = ctx.workflowRuns.loadRun(result.runId)
+    const record = await ctx.workflowRuns.loadRun(result.runId)
     expect(record?.events).toContainEqual(expect.objectContaining({ type: 'node.waiting', nodeId: 'approve' }))
   })
 
@@ -715,21 +715,22 @@ describe('DSH Cordis plugin', () => {
     await ctx.plugin(DshWorkflowPlugin)
     const parent: DshAgentLike = { session: new StubSession() }
     for (const child of [childTemplate('nested-child'), childTemplate('item-worker', true)]) {
-      const draft = ctx.workflowTemplates.createDraft(child)
-      ctx.workflowTemplates.publish(draft.id, draft.revision)
+      const draft = await ctx.workflowTemplates.createDraft(child)
+      await ctx.workflowTemplates.publish(draft.id, draft.revision)
     }
 
-    const nested = await ctx.dagWorkflowEngine.start({
+    const nested = await (await ctx.dagWorkflowEngine.start({
       template: nestedParentTemplate(),
       inputs: { message: 'nested value' },
       parent,
-    }).result
-    const mapped = await ctx.dagWorkflowEngine.start({
+    })).result
+    const mapped = await (await ctx.dagWorkflowEngine.start({
       template: foreachParentTemplate(),
       inputs: { items: ['alpha', 'beta', 'gamma'] },
       parent,
-    }).result
+    })).result
 
+    if (nested.status !== 'completed') throw new Error(nested.error)
     expect(nested).toMatchObject({ status: 'completed', outputs: { value: 'nested value' } })
     expect(mapped).toMatchObject({
       status: 'completed',
@@ -743,7 +744,7 @@ describe('DSH Cordis plugin', () => {
     })
     if (mapped.status !== 'completed') throw new Error(mapped.error)
     for (const item of mapped.outputs.results as readonly { readonly runId: string }[]) {
-      expect(ctx.workflowRuns.loadRun(item.runId)?.checkpoint).toMatchObject({ status: 'completed', depth: 1 })
+      expect((await ctx.workflowRuns.loadRun(item.runId))?.checkpoint).toMatchObject({ status: 'completed', depth: 1 })
     }
   })
 
@@ -827,10 +828,10 @@ describe('DSH Cordis plugin', () => {
       },
     } as WorkflowTemplate
 
-    const result = await ctx.dagWorkflowEngine.start({ template: referencedTemplate, inputs: { message: 'unused' }, parent }).result
+    const result = await (await ctx.dagWorkflowEngine.start({ template: referencedTemplate, inputs: { message: 'unused' }, parent })).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'credential accepted' } })
-    const record = ctx.workflowRuns.loadRun(result.runId)
+    const record = await ctx.workflowRuns.loadRun(result.runId)
     expect(record?.execution.authorityRef).toBe('session:secret-owner')
     expect(JSON.stringify(record)).toContain('credential:report-api')
     expect(JSON.stringify(record)).not.toContain('resolved-in-memory')

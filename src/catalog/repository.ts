@@ -2,19 +2,19 @@ import type { MaterializedWorkflowTemplate } from '../core/index.js'
 import { WorkflowCatalogError, type PublishedWorkflowRevision, type WorkflowCatalogSummary, type WorkflowDraft } from './types.js'
 
 export interface WorkflowCatalogRepository {
-  createDraft(materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft
-  readDraft(id: string): WorkflowDraft | undefined
-  updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft
-  publishDraft(id: string, expectedDraftRevision: number, now: number): PublishedWorkflowRevision
-  readPublished(id: string, revision?: number): PublishedWorkflowRevision | undefined
-  list(): readonly WorkflowCatalogSummary[]
+  createDraft(materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft>
+  readDraft(id: string): Promise<WorkflowDraft | undefined>
+  updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft>
+  publishDraft(id: string, expectedDraftRevision: number, now: number): Promise<PublishedWorkflowRevision>
+  readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined>
+  list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
 export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogRepository {
   private readonly drafts = new Map<string, WorkflowDraft>()
   private readonly published = new Map<string, PublishedWorkflowRevision[]>()
 
-  createDraft(materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
+  async createDraft(materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft> {
     const id = materialized.template.metadata.id
     if (this.drafts.has(id)) throw new WorkflowCatalogError('CATALOG_ALREADY_EXISTS', `workflow draft already exists: ${id}`)
     const draft = freezeDraft({
@@ -30,11 +30,11 @@ export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogReposit
     return draft
   }
 
-  readDraft(id: string): WorkflowDraft | undefined {
+  async readDraft(id: string): Promise<WorkflowDraft | undefined> {
     return this.drafts.get(id)
   }
 
-  updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): WorkflowDraft {
+  async updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft> {
     const current = this.requireDraft(id)
     if (current.revision !== expectedRevision) throw revisionConflict(id, expectedRevision, current.revision)
     const next = freezeDraft({
@@ -49,7 +49,7 @@ export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogReposit
     return next
   }
 
-  publishDraft(id: string, expectedDraftRevision: number, now: number): PublishedWorkflowRevision {
+  async publishDraft(id: string, expectedDraftRevision: number, now: number): Promise<PublishedWorkflowRevision> {
     const draft = this.requireDraft(id)
     if (draft.revision !== expectedDraftRevision) throw revisionConflict(id, expectedDraftRevision, draft.revision)
     const revisions = this.published.get(id) ?? []
@@ -67,14 +67,14 @@ export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogReposit
     return published
   }
 
-  readPublished(id: string, revision?: number): PublishedWorkflowRevision | undefined {
+  async readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined> {
     const revisions = this.published.get(id)
     if (revision === undefined) return revisions?.at(-1)
     if (!Number.isSafeInteger(revision) || revision < 1) return undefined
     return revisions?.[revision - 1]
   }
 
-  list(): readonly WorkflowCatalogSummary[] {
+  async list(): Promise<readonly WorkflowCatalogSummary[]> {
     return [...this.drafts.values()]
       .map(draft => {
         const latest = this.published.get(draft.id)?.at(-1)

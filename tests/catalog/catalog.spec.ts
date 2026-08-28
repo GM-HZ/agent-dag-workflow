@@ -75,35 +75,35 @@ function setup() {
 }
 
 describe('workflow template catalog', () => {
-  it('uses CAS for drafts and preserves immutable published revisions', () => {
+  it('uses CAS for drafts and preserves immutable published revisions', async () => {
     const { catalog } = setup()
-    const created = catalog.createDraft(template())
+    const created = await catalog.createDraft(template())
     expect(created).toMatchObject({ revision: 1, createdAt: 101, updatedAt: 101 })
 
-    const updated = catalog.updateDraft(created.id, 1, template({ layoutX: 80 }))
+    const updated = await catalog.updateDraft(created.id, 1, template({ layoutX: 80 }))
     expect(updated.revision).toBe(2)
     expect(updated.semanticHash).toBe(created.semanticHash)
     expect(updated.contentHash).not.toBe(created.contentHash)
-    expect(() => catalog.updateDraft(created.id, 1, template())).toThrow(expect.objectContaining({ code: 'CATALOG_REVISION_CONFLICT' }))
+    await expect(catalog.updateDraft(created.id, 1, template())).rejects.toEqual(expect.objectContaining({ code: 'CATALOG_REVISION_CONFLICT' }))
 
-    const first = catalog.publish(created.id, 2)
+    const first = await catalog.publish(created.id, 2)
     expect(first).toMatchObject({ revision: 1, sourceDraftRevision: 2 })
-    const thirdDraft = catalog.updateDraft(created.id, 2, template({ name: 'Renamed' }))
-    const second = catalog.publish(created.id, thirdDraft.revision)
+    const thirdDraft = await catalog.updateDraft(created.id, 2, template({ name: 'Renamed' }))
+    const second = await catalog.publish(created.id, thirdDraft.revision)
 
     expect(second).toMatchObject({ revision: 2, sourceDraftRevision: 3 })
-    expect(catalog.getPublished(created.id, 1)).toBe(first)
-    expect(catalog.getPublished(created.id, 1).template.metadata.name).toBe('Catalog test')
-    expect(catalog.getPublished(created.id).template.metadata.name).toBe('Renamed')
-    expect(catalog.list()).toEqual([expect.objectContaining({ id: 'catalog-test', draftRevision: 3, publishedRevision: 2 })])
+    expect(await catalog.getPublished(created.id, 1)).toBe(first)
+    expect((await catalog.getPublished(created.id, 1)).template.metadata.name).toBe('Catalog test')
+    expect((await catalog.getPublished(created.id)).template.metadata.name).toBe('Renamed')
+    expect(await catalog.list()).toEqual([expect.objectContaining({ id: 'catalog-test', draftRevision: 3, publishedRevision: 2 })])
   })
 
-  it('allows invalid drafts but refuses to publish them with diagnostics', () => {
+  it('allows invalid drafts but refuses to publish them with diagnostics', async () => {
     const { catalog } = setup()
-    const draft = catalog.createDraft(template({ endUses: 'plugin.missing@1' }))
+    const draft = await catalog.createDraft(template({ endUses: 'plugin.missing@1' }))
 
-    expect(catalog.validate(draft.template)).toContainEqual(expect.objectContaining({ code: 'UNKNOWN_NODE_TYPE', nodeId: 'end' }))
-    expect(() => catalog.publish(draft.id, draft.revision)).toThrow(expect.objectContaining({
+    expect(await catalog.validate(draft.template)).toContainEqual(expect.objectContaining({ code: 'UNKNOWN_NODE_TYPE', nodeId: 'end' }))
+    await expect(catalog.publish(draft.id, draft.revision)).rejects.toEqual(expect.objectContaining({
       code: 'CATALOG_PUBLISH_INVALID',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'UNKNOWN_NODE_TYPE' })]),
     }))
@@ -118,34 +118,34 @@ describe('workflow template catalog', () => {
     expect(semantic).toMatchObject({ contentChanged: true, semanticChanged: true, layoutChanged: false })
   })
 
-  it('rejects id drift and duplicate drafts with stable errors', () => {
+  it('rejects id drift and duplicate drafts with stable errors', async () => {
     const { catalog } = setup()
-    catalog.createDraft(template())
-    expect(() => catalog.createDraft(template())).toThrow(expect.objectContaining({ code: 'CATALOG_ALREADY_EXISTS' }))
+    await catalog.createDraft(template())
+    await expect(catalog.createDraft(template())).rejects.toEqual(expect.objectContaining({ code: 'CATALOG_ALREADY_EXISTS' }))
     const renamedId = { ...template(), metadata: { id: 'other-id', name: 'Other' } }
-    expect(() => catalog.updateDraft('catalog-test', 1, renamedId)).toThrow(expect.objectContaining({ code: 'CATALOG_ID_MISMATCH' }))
-    expect(() => catalog.readDraft('missing')).toThrow(WorkflowCatalogError)
+    await expect(catalog.updateDraft('catalog-test', 1, renamedId)).rejects.toEqual(expect.objectContaining({ code: 'CATALOG_ID_MISMATCH' }))
+    await expect(catalog.readDraft('missing')).rejects.toThrow(WorkflowCatalogError)
   })
 
-  it('validates fixed published dependencies, cycles, and maximum depth before publish', () => {
+  it('validates fixed published dependencies, cycles, and maximum depth before publish', async () => {
     const { catalog } = setup()
-    const missing = catalog.createDraft(dependencyTemplate('missing-parent', { id: 'not-published', revision: 1 }))
-    expect(catalog.validate(missing.template)).toContainEqual(expect.objectContaining({
+    const missing = await catalog.createDraft(dependencyTemplate('missing-parent', { id: 'not-published', revision: 1 }))
+    expect(await catalog.validate(missing.template)).toContainEqual(expect.objectContaining({
       code: 'SUBWORKFLOW_REVISION_NOT_FOUND',
       nodeId: 'child',
     }))
-    expect(() => catalog.publish(missing.id, missing.revision)).toThrow(expect.objectContaining({ code: 'CATALOG_PUBLISH_INVALID' }))
+    await expect(catalog.publish(missing.id, missing.revision)).rejects.toEqual(expect.objectContaining({ code: 'CATALOG_PUBLISH_INVALID' }))
 
-    const self = catalog.createDraft(dependencyTemplate('self-cycle', { id: 'self-cycle', revision: 1 }))
-    expect(catalog.validate(self.template)).toContainEqual(expect.objectContaining({ code: 'SUBWORKFLOW_DEPENDENCY_CYCLE' }))
+    const self = await catalog.createDraft(dependencyTemplate('self-cycle', { id: 'self-cycle', revision: 1 }))
+    expect(await catalog.validate(self.template)).toContainEqual(expect.objectContaining({ code: 'SUBWORKFLOW_DEPENDENCY_CYCLE' }))
 
-    const leaf = catalog.createDraft(dependencyTemplate('leaf'))
-    catalog.publish(leaf.id, leaf.revision)
-    const middle = catalog.createDraft(dependencyTemplate('middle', { id: 'leaf', revision: 1 }))
-    catalog.publish(middle.id, middle.revision)
-    const root = catalog.createDraft(dependencyTemplate('root', { id: 'middle', revision: 1 }, 1))
+    const leaf = await catalog.createDraft(dependencyTemplate('leaf'))
+    await catalog.publish(leaf.id, leaf.revision)
+    const middle = await catalog.createDraft(dependencyTemplate('middle', { id: 'leaf', revision: 1 }))
+    await catalog.publish(middle.id, middle.revision)
+    const root = await catalog.createDraft(dependencyTemplate('root', { id: 'middle', revision: 1 }, 1))
 
-    expect(catalog.validate(root.template)).toContainEqual(expect.objectContaining({
+    expect(await catalog.validate(root.template)).toContainEqual(expect.objectContaining({
       code: 'SUBWORKFLOW_DEPTH_EXCEEDED',
       message: expect.stringContaining('depth 2'),
     }))

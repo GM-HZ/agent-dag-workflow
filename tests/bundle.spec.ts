@@ -102,8 +102,8 @@ describe('installable DSH workflow package', () => {
         language: 'acme.rules@1',
         source: 'accept',
       })).toEqual([])
-      const draft = first.workflowTemplates.createDraft(template())
-      const run = first.dagWorkflowEngine.start({
+      const draft = await first.workflowTemplates.createDraft(template())
+      const run = await first.dagWorkflowEngine.start({
         template: draft.template,
         inputs: { value: 'persisted' },
         parent: { session: new StubSession() },
@@ -116,8 +116,8 @@ describe('installable DSH workflow package', () => {
 
       const second = await host()
       const secondPlugin = await second.plugin(Workflow, { databasePath })
-      expect(second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
-      expect(second.workflowRuns.loadRun(run.id)?.checkpoint.status).toBe('completed')
+      expect(await second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
+      expect((await second.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('completed')
       await secondPlugin.dispose()
     } finally {
       rmSync(directory, { recursive: true, force: true })

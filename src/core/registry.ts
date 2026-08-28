@@ -1,4 +1,6 @@
-import type { WorkflowNodeDefinition } from './types.js'
+import { createHash } from 'node:crypto'
+import { stableJsonStringify } from './json.js'
+import type { JsonObject, WorkflowNodeDefinition } from './types.js'
 
 export type WorkflowNodeDisposer = () => void
 
@@ -29,6 +31,29 @@ export class WorkflowNodeRegistry {
       return nodeDefinitionKey(left.type, left.version).localeCompare(nodeDefinitionKey(right.type, right.version))
     })
   }
+
+  definitionSet(uses?: readonly string[]): { readonly hash: string; readonly replayable: boolean } {
+    const selected = uses === undefined
+      ? this.list()
+      : [...new Set(uses)].sort().map(item => this.#definitions.get(item)).filter((item): item is WorkflowNodeDefinition => item !== undefined)
+    const replayable = selected.every(item => typeof item.implementationDigest === 'string' && item.implementationDigest.length > 0)
+    const manifest = selected.map(item => ({
+      uses: nodeDefinitionKey(item.type, item.version),
+      schemaHash: digest(stableJsonStringify({
+        config: item.configSchema,
+        input: item.inputSchema,
+        output: item.outputSchema,
+        ports: item.outputPorts,
+        capabilities: item.capabilities,
+      } as unknown as JsonObject)),
+      implementationDigest: item.implementationDigest ?? 'missing',
+    }))
+    return Object.freeze({ hash: digest(stableJsonStringify(manifest as unknown as import('./types.js').JsonValue)), replayable })
+  }
+}
+
+function digest(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 export function nodeDefinitionKey(type: string, version: number): string {

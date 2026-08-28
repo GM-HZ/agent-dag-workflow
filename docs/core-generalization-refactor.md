@@ -1,12 +1,12 @@
 # Agent DAG Workflow 核心通用化重构方案
 
-> 状态：Proposed
+> 状态：Accepted · implementation in progress
 >
 > 目标分支：`codex/generalize-workflow-core`
 >
 > 基线：`main@4e4f40a`
 >
-> 目标版本：`0.3.0`（破坏性重构，不保留运行时兼容层）
+> 目标版本：`1.0.0`（破坏性重构，不保留运行时兼容层，不拆分小版本发布）
 
 ## 1. 决策摘要
 
@@ -35,27 +35,27 @@ import { createMcpServer } from '@gm-hz/agent-dag-workflow/mcp'
 import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 ```
 
-包名是工作名，发布前再检查 npm 可用性。Core、模板协议和序列化数据中不再出现 DSH 标识；DSH 只存在于 `dsh` Adapter 入口。
+公开包名固定为 `@gm-hz/agent-dag-workflow`。Core、模板协议和序列化数据中不再出现 DSH 标识；DSH 只存在于 `dsh` Adapter 入口。
 
 ### 1.1 最终 Review 结论
 
 本方案可以进入实现，但以以下收口为前提：
 
-1. `0.3.0` 聚焦通用 Core、Journal、CLI/SDK/DSH/MCP 宿主一致性和统一 Launch 契约，不同时交付生产级消息 Channel 与分布式调度平台；
+1. `1.0.0` 聚焦通用 Core、Journal、CLI/SDK/DSH/MCP 宿主一致性、统一 Launch/Trigger 契约和可验证的本地 Worker；不把生产级消息平台或分布式调度平台伪装成本次交付；
 2. 所有新协议的持久化、Catalog 和 Runtime 公共边界采用异步接口，SQLite/Memory 只是同步实现的异步包装，避免后续接入服务端 Store 时再次破坏 API；
 3. 区分发布修订和开发期 inline template，但 run 创建时都固化 canonical template、semantic hash、engine version 和 NodeDefinition set hash；
 4. Trigger 创建 run 之前的接收、拒绝和去重事实进入独立 Ingress Journal，Workflow Journal 只记录已经拥有 `runId` 的执行事实；
 5. Script、Condition、Foreach、Tool/Agent 的边界成为编译和安全规则，而不只是一条文档建议。
 
-版本路线固定为：
+实施顺序固定为以下门禁，不再映射为多个 npm 小版本：
 
-| 版本 | 交付范围 |
+| 门禁 | 交付范围 |
 | --- | --- |
-| `0.3.0` | 阶段 A-D；中立 Core、单包、Journal/Replay、统一 Launch、SDK/CLI/DSH/MCP |
-| `0.4.0` | 阶段 E；后台 Worker、Trigger Core、Cron/Webhook、完整 Live Stream |
-| `0.5.0` | 阶段 F；钉钉等 Channel、Canvas Trigger/Trace 体验 |
+| Core | 阶段 A-D；中立 Core、单包、Journal/Replay、统一 Launch、SDK/CLI/DSH/MCP |
+| Reliability | 阶段 E；后台 Worker、Trigger Core、Cron/Webhook、Live Stream 边界 |
+| Experience | 阶段 F；参考 Channel、Canvas Trigger/Trace 与文档体验 |
 
-后续版本仍在同一仓库和同一公开包内演进，不重新拆包。`0.3.0` 可以冻结 Trigger/Worker/Live Event 接口，但不得为了赶范围提供半可靠的生产 Adapter。
+所有门禁在同一分支和同一公开包内完成，通过最终验收后一次合并。Trigger/Worker/Live Event 接口必须冻结，但不得为了勾选清单把 reference adapter 宣称为生产级平台实现。
 
 ## 2. 产品定位
 
@@ -96,11 +96,11 @@ import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 2. 不实现任意 JavaScript/Python `eval` 节点。
 3. 不让模板直接执行任意 shell 命令。
 4. 不承诺 Agent/Tool 的实时重新执行能产生相同结果。
-5. 不在 `0.3.0` 同时完成所有消息平台和分布式调度能力。
+5. 不同时完成所有消息平台和分布式调度能力；只实现足以验证协议的 reference adapter。
 6. 不保留 `dsh.workflow/*`、`dsh.tool@1`、`dsh.agent@1` 的双轨运行时兼容。
 7. 不为了目录边界继续拆出一组独立版本的 npm 包。
 8. 不提供可被并发节点任意读写的全局变量池，也不让模板隐式读取宿主进程环境变量。
-9. 不在 `0.3.0` 实现任意 `while`、无限循环或按节点创建操作系统进程。
+9. 不实现任意 `while`、无限循环或按节点创建操作系统进程。
 
 ## 4. 为什么采用单包
 
@@ -233,7 +233,7 @@ Draft 的 revision、Published Workflow revision、Binding revision、Event seq 
 
 ### 6.1 Envelope
 
-`0.3.0` 使用新的中立 API Version：
+`1.0.0` 使用新的中立 API Version：
 
 ```json
 {
@@ -662,9 +662,9 @@ interface WorkflowLiveEvent {
 }
 ```
 
-Host Adapter 可以将同一 Live Stream 投影为 SSE、WebSocket、MCP progress、CLI stdout、DSH observer 或钉钉更新消息。Core 不把每个 token 写进 Journal，避免数据库膨胀和泄漏模型内部信息；只持久化节流后的公开进度、最终公开内容、结构化输出和 Artifact hash。最终输出仍必须经过 Schema 校验并原子提交，断线重连以 Journal 状态为准，不能把已看到的 delta 当成已完成副作用。
+Host Adapter 可以将同一 Live Stream 投影为 SSE、WebSocket、MCP progress、CLI stdout、DSH observer 或钉钉更新消息。内存 Bus 为每个订阅者设置有界缓冲，慢消费者丢弃最旧的临时 delta；`liveSeq` 允许消费者识别缺口。Core 不把每个 token 写进 Journal，避免数据库膨胀和泄漏模型内部信息；只持久化需要恢复的公开进度、最终公开内容、结构化输出和 Artifact hash。最终输出仍必须经过 Schema 校验并原子提交，断线重连以 Journal 状态为准，不能把已看到的 delta 当成已完成副作用。
 
-`0.3.0` 先冻结事件、背压、取消和终态提交协议，再实现 Agent Gateway 到各 Adapter 的完整 token streaming。任何情况下都不记录隐藏思维链。
+`1.0.0` 冻结事件 Envelope、有界缓冲/允许丢弃、取消和终态提交协议；各 Host Adapter 可以按自身能力投影 token streaming，本次不承诺每个 Adapter 都已实现 token transport。任何情况下都不记录隐藏思维链。
 
 ## 9. Trigger 模型
 
@@ -705,7 +705,7 @@ Trigger 使用独立的 `WorkflowBinding`，避免同一个流程为了不同入
 
 同一发布修订可以同时绑定 Cron、Webhook、钉钉命令和 Agent 控制入口。
 
-Binding revision 发布后不可修改；更新 Cron、映射、Authority 或回复策略都会产生新 revision。Input Mapping 只能使用与 Script 相同的纯 JSON 表达式，从 `payload`、可信 `metadata` 和 literal 生成 Workflow Input，不能调用 Tool、读取环境变量或动态选择 workflow revision。Binding 必须在启用前完成映射编译和目标 Input Schema 校验。
+Binding revision 发布后不可修改；更新 Cron、映射、Authority 或回复策略都会产生新 revision。Input Mapping 首版只允许 `payload.path`、可信 `metadata.path` 和 `literal` 三种固定来源；复杂变换进入 DAG 的 `core.script@1`，不在入口再造一套表达式语言。Binding 不能调用 Tool、读取环境变量或动态选择 workflow revision，并且必须在启用前完成映射和目标 Input Schema 校验。
 
 ### 9.3 Trigger Envelope
 
@@ -717,14 +717,12 @@ interface WorkflowTriggerEnvelope {
   sourceEventId: string
   receivedAt: number
   occurredAt?: number
-  idempotencyKey: string
-  authorityRef: string
   payload: JsonObject
   metadata?: JsonObject
 }
 ```
 
-Envelope 是 Adapter 完成验签后的可信内部对象，不直接反序列化外部 JSON。`authorityRef` 必须来自 Adapter 的身份映射，不能接受 payload 自报；`metadata` 只包含经过 allowlist 的协议字段。
+Envelope 是 Adapter 完成验签后的可信内部对象，不直接反序列化外部 JSON。它故意不携带可由来源指定的 `idempotencyKey` 或最终执行 `authorityRef`：幂等键由 Ingress 根据 Binding revision、source 和 sourceEventId 生成，执行 Authority 由已发布 Binding 决定。`metadata` 只包含经过 allowlist 的协议字段；身份映射结果如需审计，以 `principalRef` 记录，但不能直接扩大 Binding 权限。
 
 统一处理流水线：
 
@@ -802,7 +800,7 @@ Cron、Webhook 和钉钉进入生产前必须具备：
 - 失败队列或 operator attention；
 - Trigger 回执和最终结果关联。
 
-单进程 SQLite 是本地和嵌入式 reference runtime，可以完成全部语义验证；多 Worker 部署后再增加服务端 Store/Queue Adapter。Core 现在必须冻结 lease、claim、幂等和恢复契约，但 `0.3.0` 不需要同时交付一个分布式调度平台，也不能宣称 exactly-once。
+单进程 SQLite 是本地和嵌入式 reference runtime，可以完成全部语义验证；多 Worker 部署可增加服务端 Store/Queue Adapter。Core 必须冻结 lease、claim、幂等和恢复契约，但 `1.0.0` 不交付分布式调度平台，也不宣称 exactly-once。
 
 ```ts
 interface WorkflowRunCoordinator {
@@ -812,7 +810,7 @@ interface WorkflowRunCoordinator {
 }
 ```
 
-后台 Commit 除 `expectedSeq` 外还必须携带有效 `leaseToken`。Lease 只防止并发 Worker 同时推进，不证明外部副作用 exactly-once；副作用仍依赖 invocationId、Gateway 幂等能力和 unknown-state 策略。
+本地 Reference Worker 用 lease 负责 claim/heartbeat/release，Runtime 的 Journal CAS 负责阻止两个执行者同时提交同一状态。生产级分布式 Coordinator/Store 必须在 commit 路径额外校验 fencing token，不能只依赖进程内 lease。两者都不证明外部副作用 exactly-once；副作用仍依赖 invocationId、Gateway 幂等能力和 unknown-state 策略。
 
 ## 10. DSH、CLI、MCP 和 Canvas
 
@@ -896,19 +894,18 @@ Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
 ### 12.1 分支与发布
 
 ```text
-main                              当前 0.2.x 稳定线
-release/0.2                       必要的严重 Bug/安全修复
-codex/generalize-workflow-core    0.3.0 通用化重构
+main                              当前稳定线
+codex/generalize-workflow-core    1.0.0 通用化重构
 ```
 
-在 0.3.0 达到验收门禁前，不发布 npm、不修改 DSH Market 稳定条目。
+在 1.0.0 达到全部验收门禁前，不发布 npm、不修改 DSH Market 稳定条目。
 
 ### 12.2 不保留双轨兼容
 
 - Core 不同时注册新旧节点名；
 - Parser 不同时接受两个 API Version；
 - 不在执行路径中增加 legacy 分支；
-- 旧 npm/tag 保留，可继续运行原有 0.2.x；
+- 旧 npm/tag 保留，不在新 Core 中加载旧协议；
 - 仓库中的示例和测试一次性迁移；
 - 如果真实用户数据需要迁移，只提供独立、可删除、非运行时的离线转换命令。
 
@@ -930,10 +927,10 @@ codex/generalize-workflow-core    0.3.0 通用化重构
 
 Migration 是稳定内核的核心能力，但必须按对象拆开，不能用一个“自动兼容旧数据”的开关覆盖所有情况。
 
-| 类型 | 是否必须 | `0.3.0` 策略 |
+| 类型 | 是否必须 | `1.0.0` 策略 |
 | --- | --- | --- |
 | Store Schema | 必须 | 保留并强化 `user_version`、顺序迁移、事务、备份提示和幂等测试 |
-| Template Protocol | 必须有明确路径 | 0.2 → 0.3 使用一次性离线转换，运行时只接受新 API Version |
+| Template Protocol | 必须有明确路径 | 0.2 → 1.0 使用一次性离线转换，运行时只接受新 API Version |
 | Node Definition/Config | 需要版本契约 | 发布新 revision 时显式迁移并重新校验，不静默修改已发布模板 |
 | In-flight Checkpoint | 首版不自动迁移 | run 固定 engine/checkpoint schema；升级前 drain，或由旧 Worker 完成 |
 
@@ -1004,7 +1001,7 @@ Launch/Trigger 协议 + Migration 契约
 - 每一步结束时根包都能 build/test/pack，并至少保留一个可运行纵向 Case；
 - 新协议替换一个调用面后立刻删除对应旧类型、别名、fixture 和文档，不建立双写/双读；
 - 未达到当前阶段退出门禁，不进入下一阶段，也不发布带有“暂时绕过”的版本；
-- Trigger、Live Stream 和 Worker 接口在 `0.3.0` 可以标记 experimental，但 Core 数据模型不得依赖尚未实现的 Adapter。
+- Trigger、Live Stream 和 Worker 接口在 `1.0.0` 冻结最小稳定契约；Core 数据模型不得依赖具体 Adapter。
 
 ### 阶段 A：单包基线
 
@@ -1173,7 +1170,7 @@ Launch/Trigger 协议 + Migration 契约
 | Replay 被误认为确定性重跑 | 明确区分 inspect、recorded 和 live |
 | Trigger 重复副作用 | source event 幂等键、固定发布修订、原子 launch |
 | 重构范围太大难定位 | 机械单包收敛与语义重构分阶段进行 |
-| DSH 用户受影响 | main/0.2.x 保持稳定，0.3.0 门禁通过后再切换 |
+| DSH 用户受影响 | main/0.2.x 保持稳定，1.0.0 门禁通过后再切换 |
 
 ## 18. 完成定义
 
@@ -1221,13 +1218,13 @@ Launch/Trigger 协议 + Migration 契约
 - Runtime、Store、Catalog 和 Coordinator 对外边界统一异步；
 - Launch 同时支持受策略限制的 inline target 和固定 published target，run 内始终保存不可变快照；
 - Trigger pre-run 事实使用独立 Ingress Journal；
-- `0.3.0` 只交付阶段 A-D，不包含生产级 Channel 和多 Worker Adapter。
+- `1.0.0` 完成阶段 A-F 的协议和 reference implementation；不承诺生产级消息平台或分布式基础设施。
 
-发布前仍需确认的只有品牌包名、npm 可用性和默认 Artifact 保留期限。`0.3.0` 的范围已经关闭，不再把 Trigger Adapter 临时塞入首个通用版本。
+品牌包名已经固定。发布前仅剩默认 Artifact 保留期限需要由部署策略确定；它不得成为 Core 隐式行为。
 
-## 20. 首轮实施清单
+## 20. 首轮实施与收口清单
 
-按以下 PR/提交序列开始，不并行维护新旧架构：
+按以下提交序列实施，不并行维护新旧架构：
 
 1. **Baseline**：固定当前复杂 Case、SQLite v1/v2 fixture、`npm pack` 和本机 DSH 验收结果；
 2. **Mechanical single-package**：只移动目录、合并 manifest、建立 subpath exports，行为和协议不变；
@@ -1238,7 +1235,7 @@ Launch/Trigger 协议 + Migration 契约
 7. **Host vertical slice**：同一个“AI 模型周报”发布修订通过 SDK、CLI、DSH、MCP 运行，比较输出契约和 Journal；
 8. **Delete and close**：删除旧 workspace package、DSH Core 标识、重复文档和临时转换代码，执行完整 conformance、pack 和本机 DSH 回归。
 
-第 1-2 步不改语义，第 3 步开始破坏性新协议，第 4-8 步只在新协议上实现。首轮不实现钉钉、飞书、Cron Worker、分布式 Store 或完整 token stream；只保留已经冻结的接口和测试 fixture，防止核心重构被外围功能拖慢。
+第 1-2 步不改语义，第 3 步开始破坏性新协议，第 4-8 步只在新协议上实现。首轮已经提供 Webhook/Cron/钉钉与单进程 Worker 的 reference adapter，用于验证 Trigger 协议；不把它们声明为生产级平台连接器。分布式 Store、完整 token stream、飞书和微信生产适配不属于本次交付。
 
 ### 20.1 当前代码迁移落点
 

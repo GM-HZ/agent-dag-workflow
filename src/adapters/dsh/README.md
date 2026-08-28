@@ -1,6 +1,6 @@
-# @gm-hz/dsh-dag-workflow-host
+# @gm-hz/agent-dag-workflow/dsh/host
 
-把 `@gm-hz/dsh-dag-workflow-core` 装配成 DSH 原生 Cordis 服务。插件发布：
+把 `@gm-hz/agent-dag-workflow/core` 装配成 DSH 原生 Cordis 服务。插件发布：
 
 - `ctx.workflowNodes`：可处置的 Workflow 节点注册服务。
 - `ctx.workflowCapabilities`：自定义 Node 的 Host 服务注册表；执行时只投影 NodeDefinition 已声明的能力。
@@ -14,20 +14,19 @@
 ## 装配
 
 ```ts
-import * as DagWorkflow from '@gm-hz/dsh-dag-workflow-host'
+import * as DagWorkflow from '@gm-hz/agent-dag-workflow/dsh/host'
 
 await ctx.plugin(DagWorkflow)
 ```
 
 传入 `{ catalog: 'external', runStore: 'external' }` 可跳过默认内存实现，并显式装配 `SqliteWorkflowTemplatesService` 与 `SqliteWorkflowRunsService`。
 
-生产环境可以同时配置 scoped secret bridge 与自动恢复 authority：
+生产环境可以配置自动恢复 Authority：
 
 ```ts
 await ctx.plugin(DagWorkflow, {
   catalog: 'external',
   runStore: 'external',
-  resolveSecret: ({ ref, parent, signal }) => credentials.resolve(ref, { agent: parent, signal }),
   recovery: {
     reference: parent => sessionIdOf(parent),
     resolve: (authorityRef, { signal }) => agents.resolveSession(authorityRef, signal),
@@ -35,7 +34,7 @@ await ctx.plugin(DagWorkflow, {
 })
 ```
 
-`reference` 只返回可持久化的查找键；Agent object 永不进入数据库。启动协调器只恢复 `running + authorityRef + valid Agent`，paused run 等待操作者。Credential 只以不透明引用保存在静态配置中，明文不进入数据面和 checkpoint。
+`reference` 只返回可持久化的查找键；Agent object 永不进入数据库。启动协调器只恢复 `running + authorityRef + valid Agent`，paused run 等待操作者。Credential 只以不透明引用保存在静态配置中，并由 DSH Tool 自己的 policy/credential 边界解析；明文不进入 Workflow 数据面和 checkpoint。
 
 插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`tool.call@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`agent.run@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`human.approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
@@ -45,12 +44,12 @@ Authoring tools 包括 `workflow_nodes_list`、`workflow_draft_create/import/rea
 
 `workflow_nodes_list` 同时返回 `scriptRuntimes`、当前 DSH Agent 的结构化输出能力/Schema 方言、节点 `dependencyKinds` 和可由默认配置推导的 `defaultRequirements`。模板不选择 Agent 实现。第三方插件可调用 `ctx.workflowScripts.register()` 增加确定性业务语言；`core.script@1` 在编译期解析精确 `language@version` 并执行 runtime 的语义校验。Runtime 只负责纯 JSON 变换，任何 I/O 或 secret 访问仍由普通 DSH 节点承担。
 
-外部扩展固定为两级。普通 HTTP、数据库、消息和存储能力只注册到 `ctx.tools`，由 `tool.call@1` 统一执行；`workflow_nodes_list` 会按调用 Agent scope 返回这些 Tool。只有暂停恢复、进度 checkpoint、事务补偿等 Tool 无法表达的生命周期才注册 `ctx.workflowNodes`。此类自定义 Node 可以用 `ctx.workflowCapabilities.register()` 绑定 Host 服务，并通过 `execution.capabilities.require()` 获取 fail-closed 的节点级投影；它不是第二套 Tool invocation bus。
+外部扩展固定为两级。普通 HTTP、数据库、消息和存储能力只注册到 `ctx.tools`，由 `tool.call@1` 统一执行；`workflow_nodes_list` 会按调用 Agent scope 返回这些 Tool。只有暂停恢复、进度 checkpoint、事务补偿等 Tool 无法表达的生命周期才注册 `ctx.workflowNodes`。此类自定义 Node 可以用 `ctx.workflowCapabilities.register()` 绑定 Host 服务，并通过 `context.capabilities.require()` 获取 fail-closed 的节点级投影；它不是第二套 Tool invocation bus。
 
 模板 `spec.requires` 是类似 Cordis inject 的 fail-closed 依赖白名单，但不授予权限。运行仍以 owning Agent 的真实 DSH scope 为准，并再次经过 Tool/subagent/approval policy。节点 `expects` 在动态结果写入 run store 前执行确定性 JSON Schema 与字节上限校验；Agent 语义复核应作为后续显式节点，不能替代该边界。
 
 ```ts
-const run = ctx.dagWorkflowEngine.start({
+const run = await ctx.dagWorkflowEngine.start({
   template,
   inputs: { message: 'hello' },
   parent: agent,
@@ -59,7 +58,7 @@ const run = ctx.dagWorkflowEngine.start({
 const result = await run.result
 await run.dispose()
 
-const recovered = ctx.dagWorkflowEngine.resume({
+const recovered = await ctx.dagWorkflowEngine.resume({
   runId: run.id,
   parent: agent,
   unknownNodeResolutions: { call: 'retry' },

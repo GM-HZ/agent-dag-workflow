@@ -1,55 +1,39 @@
-# 实现状态与完成审计
+# 1.0.0 重构实现状态
 
-本表是“完整实现总体设计”的验收清单。`完成` 必须同时有实现、测试和公开入口；仅有设计文档或类型定义记为 `未开始/部分完成`。
+状态以当前 `codex/generalize-workflow-core` 分支和自动化门禁为准。`完成` 表示已有公开入口和测试；`部分完成` 不得在 README 中宣称为生产级能力。
 
-| 能力 | 状态 | 当前证据 | 未完成项 |
-|---|---|---|---|
-| Template v1alpha1 envelope/binding/layout | 完成 | `types.ts`、`schema.ts`、lossless JSON、必填 binding/workflow input/output path/可判定 schema type diagnostics | v1alpha1 无前代版本；未来版本必须新增显式 migration |
-| 节点注册与插件卸载 | 完成 | `registry.ts`、compiler lease 测试、Cordis registry service 测试 | 后续只需扩充节点类型 |
-| 编译诊断、DAG、上游 binding、端口、终态路径 | 完成 | `compiler.ts`、compiler/catalog tests，含固定 revision 存在性、依赖环、继承深度校验 | 无 |
-| 内存调度、condition/join/skip、取消、caps | 完成 | `engine.ts`、`engine.spec.ts` | 持久事务与恢复由下一项承接 |
-| `start/end/tool/condition/script` | 完成 | `nodes.ts`、`expression.ts` 与核心/DSH 集成测试 | 无 |
-| 确定性脚本 runtime SDK | 完成 | `WorkflowScriptRuntimeRegistry`、内置 `json.expr@1`、稳定 `sortBy`、确定性 `withIndex`、防覆盖 `joinBy`、语义诊断、操作预算/取消/安全 key 测试 | 后续按真实需求扩充 builtin，不引入通用 eval |
-| 两级扩展 / Capability manifest / `spec.requires` | 完成 | scope-visible Tool 自动物化为通用 `tool.call@1`；自定义 Node registry + scoped `WorkflowCapabilityRegistry`；resource resolver、secret inference、duplicate/undeclared diagnostics | 领域约束留在具体 DSH Tool/自定义 Node，不在 Core 枚举 |
-| 动态结果契约 / `node.expects` | 完成 | 实例 JSON Schema、节点级 byte cap、checkpoint 前校验、下游 binding schema 收窄测试 | Agent 语义 review 复用显式 `agent.run@1`，不进入安全边界 |
-| DSH Cordis `ctx.workflowCapabilities/workflowScripts/workflowNodes/dagWorkflowEngine` | 完成 | `packages/dsh/src/services.ts`、Tool 与自定义 Node 两级端到端测试 | 加入正式 DSH bundle patch |
-| 真实 `ctx.tools.execute()` policy path | 完成 | Cordis stub 端到端证明 owning Agent/signal/args 透传 | 在完整 Harness composition 中再跑兼容门禁 |
-| Run trace 与实时事件 | 完成 | SQLite run/node event、observer containment；Canvas `workflowCanvasUi.open({runId, templateId, nodeId})` 跳转 seam | DSH 开放仓外 Session event 注册前不写自定义 Session event |
-| Template catalog、draft/revision/hash/CAS/publish | 完成 | `packages/catalog` 领域测试、SQLite 重开/CAS/ownership 测试、Cordis service | 无 |
-| Run event store、checkpoint、crash recovery | 完成 | 内存/SQLite store、原子 seq CAS、故障注入、重开恢复、container frame、approval waiting、authorityRef 与 Host 自动恢复协调器 | 无 |
-| `agent/foreach/subworkflow/human-approval` | 完成 | DSH seam 集成、固定 revision gate、确定性 child invocation、item frame 故障恢复、父子 attention 传播测试 | 无 |
-| Agent CRUD/validate/diff/publish/run tools | 完成 | 10 个 `workflow_*` tools；大型 JSON import、draft validate、scope-visible node/tool/script runtime/current-Agent schemas、CAS、显式 revision run 集成测试 | 无 |
-| 真实 100→10 外部数据验收 | 完成 | 内置 `web_search` 13 路 fan-out + weekly-news 模板；最多 100 个候选、评分 overlay、稳定 Top10、摘要 overlay、防篡改 join、20 节点持久 trace 集成测试 | 无额外插件依赖 |
-| `workflow-builder` Skill | 完成 | bundled `SKILL.md` + `agents/openai.yaml`，官方 `quick_validate.py` 与 npm pack 检查 | 无 |
-| Canvas Host RPC 与 Client overlay | 完成 | `packages/canvas`：12 Remote descriptors、shell overlay、XYFlow、schema form、diagnostics、CAS/diff/publish/run/trace/resume、renderer registry、navigation controller | 无 |
-| 安全/权限/secret/idempotency review | 完成 | Canvas 实时顶层 Agent lookup、多用户附加 authority、tool/agent/approval policy path、secret transient/leak gate、unknown side-effect attention | 结论与部署责任见 `docs/security.md` |
-| CI、构建、包内容、MIT | 完成 | `.github/workflows/ci.yml`、pack 检查、LICENSE | 发布前 provenance/SBOM 可选 |
+| 能力 | 状态 | 当前证据 | 收口项 |
+| --- | --- | --- | --- |
+| 单公开包与 subpath exports | 完成 | 根 `package.json`、干净 build、tarball 独立安装和无 DSH 通用入口导入烟测 | 最终 npm 发布不在本轮执行 |
+| 中立 Template/Binding/Node 协议 | 完成 | `src/core`、新 API Version、无旧 Parser/节点别名、离线 migrator | 无 |
+| 编译、DAG、Condition、Foreach、Subworkflow | 完成 | Core compiler/engine/catalog 测试 | 无界 loop 明确不做 |
+| 两级扩展与依赖门禁 | 完成 | Tool Gateway、自定义 Node Capability projection、`spec.requires` fail-closed 测试 | 无 Provider 层 |
+| Async Runtime/Catalog/Store | 完成 | `WorkflowRuntime`、Memory/SQLite、published/inline execution plan；DSH/Canvas 复用同一 Runtime | 无 |
+| Execution Plan 与版本锁 | 完成 | canonical template、dependency closure、Engine/NodeDefinition set hash | 无 digest 的自定义 Node 只能 non-replayable |
+| Event Envelope、Checkpoint、分页 Journal | 完成 | Envelope v1、CAS 原子 commit、Store 原生分页、故障注入 | OTel projection 属于后续 Adapter |
+| Live Event | 完成（协议） | run/node/invocation envelope、有界订阅缓冲、慢消费者丢弃旧 delta、取消 | 各 Host 的 token transport 按需实现 |
+| Artifact/Capture Policy | 完成 | Memory/SQLite content-addressed store、digest 校验、Event hash/ref、缺失/脱敏/不一致拒绝 | 加密与 retention 由部署实现 |
+| inspect/recorded/live Replay | 完成 | Recorded 创建新 run、验证外部输出 Artifact、跳过外部节点、重算确定性下游 | 大规模历史数据仍需 retention 策略 |
+| 持久幂等 Launch | 完成 | Authority-scoped deterministic runId、跨 Runtime 并发测试、immutable launch conflict | 分布式部署仍需协调器 fencing |
+| Trigger Envelope/Binding/Ingress | 完成 | server-derived dedupe、固定 revision/Authority、SQLite Ingress、launch gap recovery | 生产 HTTP server/消息平台不是 Core |
+| Cron/Webhook/钉钉 reference adapter | 完成（reference） | 时区、HMAC、身份映射测试 | 不宣称覆盖所有平台协议/回调形态 |
+| Worker claim/lease | 完成（reference） | Memory/SQLite coordinator、租约过期、heartbeat、Worker 通过统一 Runtime resume | 分布式 Store 仍需服务端 lease fencing；不宣称 exactly-once |
+| Result Delivery | 完成（reference） | 稳定 invocationId、unknown attempt、幂等 retry 测试 | 生产 Channel 自行实现加密 Store 与告警 |
+| CLI | 完成 | validate/draft/publish/run/trace/replay/resume/migrate、SQLite 跨进程测试、显式 Host module | 交互式体验不属于 Core |
+| MCP 控制面 | 完成 | discovery/draft/publish/run/trace/replay/resume，同 Runtime 测试 | 将发布流程投影为独立 MCP Tool 可后续增加 |
+| DSH Adapter 与 Canvas | 完成 | DSH `dagWorkflowEngine` 内部使用统一 Runtime；published target 固定 revision；Canvas 使用 metadata/checkpoint/event page API | UI 产品体验继续独立迭代 |
+| Migration | 完成 | Store schema v1-v8 fixture、重复重开、旧 Template 离线转换 | in-flight checkpoint 不自动迁移 |
+| 复杂纵向 Case | 完成 | 同一 21 节点 AI 模型周报经 SDK/MCP/CLI/DSH 执行；比较输出与 Journal 契约 | 真实联网结果不作为确定性 CI fixture |
+| 文档一致性 | 完成 | README、Architecture、重构方案、体验与子入口 README 描述同一 1.0.0 事实模型 | 发布后按版本维护 |
 
-## Cordis 兼容性审阅结论
+## 当前硬门禁
 
-1. Service 方法会经 Proxy 调用，禁止原生 `#private`；测试已覆盖此项。
-2. 所有注册必须由 `ctx.effect()` 持有；核心节点在插件卸载后移除。
-3. Host 插件卸载必须 cancel + await active runs，不能只删除 service key。
-4. DSH 仍处于预览版本且包发布不同步；Tools/Agent 使用结构桥接，Cordis 使用精确兼容 peer range。
-5. 完整 trace 写入独立 Workflow Run Store；实时 listener 失败不能改变执行面。DSH 当前不允许安全注册仓外 Session event，因此不向 Session 日志写自定义类型。
+合并到 `master` 前必须全部满足：
 
-## 恢复语义审阅结论
-
-1. checkpoint 与同批事件在一个 store commit 中提交，`seq` 必须连续；observer 只能在持久化成功后看到事件。
-2. 恢复使用已保存模板的 `semanticHash` 做一致性门禁，不接受调用方替换模板。
-3. 崩溃时处于 `running` 的安全节点可自动重试；`retry: never` 的副作用节点进入 `needs_attention`，必须由操作者显式选择 `retry/fail`。
-4. `maxDurationMs` 从原始 `createdAt` 计算，进程重启不会刷新预算；terminal run 的 resume 是幂等读取。
-5. SQLite v2 把 run checkpoint 与事件日志放在同一事务中，并保留 catalog-only v1 数据库的迁移路径。
-6. 人工节点调用 approval seam 前先提交 `waiting` checkpoint；稳定 workflow call id 关联同一节点，崩溃恢复可安全地重新进入询问流程。
-7. subworkflow/foreach 的 child run id 由稳定 invocation id 派生；父进程丢失完成回执时只读取同一个 terminal child，不重放其副作用。
-8. foreach 的每个 item frame 保存 `pending/running/completed + child run id + outputs`；祖先 subworkflow depth ceiling 随 child checkpoint 持久化，后代不能重新放宽。
-9. 自动恢复只处理 `running + authorityRef`；Host resolver 不能返回有效 Agent 时保留原 checkpoint，`paused` 必须由操作者恢复。
-
-## Canvas 兼容性审阅结论
-
-1. Host 使用官方 Typert protocol 与生成器，生成 12 个带 Zod wire codec 的 Remote descriptor；Client 自行 `$mount` contribution。
-2. `shell.overlay` 是 additive list slot，不替换 DSH `root`/conversation/details owner。
-3. 浏览器不传 Agent object；每个 RPC 都先从 Host 实时 registry 解析顶层 Agent，再执行可选的 `authorize(sessionId, agent, action, resourceId)`；多人部署必须提供该策略。
-4. Canvas 只在 `layout.canvas.positions` 写坐标；node/edge/config/binding 始终是同一份 `WorkflowTemplate`。
-5. 真实 Chromium 已验证 1200×744 和 900×700、节点选择、palette 新增与最终 0 console error/warning。
-6. 节点 palette 使用 definition `defaultConfig`，并把 scope-visible DSH Tool 直接映射为 `tool.call@1`；脚本 source 使用 multiline editor，保存的仍是同一份 `WorkflowTemplate`。
+1. `pnpm check` 全绿；
+2. 干净 build 后 Core 产物不含 DSH/Cordis 标识；
+3. tarball 在未安装 DSH peer 的目录中可导入根入口、Runtime、SQLite、MCP 和 Trigger；
+4. CLI 跨进程 trace/recorded replay 通过；
+5. DSH 本机复杂 Workflow 与 Canvas 回归通过；
+6. 同一复杂模板的 Host conformance 与真实 DSH 回归收口；
+7. 最终代码审查无 P0/P1 问题后再合并；不在本分支中途发布 npm 或 DSH Market。

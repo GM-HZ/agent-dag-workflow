@@ -8,7 +8,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
+    "clean": "node scripts/clean.mjs",
+    "build": "pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
     "check": "pnpm typecheck && pnpm test",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
     "generate:typert": "node scripts/canvas/generate-typert.mjs",
@@ -31,6 +32,42 @@
     "./catalog": {
       "types": "./lib/catalog/index.d.ts",
       "default": "./lib/catalog/index.js"
+    },
+    "./runtime": {
+      "types": "./lib/runtime/index.d.ts",
+      "default": "./lib/runtime/index.js"
+    },
+    "./journal": {
+      "types": "./lib/journal/index.d.ts",
+      "default": "./lib/journal/index.js"
+    },
+    "./triggers": {
+      "types": "./lib/triggers/core/index.d.ts",
+      "default": "./lib/triggers/core/index.js"
+    },
+    "./triggers/cron": {
+      "types": "./lib/triggers/cron/index.d.ts",
+      "default": "./lib/triggers/cron/index.js"
+    },
+    "./triggers/webhook": {
+      "types": "./lib/triggers/webhook/index.d.ts",
+      "default": "./lib/triggers/webhook/index.js"
+    },
+    "./triggers/dingtalk": {
+      "types": "./lib/triggers/dingtalk/index.d.ts",
+      "default": "./lib/triggers/dingtalk/index.js"
+    },
+    "./mcp": {
+      "types": "./lib/adapters/mcp/index.d.ts",
+      "default": "./lib/adapters/mcp/index.js"
+    },
+    "./cli": {
+      "types": "./lib/adapters/cli/index.d.ts",
+      "default": "./lib/adapters/cli/index.js"
+    },
+    "./migrations": {
+      "types": "./lib/migrations/index.d.ts",
+      "default": "./lib/migrations/index.js"
     },
     "./sqlite": {
       "types": "./lib/storage/sqlite/index.d.ts",
@@ -66,6 +103,9 @@
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "agent-workflow": "./lib/cli.js"
   },
   "files": [
     "lib",

@@ -9,6 +9,7 @@ import {
   type WorkflowEvent,
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
+  type WorkflowRunMetadata,
   type WorkflowRunStore,
 } from '../../core/index.js'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
@@ -26,21 +27,23 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     this.db.close()
   }
 
-  createRun(record: WorkflowRunRecord): void {
+  async createRun(record: WorkflowRunRecord): Promise<void> {
     if (record.checkpoint.seq !== 0 || record.events.length !== 0 || record.checkpoint.runId !== record.runId) {
       throw new WorkflowRunStoreError('RUN_COMMIT_INVALID', 'new workflow run must start at checkpoint seq 0 with no events')
     }
     transaction(this.db, () => {
       if (this.exists(record.runId)) throw new WorkflowRunStoreError('RUN_ALREADY_EXISTS', `workflow run already exists: ${record.runId}`)
       this.db.prepare(`INSERT INTO workflow_runs
-        (run_id, template_json, semantic_hash, inputs_json, execution_json, created_at, checkpoint_json, checkpoint_seq, status, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
+        (run_id, template_json, semantic_hash, plan_json, inputs_json, execution_json, launch_json, created_at, checkpoint_json, checkpoint_seq, status, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`)
         .run(
           record.runId,
           encode(record.template as unknown as JsonValue),
           record.semanticHash,
+          encode(record.plan as unknown as JsonValue),
           encode(record.inputs),
           encode(record.execution as unknown as JsonValue),
+          encode(record.launch as unknown as JsonValue),
           record.createdAt,
           encode(record.checkpoint as unknown as JsonValue),
           record.checkpoint.status,
@@ -49,7 +52,7 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     })
   }
 
-  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void {
+  async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
     validateRunStoreCommit(runId, expectedSeq, checkpoint, events)
     transaction(this.db, () => {
       const current = this.db.prepare('SELECT checkpoint_seq FROM workflow_runs WHERE run_id = ?').get(runId)
@@ -65,8 +68,8 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     })
   }
 
-  loadRun(runId: string): WorkflowRunRecord | undefined {
-    const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, inputs_json, execution_json, created_at, checkpoint_json
+  async loadRun(runId: string): Promise<WorkflowRunRecord | undefined> {
+    const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, plan_json, inputs_json, execution_json, launch_json, created_at, checkpoint_json
       FROM workflow_runs WHERE run_id = ?`).get(runId)
     if (row === undefined) return undefined
     const record = rowRecord(row)
@@ -76,8 +79,10 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
       runId: stringColumn(record, 'run_id'),
       template: parseWorkflowTemplate(stringColumn(record, 'template_json')),
       semanticHash: stringColumn(record, 'semantic_hash'),
+      plan: decode(stringColumn(record, 'plan_json')) as unknown as WorkflowRunRecord['plan'],
       inputs: decode(stringColumn(record, 'inputs_json')) as import('../../core/index.js').JsonObject,
       execution: decode(stringColumn(record, 'execution_json')) as unknown as WorkflowRunRecord['execution'],
+      launch: decode(stringColumn(record, 'launch_json')) as unknown as WorkflowRunRecord['launch'],
       createdAt: integerColumn(record, 'created_at'),
       checkpoint: decode(stringColumn(record, 'checkpoint_json')) as unknown as WorkflowRunCheckpoint,
       events,
@@ -85,9 +90,41 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
     return snapshotJsonValue(result) as unknown as WorkflowRunRecord
   }
 
-  listRecoverableRuns(): readonly WorkflowRunRecord[] {
-    return this.db.prepare(`SELECT run_id FROM workflow_runs WHERE status IN ('running', 'paused') ORDER BY created_at, run_id`).all()
-      .map(row => this.loadRun(stringColumn(rowRecord(row), 'run_id'))!)
+  async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> {
+    const records = await Promise.all(this.db.prepare(`SELECT run_id FROM workflow_runs WHERE status IN ('running', 'paused') ORDER BY created_at, run_id`).all()
+      .map(row => this.loadRun(stringColumn(rowRecord(row), 'run_id'))))
+    return records.filter((record): record is WorkflowRunRecord => record !== undefined)
+  }
+
+  async getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined> {
+    const row = this.db.prepare('SELECT checkpoint_json FROM workflow_runs WHERE run_id = ?').get(runId)
+    return row === undefined
+      ? undefined
+      : decode(stringColumn(rowRecord(row), 'checkpoint_json')) as unknown as WorkflowRunCheckpoint
+  }
+
+  async getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined> {
+    const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, plan_json, execution_json, launch_json, created_at
+      FROM workflow_runs WHERE run_id = ?`).get(runId)
+    if (row === undefined) return undefined
+    const record = rowRecord(row)
+    return snapshotJsonValue({
+      runId: stringColumn(record, 'run_id'),
+      templateId: parseWorkflowTemplate(stringColumn(record, 'template_json')).metadata.id,
+      semanticHash: stringColumn(record, 'semantic_hash'),
+      plan: decode(stringColumn(record, 'plan_json')),
+      execution: decode(stringColumn(record, 'execution_json')),
+      launch: decode(stringColumn(record, 'launch_json')),
+      createdAt: integerColumn(record, 'created_at'),
+    }) as unknown as WorkflowRunMetadata
+  }
+
+  async readEvents(runId: string, query: { readonly afterSeq?: number; readonly limit?: number } = {}): Promise<readonly WorkflowEvent[]> {
+    const after = query.afterSeq ?? 0
+    const limit = Math.min(1001, Math.max(1, query.limit ?? 100))
+    return this.db.prepare('SELECT event_json FROM workflow_run_events WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?')
+      .all(runId, after, limit)
+      .map(value => decode(stringColumn(rowRecord(value), 'event_json')) as unknown as WorkflowEvent)
   }
 
   private exists(runId: string): boolean {
@@ -111,13 +148,6 @@ function rowRecord(value: unknown): Record<string, SQLOutputValue> {
 function stringColumn(row: Record<string, SQLOutputValue>, name: string): string {
   const value = row[name]
   if (typeof value !== 'string') throw new Error(`SQLite column ${name} is not text`)
-  return value
-}
-
-function nullableStringColumn(row: Record<string, SQLOutputValue>, name: string): string | undefined {
-  const value = row[name]
-  if (value === null) return undefined
-  if (typeof value !== 'string') throw new Error(`SQLite column ${name} is not nullable text`)
   return value
 }
 

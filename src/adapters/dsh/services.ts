@@ -1,11 +1,9 @@
 import { Context, Service } from '@deepseek-ai/cordis'
 import { randomUUID } from 'node:crypto'
 import {
-  DagWorkflowEngine as CoreDagWorkflowEngine,
   InMemoryWorkflowRunStore,
   WorkflowCapabilityRegistry,
   WorkflowExecutionError,
-  WorkflowPauseError,
   WorkflowNodeRegistry,
   WorkflowScriptRuntimeRegistry,
   jsonExpressionRuntime,
@@ -21,7 +19,9 @@ import {
   type WorkflowRun,
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
+  type WorkflowRunMetadata,
   type WorkflowRunStore,
+  type WorkflowEngineServices,
 } from '../../core/index.js'
 import {
   InMemoryWorkflowCatalogRepository,
@@ -33,6 +33,7 @@ import {
   type WorkflowTemplateDiff,
 } from '../../catalog/index.js'
 import type { WorkflowDiagnostic, WorkflowTemplate } from '../../core/index.js'
+import { WorkflowRuntime, type WorkflowRunHandle } from '../../runtime/index.js'
 import type {
   DshAgentLike,
   DshDagWorkflowResumeRequest,
@@ -135,8 +136,8 @@ export abstract class DagWorkflowEngineService extends Service {
     super(ctx, 'dagWorkflowEngine')
   }
 
-  abstract start(request: DshDagWorkflowStartRequest): WorkflowRun
-  abstract resume(request: DshDagWorkflowResumeRequest): WorkflowRun
+  abstract start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun>
+  abstract resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun>
 }
 
 export abstract class WorkflowRunsService extends Service implements WorkflowRunStore {
@@ -144,21 +145,27 @@ export abstract class WorkflowRunsService extends Service implements WorkflowRun
     super(ctx, 'workflowRuns')
   }
 
-  abstract createRun(record: WorkflowRunRecord): void
-  abstract commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void
-  abstract loadRun(runId: string): WorkflowRunRecord | undefined
-  abstract listRecoverableRuns(): readonly WorkflowRunRecord[]
+  abstract createRun(record: WorkflowRunRecord): Promise<void>
+  abstract commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void>
+  abstract loadRun(runId: string): Promise<WorkflowRunRecord | undefined>
+  abstract getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined>
+  abstract getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
+  abstract readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]>
+  abstract listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]>
 }
 
 export class InMemoryWorkflowRunsService extends WorkflowRunsService {
   private readonly store = new InMemoryWorkflowRunStore()
 
-  createRun(record: WorkflowRunRecord): void { this.store.createRun(record) }
-  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void {
-    this.store.commit(runId, expectedSeq, checkpoint, events)
+  async createRun(record: WorkflowRunRecord): Promise<void> { await this.store.createRun(record) }
+  async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
+    await this.store.commit(runId, expectedSeq, checkpoint, events)
   }
-  loadRun(runId: string): WorkflowRunRecord | undefined { return this.store.loadRun(runId) }
-  listRecoverableRuns(): readonly WorkflowRunRecord[] { return this.store.listRecoverableRuns() }
+  async loadRun(runId: string): Promise<WorkflowRunRecord | undefined> { return this.store.loadRun(runId) }
+  async getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined> { return this.store.getRunMetadata(runId) }
+  async getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined> { return this.store.getCheckpoint(runId) }
+  async readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]> { return this.store.readEvents(runId, query) }
+  async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> { return this.store.listRecoverableRuns() }
 }
 
 export abstract class WorkflowTemplatesService extends Service {
@@ -166,14 +173,14 @@ export abstract class WorkflowTemplatesService extends Service {
     super(ctx, 'workflowTemplates')
   }
 
-  abstract createDraft(template: WorkflowTemplate): WorkflowDraft
-  abstract readDraft(id: string): WorkflowDraft
-  abstract updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft
-  abstract validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[]
-  abstract diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff
-  abstract publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision
-  abstract getPublished(id: string, revision?: number): PublishedWorkflowRevision
-  abstract list(): readonly WorkflowCatalogSummary[]
+  abstract createDraft(template: WorkflowTemplate): Promise<WorkflowDraft>
+  abstract readDraft(id: string): Promise<WorkflowDraft>
+  abstract updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft>
+  abstract validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]>
+  abstract diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff>
+  abstract publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision>
+  abstract getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
+  abstract list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
 export abstract class RepositoryWorkflowTemplatesService extends WorkflowTemplatesService {
@@ -184,16 +191,16 @@ export abstract class RepositoryWorkflowTemplatesService extends WorkflowTemplat
     this.catalog = new WorkflowTemplateCatalog(repository, ctx.workflowNodes.registry)
   }
 
-  createDraft(template: WorkflowTemplate): WorkflowDraft { return this.catalog.createDraft(template) }
-  readDraft(id: string): WorkflowDraft { return this.catalog.readDraft(id) }
-  updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): WorkflowDraft {
+  async createDraft(template: WorkflowTemplate): Promise<WorkflowDraft> { return this.catalog.createDraft(template) }
+  async readDraft(id: string): Promise<WorkflowDraft> { return this.catalog.readDraft(id) }
+  async updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft> {
     return this.catalog.updateDraft(id, expectedRevision, template)
   }
-  validate(template: WorkflowTemplate): readonly WorkflowDiagnostic[] { return this.catalog.validate(template) }
-  diff(id: string, candidate: WorkflowTemplate): WorkflowTemplateDiff { return this.catalog.diff(id, candidate) }
-  publish(id: string, expectedDraftRevision: number): PublishedWorkflowRevision { return this.catalog.publish(id, expectedDraftRevision) }
-  getPublished(id: string, revision?: number): PublishedWorkflowRevision { return this.catalog.getPublished(id, revision) }
-  list(): readonly WorkflowCatalogSummary[] { return this.catalog.list() }
+  async validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]> { return this.catalog.validate(template) }
+  async diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff> { return this.catalog.diff(id, candidate) }
+  async publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision> { return this.catalog.publish(id, expectedDraftRevision) }
+  async getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision> { return this.catalog.getPublished(id, revision) }
+  async list(): Promise<readonly WorkflowCatalogSummary[]> { return this.catalog.list() }
 }
 
 export class InMemoryWorkflowTemplatesService extends RepositoryWorkflowTemplatesService {
@@ -207,15 +214,14 @@ export class InMemoryWorkflowTemplatesService extends RepositoryWorkflowTemplate
 export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
   static inject = ['tools', 'subagents', 'approval', 'workflowCapabilities', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
 
-  private readonly engine: CoreDagWorkflowEngine
+  private readonly runtime: WorkflowRuntime
   private readonly active = new Map<string, WorkflowRun>()
   private readonly authorityRefs = new WeakMap<object, string>()
   constructor(ctx: Context, private readonly config: DshWorkflowPluginConfig = {}) {
     super(ctx)
     const runtime = ctx as DshRuntimeContext
     const tools = runtime.tools
-    let engine: CoreDagWorkflowEngine
-    engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
+    const services: WorkflowEngineServices = {
       capabilities: ctx.workflowCapabilities.registry,
       tools: {
         execute: async request => {
@@ -303,62 +309,13 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
           })
         },
       },
-      subworkflows: {
-        execute: async request => {
-          if (!isDshAgentLike(request.authority)) {
-            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'nested workflows require the owning DSH Agent', { nodeId: request.nodeId })
-          }
-          const published = ctx.workflowTemplates.getPublished(request.templateId, request.revision)
-          if (published.revision !== request.revision) {
-            throw new WorkflowExecutionError('SUBWORKFLOW_REVISION_MISMATCH', `expected ${request.templateId}@${request.revision}, received revision ${published.revision}`, { nodeId: request.nodeId })
-          }
-          const observe = createRunObserver(ctx, request.authority)
-          const childAuthorityRef = this.authorityReference(request.authority)
-          const child = engine.invoke({
-            invocationId: request.invocationId,
-            depth: request.depth,
-            subworkflowDepthLimit: request.depthLimit,
-            template: published.template,
-            inputs: request.inputs,
-            execution: {
-              authorityRef: childAuthorityRef,
-              authority: request.authority,
-              origin: { type: 'host', source: 'dsh-subworkflow', sourceRef: request.parentRunId },
-            },
-            signal: request.signal,
-            onEvent: observe,
-          })
-          this.active.set(child.id, child)
-          let result: Awaited<typeof child.result> | undefined
-          let executionError: unknown
-          try {
-            result = await child.result
-          } catch (error: unknown) {
-            executionError = error
-          }
-          if (this.active.get(child.id) === child) this.active.delete(child.id)
-          let disposalError: unknown
-          try {
-            await child.dispose()
-          } catch (error: unknown) {
-            disposalError = error
-          }
-          if (executionError !== undefined || disposalError !== undefined) {
-            const errors = [executionError, disposalError].filter(error => error !== undefined)
-            throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'subworkflow execution and disposal failed')
-          }
-          if (result === undefined) throw new Error('subworkflow result was not available')
-          if (result.status === 'paused') {
-            throw new WorkflowPauseError(`subworkflow ${result.runId} requires operator attention: ${result.error}`, result.runId)
-          }
-          if (result.status !== 'completed') {
-            throw new WorkflowExecutionError('SUBWORKFLOW_FAILED', `subworkflow ${result.runId} ${result.status}: ${result.error}`, { nodeId: request.nodeId })
-          }
-          return { runId: result.runId, outputs: result.outputs }
-        },
-      },
-    }, { runStore: ctx.workflowRuns })
-    this.engine = engine
+    }
+    this.runtime = new WorkflowRuntime({
+      nodes: ctx.workflowNodes.registry,
+      catalog: ctx.workflowTemplates as unknown as WorkflowTemplateCatalog,
+      runStore: ctx.workflowRuns,
+      services,
+    })
     ctx.effect(() => async () => {
       const runs = [...this.active.values()]
       for (const run of runs) run.cancel('dag workflow service disposed')
@@ -367,37 +324,42 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     }, 'dsh-dag-workflow: active runs')
   }
 
-  start(request: DshDagWorkflowStartRequest): WorkflowRun {
+  async start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun> {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
     const authorityRef = this.authorityReference(parent)
-    const run = this.engine.start({
-      template: request.template,
+    const handle = await this.runtime.launch({
+      target: request.target ?? { type: 'inline', template: request.template },
       inputs: request.inputs,
-      execution: { authorityRef, authority: parent, origin: { type: 'host', source: 'dsh' } },
+      authorityRef,
+      authority: parent,
+      origin: { type: 'host', source: 'dsh' },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       onEvent: observe,
     })
+    const run = adaptRunHandle(handle)
     this.active.set(run.id, run)
     void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
     return run
   }
 
-  resume(request: DshDagWorkflowResumeRequest): WorkflowRun {
+  async resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun> {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
-    const record = this.ctx.workflowRuns.loadRun(request.runId)
+    const record = await this.ctx.workflowRuns.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
     if (this.active.has(request.runId)) throw new WorkflowExecutionError('RUN_ACTIVE', `workflow run is already active: ${request.runId}`)
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
-    const run = this.engine.resume({
+    const handle = await this.runtime.resume({
       runId: request.runId,
-      execution: { authorityRef: record.execution.authorityRef, authority: parent, origin: { type: 'host', source: 'dsh-resume' } },
+      authorityRef: record.execution.authorityRef,
+      authority: parent,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
       onEvent: observe,
     })
+    const run = adaptRunHandle(handle)
     this.active.set(run.id, run)
     void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
     return run
@@ -438,7 +400,7 @@ export async function recoverPersistedWorkflowRuns(
   signal: AbortSignal,
 ): Promise<readonly string[]> {
   const started: string[] = []
-  for (const record of ctx.workflowRuns.listRecoverableRuns()) {
+  for (const record of await ctx.workflowRuns.listRecoverableRuns()) {
     signal.throwIfAborted()
     if (record.checkpoint.status !== 'running') continue
     try {
@@ -456,7 +418,7 @@ export async function recoverPersistedWorkflowRuns(
         ctx.logger.warn(`dsh-dag-workflow: authority reference mismatch for run ${record.runId}`)
         continue
       }
-      ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, signal })
+      await ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, signal })
       started.push(record.runId)
     } catch (error: unknown) {
       if (signal.aborted) throw error
@@ -478,6 +440,15 @@ function createRunObserver(
     try { requestObserver?.(event) } catch (error: unknown) {
       ctx.logger.warn(`dsh-dag-workflow: request observer failed: ${renderError(error)}`)
     }
+  }
+}
+
+function adaptRunHandle(handle: WorkflowRunHandle): WorkflowRun {
+  return {
+    id: handle.runId,
+    result: handle.result,
+    cancel: reason => handle.cancel(reason),
+    async dispose() { await handle.result },
   }
 }
 

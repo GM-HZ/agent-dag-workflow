@@ -239,7 +239,7 @@ export interface WorkflowNodeExecutionContext {
   readonly depth: number
   readonly subworkflowMaxDepth: number
   readonly progress?: JsonValue
-  checkpointProgress(progress: JsonValue): void
+  checkpointProgress(progress: JsonValue): Promise<void>
   readonly authority: unknown
 }
 
@@ -261,6 +261,8 @@ export interface WorkflowNodeDefinition {
   readonly dependencyKinds?: readonly string[]
   readonly retry: NodeRetryMode
   readonly execution?: 'activity' | 'human-wait'
+  /** Stable build/adapter manifest digest; required for replayable production plans. */
+  readonly implementationDigest?: string
   /** Optional definition-owned semantic validation performed during workflow compilation. */
   validateConfig?(config: JsonObject): readonly string[]
   /** Resolve fixed external resources from validated config. Dynamic names are forbidden. */
@@ -303,21 +305,84 @@ export type WorkflowNodeStatus =
 
 export type WorkflowEdgeStatus = 'unknown' | 'taken' | 'skipped'
 
-export type WorkflowEvent =
+export type WorkflowEventType =
+  | 'run.accepted' | 'run.queued' | 'run.started' | 'run.resumed' | 'run.completed' | 'run.failed' | 'run.cancelled' | 'run.paused'
+  | 'node.ready' | 'node.started' | 'node.waiting' | 'node.progress' | 'node.output-validated' | 'node.output-committed'
+  | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention' | 'node.failed'
+  | 'capability.requested' | 'capability.completed' | 'capability.replayed' | 'capability.failed'
+  | 'edge.taken' | 'edge.skipped' | 'checkpoint.committed'
+
+export interface WorkflowEventEnvelope {
+  readonly schemaVersion: 1
+  readonly eventId: string
+  readonly runId: string
+  readonly seq: number
+  readonly type: WorkflowEventType
+  readonly occurredAt: number
+  readonly workflow: {
+    readonly id: string
+    readonly revision?: number
+    readonly semanticHash: string
+    readonly engineVersion: string
+    readonly nodeDefinitionSetHash: string
+  }
+  readonly node?: { readonly id: string; readonly uses: string; readonly attempt: number; readonly invocationId: string }
+  readonly correlation: {
+    readonly traceId: string
+    readonly spanId: string
+    readonly parentSpanId?: string
+    readonly parentRunId?: string
+    readonly causationEventId?: string
+  }
+  readonly origin: WorkflowRunOrigin
+  readonly payload: JsonObject
+}
+
+export interface WorkflowArtifactPointer {
+  readonly digest: string
+  readonly size: number
+  readonly mediaType: string
+  readonly redacted: boolean
+}
+
+export interface WorkflowDataCapture {
+  readonly dataHash: string
+  readonly artifact?: WorkflowArtifactPointer
+}
+
+export interface WorkflowDataCaptureGateway {
+  capture(request: {
+    readonly runId: string
+    readonly nodeId?: string
+    readonly phase: 'workflow.input' | 'capability.output' | 'node.output'
+    readonly value: JsonValue
+  }): Promise<WorkflowDataCapture>
+}
+
+export type WorkflowEvent = WorkflowEventEnvelope & (
   | { readonly seq: number; readonly type: 'run.started'; readonly runId: string }
+  | { readonly seq: number; readonly type: 'run.accepted'; readonly runId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer }
+  | { readonly seq: number; readonly type: 'run.queued'; readonly runId: string }
   | { readonly seq: number; readonly type: 'run.resumed'; readonly runId: string }
   | { readonly seq: number; readonly type: 'run.completed'; readonly runId: string }
   | { readonly seq: number; readonly type: 'run.failed'; readonly runId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'run.cancelled'; readonly runId: string; readonly reason: string }
   | { readonly seq: number; readonly type: 'run.paused'; readonly runId: string; readonly reason: string }
-  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.progress' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.progress'; readonly runId: string; readonly nodeId: string; readonly progress: JsonValue }
+  | { readonly seq: number; readonly type: 'node.output-validated'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.output-committed'; readonly runId: string; readonly nodeId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer }
   | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string }
+  | { readonly seq: number; readonly type: 'capability.requested' | 'capability.replayed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string }
+  | { readonly seq: number; readonly type: 'capability.completed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer }
+  | { readonly seq: number; readonly type: 'capability.failed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'edge.taken' | 'edge.skipped'; readonly runId: string; readonly edgeId: string }
   | { readonly seq: number; readonly type: 'checkpoint.committed'; readonly runId: string; readonly checkpointSeq: number }
+)
 
 export type WorkflowEventInput = WorkflowEvent extends infer Event
   ? Event extends WorkflowEvent
-    ? Omit<Event, 'seq' | 'runId'>
+    ? Omit<Event, keyof WorkflowEventEnvelope | 'seq' | 'runId'> & Pick<Event, 'type'>
     : never
   : never
 
@@ -345,14 +410,35 @@ export type WorkflowRunResult = WorkflowRunSuccess | WorkflowRunFailure
 export interface WorkflowRun {
   readonly id: string
   readonly result: Promise<WorkflowRunResult>
-  cancel(reason?: string): void
+  cancel(reason?: string): Promise<void>
   dispose(): Promise<void>
 }
 
+export interface WorkflowExecutionPlanEntry {
+  readonly id: string
+  readonly revision?: number
+  readonly semanticHash: string
+  readonly template: WorkflowTemplate
+}
+
+export interface WorkflowExecutionPlanSnapshot {
+  readonly root: WorkflowExecutionPlanEntry
+  readonly dependencies: readonly (WorkflowExecutionPlanEntry & { readonly revision: number })[]
+  readonly engineVersion: string
+  readonly nodeDefinitionSetHash: string
+  readonly replayable: boolean
+}
+
 export interface WorkflowStartRequest {
+  readonly runId?: string
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
   readonly execution: WorkflowExecutionContext
+  readonly plan?: WorkflowExecutionPlanSnapshot
+  readonly idempotencyKey?: string
+  readonly deliveryRef?: string
+  /** Internal recorded-replay source. External nodes are satisfied from these committed outputs. */
+  readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
@@ -385,6 +471,7 @@ export interface WorkflowRunCheckpoint {
   readonly nodeProgress: Readonly<Record<string, JsonValue>>
   readonly ready: readonly string[]
   readonly nodeRuns: number
+  readonly nodeAttempts: Readonly<Record<string, number>>
   readonly depth: number
   readonly subworkflowDepthLimit: number
   readonly invocationId?: string
@@ -397,16 +484,31 @@ export interface WorkflowRunRecord {
   readonly runId: string
   readonly template: WorkflowTemplate
   readonly semanticHash: string
+  readonly plan: WorkflowExecutionPlanSnapshot
   readonly inputs: JsonObject
   readonly execution: Omit<WorkflowExecutionContext, 'authority'>
+  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string }
   readonly createdAt: number
   readonly checkpoint: WorkflowRunCheckpoint
   readonly events: readonly WorkflowEvent[]
 }
 
+export interface WorkflowRunMetadata {
+  readonly runId: string
+  readonly templateId: string
+  readonly semanticHash: string
+  readonly plan: WorkflowExecutionPlanSnapshot
+  readonly execution: Omit<WorkflowExecutionContext, 'authority'>
+  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string }
+  readonly createdAt: number
+}
+
 export interface WorkflowRunStore {
-  createRun(record: WorkflowRunRecord): void
-  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void
-  loadRun(runId: string): WorkflowRunRecord | undefined
-  listRecoverableRuns(): readonly WorkflowRunRecord[]
+  createRun(record: WorkflowRunRecord): Promise<void>
+  commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void>
+  loadRun(runId: string): Promise<WorkflowRunRecord | undefined>
+  getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined>
+  getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
+  readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]>
+  listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]>
 }

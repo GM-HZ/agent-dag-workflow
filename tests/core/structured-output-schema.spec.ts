@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { validateStructuredObjectSchema } from '../../src/core/index.js'
 
-describe('DSH structured output schema compatibility', () => {
+describe('Host-neutral structured output schema compatibility', () => {
   it('accepts the enforced object-rooted subset', () => {
     expect(validateStructuredObjectSchema({
       type: 'object',

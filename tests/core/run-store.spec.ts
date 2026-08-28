@@ -22,12 +22,12 @@ class OneShotFailingStore extends InMemoryWorkflowRunStore {
     super()
   }
 
-  override commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): void {
+  override async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
     if (this.armed && this.shouldFail(events)) {
       this.armed = false
       throw new Error('simulated process crash before checkpoint commit')
     }
-    super.commit(runId, expectedSeq, checkpoint, events)
+    await super.commit(runId, expectedSeq, checkpoint, events)
   }
 }
 
@@ -164,56 +164,56 @@ describe('workflow run store and recovery', () => {
   it('journals contiguous events and a terminal checkpoint', async () => {
     const store = new InMemoryWorkflowRunStore()
     const engine = new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store, now: () => 100 })
-    const run = engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'persisted' } })
+    const run = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'persisted' } })
     const result = await run.result
-    const record = store.loadRun(run.id)
+    const record = await store.loadRun(run.id)
 
     expect(result.status).toBe('completed')
     expect(record?.checkpoint).toMatchObject({ status: 'completed', resultOutputs: { answer: 'persisted' } })
     expect(record?.checkpoint.seq).toBe(record?.events.length)
     expect(record?.events.map(event => event.seq)).toEqual(record?.events.map((_, index) => index + 1))
     expect(record?.checkpoint.nodeOutputs.end).toEqual({ answer: 'persisted' })
-    expect(store.listRecoverableRuns()).toEqual([])
+    expect(await store.listRecoverableRuns()).toEqual([])
   })
 
   it('retries a safe node from its last running checkpoint', async () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'node.completed' && event.nodeId === 'start'))
     let toolCalls = 0
     const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store })
-    const first = firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'resume-safe' } })
+    const first = await firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'resume-safe' } })
     const interrupted = await first.result
 
     expect(interrupted).toMatchObject({ status: 'failed', error: 'simulated process crash before checkpoint commit' })
-    expect(store.loadRun(first.id)?.checkpoint.nodeStates.start).toBe('running')
+    expect((await store.loadRun(first.id))?.checkpoint.nodeStates.start).toBe('running')
     expect(toolCalls).toBe(0)
 
-    const resumed = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store }).resume({ execution: testExecution, runId: first.id })
+    const resumed = await new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store }).resume({ execution: testExecution, runId: first.id })
     const result = await resumed.result
 
     expect(result.status).toBe('completed')
     expect(toolCalls).toBe(1)
-    expect(store.loadRun(first.id)?.events).toContainEqual(expect.objectContaining({ type: 'run.resumed' }))
+    expect((await store.loadRun(first.id))?.events).toContainEqual(expect.objectContaining({ type: 'run.resumed' }))
   })
 
   it('pauses an unknown side-effect node until an operator explicitly retries it', async () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'node.completed' && event.nodeId === 'call'))
     let sideEffects = 0
     const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
-    const first = firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'side-effect' } })
+    const first = await firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'side-effect' } })
     expect((await first.result).status).toBe('failed')
     expect(sideEffects).toBe(1)
-    expect(store.loadRun(first.id)?.checkpoint.nodeStates.call).toBe('running')
+    expect((await store.loadRun(first.id))?.checkpoint.nodeStates.call).toBe('running')
 
     const recoveryEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
-    const paused = await recoveryEngine.resume({ execution: testExecution, runId: first.id }).result
+    const paused = await (await recoveryEngine.resume({ execution: testExecution, runId: first.id })).result
     expect(paused).toMatchObject({ status: 'paused', needsAttention: ['call'] })
     expect(sideEffects).toBe(1)
-    expect(store.loadRun(first.id)?.checkpoint.nodeStates.call).toBe('needs_attention')
+    expect((await store.loadRun(first.id))?.checkpoint.nodeStates.call).toBe('needs_attention')
 
-    const retried = await recoveryEngine.resume({ execution: testExecution,
+    const retried = await (await recoveryEngine.resume({ execution: testExecution,
       runId: first.id,
       unknownNodeResolutions: { call: 'retry' },
-    }).result
+    })).result
     expect(retried.status).toBe('completed')
     expect(sideEffects).toBe(2)
   })
@@ -235,19 +235,19 @@ describe('workflow run store and recovery', () => {
       { tools: tools(() => { toolCalls++ }) },
       { runStore: store, now: () => now },
     )
-    const first = firstEngine.start({ execution: testExecution, template, inputs: { message: 'expired' } })
+    const first = await firstEngine.start({ execution: testExecution, template, inputs: { message: 'expired' } })
     expect((await first.result).status).toBe('failed')
 
     now = 100
-    const result = await new DagWorkflowEngine(
+    const result = await (await new DagWorkflowEngine(
       registry(),
       { tools: tools(() => { toolCalls++ }) },
       { runStore: store, now: () => now },
-    ).resume({ execution: testExecution, runId: first.id }).result
+    ).resume({ execution: testExecution, runId: first.id })).result
 
     expect(result).toMatchObject({ status: 'failed', error: 'workflow duration exceeded' })
     expect(toolCalls).toBe(0)
-    expect(store.loadRun(first.id)?.checkpoint.status).toBe('failed')
+    expect((await store.loadRun(first.id))?.checkpoint.status).toBe('failed')
   })
 
   it('commits a waiting checkpoint before calling the approval gateway', async () => {
@@ -257,7 +257,7 @@ describe('workflow run store and recovery', () => {
     const engine = new DagWorkflowEngine(registry(), {
       approvals: {
         async request(request) {
-          const record = store.loadRun(request.runId)
+          const record = await store.loadRun(request.runId)
           durableStatusAtRequest = record?.checkpoint.nodeStates[request.nodeId]
           waitingEventWasDurable = record?.events.some(event => event.type === 'node.waiting' && event.nodeId === request.nodeId) ?? false
           return 'allowed-once'
@@ -265,7 +265,7 @@ describe('workflow run store and recovery', () => {
       },
     }, { runStore: store })
 
-    const result = await engine.start({ execution: testExecution, template: approvalWorkflowTemplate(), inputs: {} }).result
+    const result = await (await engine.start({ execution: testExecution, template: approvalWorkflowTemplate(), inputs: {} })).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
     expect(durableStatusAtRequest).toBe('waiting')
@@ -285,13 +285,13 @@ describe('workflow run store and recovery', () => {
       inputs: { message: 'nested' },
     } as const
 
-    const first = await engine.invoke(request).result
-    const second = await engine.invoke(request).result
+    const first = await (await engine.invoke(request)).result
+    const second = await (await engine.invoke(request)).result
 
     expect(first).toMatchObject({ status: 'completed', outputs: { answer: 'nested' } })
     expect(second).toMatchObject({ status: 'completed', runId: first.runId, outputs: { answer: 'nested' } })
     expect(toolCalls).toBe(1)
-    expect(() => engine.invoke({ ...request, inputs: { message: 'different' } })).toThrowError(/different immutable inputs/)
+    await expect(engine.invoke({ ...request, inputs: { message: 'different' } })).rejects.toThrowError(/different immutable inputs/)
   })
 
   it('recovers foreach container frames after a completed child result commit crashes', async () => {
@@ -314,16 +314,16 @@ describe('workflow run store and recovery', () => {
       },
     }
     const firstEngine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
-    const first = firstEngine.start({ execution: testExecution, template: foreachWorkflowTemplate(), inputs: { items: ['a', 'b'] } })
+    const first = await firstEngine.start({ execution: testExecution, template: foreachWorkflowTemplate(), inputs: { items: ['a', 'b'] } })
 
     expect(await first.result).toMatchObject({ status: 'failed', error: 'simulated process crash before checkpoint commit' })
-    expect(store.loadRun(first.id)?.checkpoint.nodeStates.map).toBe('running')
-    expect(store.loadRun(first.id)?.checkpoint.nodeProgress.map).toMatchObject({
+    expect((await store.loadRun(first.id))?.checkpoint.nodeStates.map).toBe('running')
+    expect((await store.loadRun(first.id))?.checkpoint.nodeProgress.map).toMatchObject({
       kind: 'foreach',
       items: [{ index: 0, status: 'running' }, { index: 1, status: 'pending' }],
     })
 
-    const result = await new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store }).resume({ execution: testExecution, runId: first.id }).result
+    const result = await (await new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store }).resume({ execution: testExecution, runId: first.id })).result
 
     expect(result).toMatchObject({
       status: 'completed',
@@ -347,14 +347,14 @@ describe('workflow run store and recovery', () => {
       },
     }
     const engine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
-    const run = engine.start({ execution: testExecution, template: subworkflowParentTemplate(), inputs: {} })
+    const run = await engine.start({ execution: testExecution, template: subworkflowParentTemplate(), inputs: {} })
     const paused = await run.result
 
     expect(paused).toMatchObject({ status: 'paused', needsAttention: ['child'] })
-    expect(store.loadRun(run.id)?.checkpoint.nodeStates.child).toBe('needs_attention')
+    expect((await store.loadRun(run.id))?.checkpoint.nodeStates.child).toBe('needs_attention')
 
     childResolved = true
-    const result = await engine.resume({ execution: testExecution, runId: run.id, unknownNodeResolutions: { child: 'retry' } }).result
+    const result = await (await engine.resume({ execution: testExecution, runId: run.id, unknownNodeResolutions: { child: 'retry' } })).result
     expect(result).toMatchObject({ status: 'completed', outputs: { value: 'resolved' } })
   })
 })

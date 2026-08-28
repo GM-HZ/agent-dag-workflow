@@ -2,7 +2,7 @@ export { compileWorkflow, compileWorkflowOrThrow } from './compiler.js'
 export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileResult } from './compiler.js'
 export { createScopedWorkflowCapabilityResolver, WorkflowCapabilityRegistry } from './capabilities.js'
 export { validateStructuredObjectSchema } from './structured-output-schema.js'
-export { DagWorkflowEngine } from './engine.js'
+export { DagWorkflowEngine, WORKFLOW_ENGINE_VERSION } from './engine.js'
 export { WorkflowCompileError, WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 export {
   evaluateWorkflowExpression,
