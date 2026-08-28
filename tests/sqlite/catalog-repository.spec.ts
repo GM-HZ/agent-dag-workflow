@@ -28,6 +28,8 @@ import {
   SqliteWorkflowTemplatesService,
 } from '../../src/storage/sqlite/index.js'
 
+const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
+
 const temporaryRoots: string[] = []
 
 afterEach(() => {
@@ -42,7 +44,7 @@ function dbPath(): string {
 
 function template(name = 'SQLite workflow'): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'sqlite-test', name },
     spec: {
@@ -65,7 +67,7 @@ function toolTemplate(): WorkflowTemplate {
     spec: {
       ...base.spec,
       requires: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'echo' },
       ],
       inputSchema: {
@@ -76,14 +78,14 @@ function toolTemplate(): WorkflowTemplate {
       },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-        { id: 'call', uses: 'dsh.tool@1', with: { name: 'echo' }, inputs: { message: { input: 'message' } } },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { answer: { output: { node: 'call', path: ['result', 'echo'] } } } },
+        { id: 'call', uses: 'tool.call@1', with: { uses: 'echo' }, inputs: { message: { input: { path: ['message'] } } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { answer: { output: { nodeId: 'call', path: ['result', 'echo'] } } } },
       ],
       edges: [
         { id: 'start-call', source: 'start', target: 'call' },
         { id: 'call-end', source: 'call', target: 'end' },
       ],
-      outputs: { answer: { output: { node: 'end', path: ['answer'] } } },
+      outputs: { answer: { output: { nodeId: 'end', path: ['answer'] } } },
     },
   }
 }
@@ -118,7 +120,7 @@ function toolGateway(onCall?: () => void) {
   return {
     async execute(request: WorkflowToolRequest): Promise<JsonValue> {
       onCall?.()
-      return { echo: request.input.message ?? null }
+      return { echo: request.inputs.message ?? null }
     },
   }
 }
@@ -205,14 +207,19 @@ describe('SQLite workflow catalog repository', () => {
     const path = dbPath()
     const firstStore = new SqliteWorkflowRunStore({ path })
     const engine = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: firstStore })
-    const run = engine.start({ template: toolTemplate(), inputs: { message: 'sqlite-run' }, ownerRef: 'session:sqlite-run' })
+    const run = engine.start({
+      template: toolTemplate(), inputs: { message: 'sqlite-run' },
+      execution: { ...testExecution, authorityRef: 'session:sqlite-run' },
+    })
     expect((await run.result).status).toBe('completed')
     expect(firstStore.loadRun(run.id)?.checkpoint).toMatchObject({ status: 'completed', resultOutputs: { answer: 'sqlite-run' } })
     firstStore.close()
 
     const reopened = new SqliteWorkflowRunStore({ path })
-    expect(reopened.loadRun(run.id)?.ownerRef).toBe('session:sqlite-run')
-    const replay = await new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: reopened }).resume({ runId: run.id }).result
+    expect(reopened.loadRun(run.id)?.execution.authorityRef).toBe('session:sqlite-run')
+    const replay = await new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: reopened }).resume({
+      runId: run.id, execution: { ...testExecution, authorityRef: 'session:sqlite-run' },
+    }).result
     expect(replay).toMatchObject({ status: 'completed', outputs: { answer: 'sqlite-run' } })
     expect(reopened.loadRun(run.id)?.events.at(-1)).toMatchObject({ type: 'checkpoint.committed' })
     reopened.close()
@@ -224,19 +231,19 @@ describe('SQLite workflow catalog repository', () => {
     const failing = new OneShotFailingRunStore(underlying, events => events.some(event => event.type === 'node.completed' && event.nodeId === 'call'))
     let calls = 0
     const first = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway(() => { calls++ }) }, { runStore: failing })
-      .start({ template: toolTemplate(), inputs: { message: 'unknown' } })
+      .start({ execution: testExecution, template: toolTemplate(), inputs: { message: 'unknown' } })
     expect((await first.result).status).toBe('failed')
     expect(calls).toBe(1)
     underlying.close()
 
     const recoveryStore = new SqliteWorkflowRunStore({ path })
     const recovery = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway(() => { calls++ }) }, { runStore: recoveryStore })
-    expect(await recovery.resume({ runId: first.id }).result).toMatchObject({ status: 'paused', needsAttention: ['call'] })
+    expect(await recovery.resume({ execution: testExecution, runId: first.id }).result).toMatchObject({ status: 'paused', needsAttention: ['call'] })
     recoveryStore.close()
 
     const finalStore = new SqliteWorkflowRunStore({ path })
     const finalEngine = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway(() => { calls++ }) }, { runStore: finalStore })
-    const result = await finalEngine.resume({ runId: first.id, unknownNodeResolutions: { call: 'retry' } }).result
+    const result = await finalEngine.resume({ execution: testExecution, runId: first.id, unknownNodeResolutions: { call: 'retry' } }).result
     expect(result.status).toBe('completed')
     expect(calls).toBe(2)
     finalStore.close()
@@ -255,12 +262,12 @@ describe('SQLite workflow catalog repository', () => {
     migrated.close()
   })
 
-  it('migrates v2 run rows by adding nullable recovery ownership', () => {
+  it('migrates v2 run rows by adding durable execution context', () => {
     const path = dbPath()
     const initialized = new SqliteWorkflowRunStore({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE workflow_runs DROP COLUMN owner_ref; PRAGMA user_version = 2;')
+    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; PRAGMA user_version = 2;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })

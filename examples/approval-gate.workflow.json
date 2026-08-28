@@ -1,5 +1,5 @@
 {
-  "apiVersion": "dsh.workflow/v1alpha1",
+  "apiVersion": "workflow.gm-hz.dev/v1alpha1",
   "kind": "WorkflowTemplate",
   "metadata": {
     "id": "approval-gate-demo",
@@ -38,7 +38,7 @@
         "title": "Risk score > 70?",
         "with": { "operator": "gt" },
         "inputs": {
-          "left": { "input": "riskScore" },
+          "left": { "input": { "path": ["riskScore"] } },
           "right": { "literal": 70 }
         }
       },
@@ -47,8 +47,8 @@
         "uses": "core.end@1",
         "with": {},
         "inputs": {
-          "request": { "input": "request" },
-          "highRisk": { "output": { "node": "risk-gate", "path": ["result"] } }
+          "request": { "input": { "path": ["request"] } },
+          "highRisk": { "output": { "nodeId": "risk-gate", "path": ["result"] } }
         }
       }
     ],
@@ -58,8 +58,8 @@
       { "id": "normal-route", "source": "risk-gate", "sourcePort": "false", "target": "end" }
     ],
     "outputs": {
-      "request": { "output": { "node": "end", "path": ["request"] } },
-      "highRisk": { "output": { "node": "end", "path": ["highRisk"] } }
+      "request": { "output": { "nodeId": "end", "path": ["request"] } },
+      "highRisk": { "output": { "nodeId": "end", "path": ["highRisk"] } }
     },
     "policies": {
       "maxConcurrentNodes": 2,

@@ -137,7 +137,7 @@ export class DagWorkflowEngine {
     }
     return this.resume({
       runId: id,
-      owner: request.owner,
+      execution: request.execution,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
     })
@@ -159,7 +159,11 @@ export class DagWorkflowEngine {
       template: workflow.template,
       semanticHash: workflow.semanticHash,
       inputs,
-      ...(request.ownerRef === undefined ? {} : { ownerRef: request.ownerRef }),
+      execution: {
+        authorityRef: request.execution.authorityRef,
+        origin: request.execution.origin,
+        ...(request.execution.traceContext === undefined ? {} : { traceContext: request.execution.traceContext }),
+      },
       createdAt,
       checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
       events: [],
@@ -170,7 +174,7 @@ export class DagWorkflowEngine {
       workflow,
       inputs,
       state,
-      owner: request.owner,
+      authority: request.execution.authority,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       initialEvents: [{ type: 'run.started' }, { type: 'node.ready', nodeId: workflow.startNodeId }],
@@ -182,6 +186,9 @@ export class DagWorkflowEngine {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'resume requires a WorkflowRunStore')
     const record = this.#runStore.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
+    if (request.execution.authorityRef !== record.execution.authorityRef) {
+      throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'resume authorityRef does not match the persisted run authority')
+    }
     const workflow = compileWorkflowOrThrow(record.template, this.#registry)
     if (workflow.semanticHash !== record.semanticHash || workflow.semanticHash !== record.checkpoint.semanticHash) {
       throw new WorkflowExecutionError('CHECKPOINT_TEMPLATE_MISMATCH', 'checkpoint semantic hash does not match the stored template')
@@ -218,7 +225,7 @@ export class DagWorkflowEngine {
         ...explicitFailures.map(nodeId => ({ type: 'node.failed' as const, nodeId, error: state.error! })),
         { type: 'run.failed', error: state.error },
       ]
-      this.#commit(record.runId, workflow, state, events, request.onEvent, request.owner)
+      this.#commit(record.runId, workflow, state, events, request.onEvent)
       return terminalRun(record.runId, state)
     }
 
@@ -230,7 +237,7 @@ export class DagWorkflowEngine {
         this.#commit(record.runId, workflow, state, [
           ...attentionEvents,
           { type: 'run.paused', reason: state.error },
-        ], request.onEvent, request.owner)
+        ], request.onEvent)
       }
       return terminalRun(record.runId, state)
     }
@@ -243,7 +250,7 @@ export class DagWorkflowEngine {
       workflow,
       inputs: record.inputs,
       state,
-      owner: request.owner,
+      authority: request.execution.authority,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       initialEvents: [{ type: 'run.resumed' }, ...attentionEvents],
@@ -257,7 +264,7 @@ export class DagWorkflowEngine {
     readonly workflow: CompiledWorkflow
     readonly inputs: JsonObject
     readonly state: RuntimeState
-    readonly owner: unknown
+    readonly authority: unknown
     readonly signal?: AbortSignal
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
@@ -306,17 +313,17 @@ export class DagWorkflowEngine {
     readonly workflow: CompiledWorkflow
     readonly inputs: JsonObject
     readonly state: RuntimeState
-    readonly owner: unknown
+    readonly authority: unknown
     readonly controller: AbortController
     readonly cancelReason: () => string
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
   }): Promise<WorkflowRunResult> {
-    const { id: runId, workflow, inputs: workflowInputs, state, owner, controller, onEvent } = options
+    const { id: runId, workflow, inputs: workflowInputs, state, authority, controller, onEvent } = options
     const services = this.#services
     const commit = (events: readonly WorkflowEventInput[]): void => {
-      this.#commit(runId, workflow, state, events, onEvent, owner)
+      this.#commit(runId, workflow, state, events, onEvent)
     }
     const policies = { ...DEFAULT_POLICIES, ...workflow.template.spec.policies }
     let deadlineExceeded = false
@@ -368,7 +375,7 @@ export class DagWorkflowEngine {
               item.node,
               workflowInputs,
               state,
-              owner,
+              authority,
               controller.signal,
               policies.maxOutputBytes,
               Math.min(state.subworkflowDepthLimit, policies.subworkflowMaxDepth ?? 8),
@@ -544,22 +551,11 @@ export class DagWorkflowEngine {
     async function resolveBinding(binding: WorkflowBinding, nodeId: string | undefined): Promise<JsonValue> {
       if ('literal' in binding) return snapshotJsonValue(binding.literal)
       if ('input' in binding) {
-        if (!(binding.input in workflowInputs)) throw executionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, nodeId)
-        return snapshotJsonValue(workflowInputs[binding.input]!)
+        return snapshotJsonValue(readPath(workflowInputs, binding.input.path, 'workflow input'))
       }
-      if ('secret' in binding) {
-        if (nodeId === undefined) throw new WorkflowExecutionError('SECRET_OUTPUT_FORBIDDEN', 'workflow outputs cannot contain secret bindings')
-        if (services.secrets === undefined) throw executionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, nodeId)
-        return services.secrets.resolve(binding.secret.ref, {
-          runId,
-          nodeId,
-          signal: controller.signal,
-          ...(owner === undefined ? {} : { owner }),
-        })
-      }
-      const source = state.nodeOutputs.get(binding.output.node)
-      if (source === undefined) throw executionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, nodeId)
-      return snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
+      const source = state.nodeOutputs.get(binding.output.nodeId)
+      if (source === undefined) throw executionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.nodeId}`, nodeId)
+      return snapshotJsonValue(readPath(source, binding.output.path, binding.output.nodeId))
     }
   }
 
@@ -569,7 +565,6 @@ export class DagWorkflowEngine {
     state: RuntimeState,
     inputs: readonly WorkflowEventInput[],
     onEvent: ((event: WorkflowEvent) => void) | undefined,
-    _owner: unknown,
   ): void {
     if (inputs.length === 0) return
     let nextSeq = state.seq
@@ -590,15 +585,15 @@ export class DagWorkflowEngine {
     node: CompiledWorkflowNode,
     workflowInputs: JsonObject,
     state: RuntimeState,
-    owner: unknown,
+    authority: unknown,
     runSignal: AbortSignal,
     maxOutputBytes: number,
     subworkflowMaxDepth: number,
     checkpointProgress: (progress: JsonValue) => void,
   ): Promise<NodeCompletion> {
     try {
-      const resolvedInputs = await resolveNodeInputs(node, workflowInputs, state.nodeOutputs, runId, runSignal, this.#services, owner)
-      const inputs = snapshotJsonObject(resolvedInputs.inputs)
+      const resolvedInputs = resolveNodeInputs(node, workflowInputs, state.nodeOutputs)
+      const inputs = snapshotJsonObject(resolvedInputs)
       const inputErrors = node.validateInputs(inputs)
       if (inputErrors.length > 0) throw new WorkflowExecutionError('NODE_INPUT_INVALID', inputErrors.join('; '), { nodeId: node.template.id })
       const timeoutSignal = node.template.policy?.timeoutMs === undefined
@@ -607,6 +602,7 @@ export class DagWorkflowEngine {
       const rawResult = await node.definition.execute({
         runId,
         nodeId: node.template.id,
+        invocationId: `${runId}:${node.template.id}:${state.nodeRuns}`,
         workflowInputs,
         inputs,
         config: node.template.with,
@@ -622,12 +618,9 @@ export class DagWorkflowEngine {
         subworkflowMaxDepth,
         ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
         checkpointProgress,
-        ...(owner === undefined ? {} : { owner }),
+        authority,
       })
       const outputs = snapshotJsonObject(rawResult.outputs)
-      if (resolvedInputs.secrets.some(secret => containsSecret(outputs, secret))) {
-        throw new WorkflowExecutionError('SECRET_OUTPUT_LEAK', 'node output contains a resolved secret value and cannot be persisted', { nodeId: node.template.id })
-      }
       const result: WorkflowNodeExecutionResult = {
         outputs,
         ...(rawResult.selectedPorts === undefined ? {} : { selectedPorts: Object.freeze([...rawResult.selectedPorts]) }),
@@ -654,12 +647,10 @@ export class DagWorkflowEngine {
 function scopeNodeServices(services: WorkflowNodeServices, capabilities: readonly string[]): WorkflowNodeServices {
   const allowed = new Set(capabilities)
   return Object.freeze({
-    ...(allowed.has('dsh.tools.execute') && services.tools !== undefined ? { tools: services.tools } : {}),
-    ...(allowed.has('dsh.subagents.start') && services.agents !== undefined ? { agents: services.agents } : {}),
-    ...(allowed.has('dsh.approval.request') && services.approvals !== undefined ? { approvals: services.approvals } : {}),
-    ...(allowed.has('workflowTemplates.getPublished')
-      && allowed.has('dagWorkflowEngine.invoke')
-      && services.subworkflows !== undefined
+    ...(allowed.has('gateway.tool.execute') && services.tools !== undefined ? { tools: services.tools } : {}),
+    ...(allowed.has('gateway.agent.execute') && services.agents !== undefined ? { agents: services.agents } : {}),
+    ...(allowed.has('gateway.approval.request') && services.approvals !== undefined ? { approvals: services.approvals } : {}),
+    ...(allowed.has('gateway.workflow.call') && services.subworkflows !== undefined
       ? { subworkflows: services.subworkflows }
       : {}),
   })
@@ -786,52 +777,23 @@ function sortReady(ready: string[], workflow: CompiledWorkflow): void {
   ready.sort((left, right) => workflow.order.indexOf(left) - workflow.order.indexOf(right))
 }
 
-async function resolveNodeInputs(
+function resolveNodeInputs(
   node: CompiledWorkflowNode,
   workflowInputs: JsonObject,
   nodeOutputs: ReadonlyMap<string, JsonObject>,
-  runId: string,
-  signal: AbortSignal,
-  services: WorkflowNodeServices,
-  owner: unknown,
-): Promise<{ readonly inputs: JsonObject; readonly secrets: readonly JsonValue[] }> {
+): JsonObject {
   const result: JsonObject = {}
-  const secrets: JsonValue[] = []
   for (const [name, binding] of Object.entries(node.template.inputs)) {
     if ('literal' in binding) result[name] = snapshotJsonValue(binding.literal)
     else if ('input' in binding) {
-      if (!(binding.input in workflowInputs)) throw new WorkflowExecutionError('WORKFLOW_INPUT_MISSING', `workflow input is missing: ${binding.input}`, { nodeId: node.template.id })
-      result[name] = snapshotJsonValue(workflowInputs[binding.input]!)
-    } else if ('secret' in binding) {
-      if (services.secrets === undefined) throw new WorkflowExecutionError('SECRET_GATEWAY_MISSING', `secret gateway is required for ${binding.secret.ref}`, { nodeId: node.template.id })
-      const secret = snapshotJsonValue(await services.secrets.resolve(binding.secret.ref, {
-        runId,
-        nodeId: node.template.id,
-        signal,
-        ...(owner === undefined ? {} : { owner }),
-      }))
-      secrets.push(secret)
-      result[name] = secret
+      result[name] = snapshotJsonValue(readPath(workflowInputs, binding.input.path, 'workflow input'))
     } else {
-      const source = nodeOutputs.get(binding.output.node)
-      if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.node}`, { nodeId: node.template.id })
-      result[name] = snapshotJsonValue(readPath(source, binding.output.path, binding.output.node))
+      const source = nodeOutputs.get(binding.output.nodeId)
+      if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.nodeId}`, { nodeId: node.template.id })
+      result[name] = snapshotJsonValue(readPath(source, binding.output.path, binding.output.nodeId))
     }
   }
-  return { inputs: result, secrets }
-}
-
-function containsSecret(value: JsonValue, secret: JsonValue): boolean {
-  if (typeof secret === 'string' && secret.length > 0) return containsString(value, secret)
-  if (secret === null || typeof secret !== 'object') return value === secret
-  return stableJsonStringify(value).includes(stableJsonStringify(secret))
-}
-
-function containsString(value: JsonValue, secret: string): boolean {
-  if (typeof value === 'string') return value.includes(secret)
-  if (Array.isArray(value)) return value.some(item => containsString(item, secret))
-  if (value !== null && typeof value === 'object') return Object.values(value).some(item => containsString(item, secret))
-  return false
+  return result
 }
 
 function readPath(root: JsonValue, path: readonly (string | number)[], sourceNodeId: string): JsonValue {

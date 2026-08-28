@@ -119,7 +119,7 @@ export class WorkflowTemplateCatalog {
 function dependenciesOf(template: WorkflowTemplate): { readonly nodeId: string; readonly id: string; readonly revision: number }[] {
   const result: { readonly nodeId: string; readonly id: string; readonly revision: number }[] = []
   for (const node of template.spec.nodes) {
-    if (node.uses !== 'core.subworkflow@1' && node.uses !== 'core.foreach@1') continue
+    if (node.uses !== 'workflow.call@1' && node.uses !== 'core.foreach@1') continue
     const id = node.with.templateId
     const revision = node.with.revision
     if (typeof id === 'string' && typeof revision === 'number' && Number.isSafeInteger(revision) && revision >= 1) {
@@ -165,7 +165,7 @@ function diffById<T extends { readonly id: string }>(left: readonly T[], right: 
 }
 
 function assertDraftEnvelope(template: WorkflowTemplate): void {
-  if (template.apiVersion !== 'dsh.workflow/v1alpha1' || template.kind !== 'WorkflowTemplate'
+  if (template.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || template.kind !== 'WorkflowTemplate'
     || typeof template.metadata?.id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(template.metadata.id)
     || typeof template.metadata.name !== 'string' || template.metadata.name.length === 0) {
     throw new WorkflowCatalogError('CATALOG_INVALID_ENVELOPE', 'draft requires v1alpha1 envelope and valid metadata id/name')

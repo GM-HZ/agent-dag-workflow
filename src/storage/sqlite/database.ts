@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 
-export const SQLITE_SCHEMA_VERSION = 3
+export const SQLITE_SCHEMA_VERSION = 4
 export const SQLITE_APPLICATION_ID = 1_146_308_695
 
 export interface SqliteWorkflowOptions {
@@ -55,7 +55,12 @@ function initializeOrMigrate(db: DatabaseSync): void {
     if (names.join(',') !== 'workflow_drafts,workflow_revisions,workflow_run_events,workflow_runs') {
       throw new Error('workflow database v2 schema objects do not match the migration source')
     }
-    db.exec(`ALTER TABLE workflow_runs ADD COLUMN owner_ref TEXT; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+    db.exec(`ALTER TABLE workflow_runs ADD COLUMN owner_ref TEXT;`)
+    addExecutionContext(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 3 && applicationId === SQLITE_APPLICATION_ID) {
+    addExecutionContext(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
@@ -96,7 +101,7 @@ function createRunTables(db: DatabaseSync): void {
       template_json TEXT NOT NULL,
       semantic_hash TEXT NOT NULL CHECK (length(semantic_hash) = 64),
       inputs_json TEXT NOT NULL,
-      owner_ref TEXT,
+      execution_json TEXT NOT NULL,
       created_at INTEGER NOT NULL,
       checkpoint_json TEXT NOT NULL,
       checkpoint_seq INTEGER NOT NULL CHECK (checkpoint_seq >= 0),
@@ -110,6 +115,11 @@ function createRunTables(db: DatabaseSync): void {
       PRIMARY KEY (run_id, seq)
     ) STRICT;
   `)
+}
+
+function addExecutionContext(db: DatabaseSync): void {
+  const fallback = '{"authorityRef":"migration:unavailable","origin":{"type":"migration"}}'
+  db.exec(`ALTER TABLE workflow_runs ADD COLUMN execution_json TEXT NOT NULL DEFAULT '${fallback}';`)
 }
 
 function tableNames(db: DatabaseSync): string[] {

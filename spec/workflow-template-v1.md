@@ -5,7 +5,7 @@
 ## Envelope
 
 ```yaml
-apiVersion: dsh.workflow/v1alpha1
+apiVersion: workflow.gm-hz.dev/v1alpha1
 kind: WorkflowTemplate
 metadata:
   id: research-report
@@ -30,10 +30,10 @@ layout: {}
 
 ```yaml
 requires:
-  - { kind: capability, uses: dsh.tools.execute }
+  - { kind: capability, uses: gateway.tool.execute }
   - { kind: tool, uses: dms.query }
-  - { kind: capability, uses: dsh.subagents.start }
-  - { kind: script-runtime, uses: dsh.expr@1 }
+  - { kind: capability, uses: gateway.agent.execute }
+  - { kind: script-runtime, uses: json.expr@1 }
   - { kind: secret, uses: credential:analytics-readonly }
   - { kind: workflow, uses: normalize-result@3 }
 ```
@@ -46,7 +46,7 @@ requires:
 
 ## 外部扩展的两级模型
 
-1. 普通外部能力必须注册为 DSH Tool，并统一使用 `dsh.tool@1`。Tool name 固定在 `with.name`，输入来自结构化 binding，执行继续经过 DSH scope、guard、credential、observer 与 output validation。Canvas 中每个 scope-visible Tool 只是这个通用节点的一个 catalog 条目，不产生新的运行时类型。
+1. 普通外部能力必须注册为 DSH Tool，并统一使用 `tool.call@1`。Tool name 固定在 `with.name`，输入来自结构化 binding，执行继续经过 DSH scope、guard、credential、observer 与 output validation。Canvas 中每个 scope-visible Tool 只是这个通用节点的一个 catalog 条目，不产生新的运行时类型。
 2. 只有单次 JSON Tool 调用无法表达的暂停恢复、长任务 checkpoint、事务补偿或特殊控制流，才能注册自定义 `WorkflowNodeDefinition`。它可以通过 Host `WorkflowCapabilityRegistry` 绑定生命周期服务，但必须在 definition 和 `spec.requires` 中使用同一个 capability id。
 
 不存在第三种 Tool-backed Node Preset 执行层。脚本 runtime 是内置 `core.script@1` 的纯数据实现细节，也不能用于绕开 Tool policy。
@@ -55,7 +55,7 @@ requires:
 
 ```yaml
 - id: summarize
-  uses: dsh.agent@1
+  uses: agent.run@1
   title: Summarize evidence
   with:
     prompt: Produce a concise evidence-based summary.
@@ -66,10 +66,10 @@ requires:
         report: { type: string }
   inputs:
     topic:
-      input: topic
+      input: { path: [topic] }
     evidence:
       output:
-        node: collect
+        nodeId: collect
         path: [items]
   expects:
     maxBytes: 1048576
@@ -106,12 +106,13 @@ literal: any-json-value
 ```
 
 ```yaml
-input: workflowInputName
+input:
+  path: [field, nestedField, 0]
 ```
 
 ```yaml
 output:
-  node: upstreamNodeId
+  nodeId: upstreamNodeId
   path: [field, nestedField, 0]
 ```
 
@@ -130,7 +131,7 @@ Binding 自身不提供表达式：它只负责把 workflow input、上游 outpu
 - id: normalize
   uses: core.script@1
   with:
-    language: dsh.expr@1
+    language: json.expr@1
     maxOperations: 10000
     source: |-
       {
@@ -138,20 +139,20 @@ Binding 自身不提供表达式：它只负责把 workflow input、上游 outpu
         total: sum(mapGet(input.orders, "amount"))
       }
   inputs:
-    customer: { input: customer }
-    orders: { input: orders }
+    customer: { input: { path: [customer] } }
+    orders: { input: { path: [orders] } }
 ```
 
 - `language` 必须是精确的 `language@integer-version`，并在当前 Host scope 的 `ctx.workflowScripts` 中可解析。
 - 编译器先执行 runtime `validate(source)`；语法或业务规则错误产生 `NODE_CONFIG_SEMANTIC_INVALID`。
 - runtime 只能接收节点 inputs、AbortSignal 和 `maxOperations`，输出必须是一个 lossless JSON object。
-- 内置 `dsh.expr@1` 是纯表达式 DSL，不是 JavaScript；禁止 I/O、动态调用、prototype key、时间和随机数。
+- 内置 `json.expr@1` 是纯表达式 DSL，不是 JavaScript；禁止 I/O、动态调用、prototype key、时间和随机数。
 - 第三方 runtime 是受信任插件扩展点。模板的声明不能给 runtime 新增 authority；需要外部系统或 secret 时必须使用相应 DSH 节点。
 
 ## 动态结果的两级校验
 
 1. Core 确定性边界：lossless JSON、secret leak、NodeDefinition output schema、节点 `expects`、字节上限。
-2. 可选 Agent 语义复核：作为显式 `dsh.agent@1` 节点，并为其结构化判断声明 `outputSchema/expects`。
+2. 可选 Agent 语义复核：作为显式 `agent.run@1` 节点，并为其结构化判断声明 `outputSchema/expects`。
 
 Agent 复核是业务判断，不是权限授予，也不能替代第一层。外部数据即使被 Agent 判断为合法，后续动态调用仍需重新满足 `requires + owning Agent scope + DSH policy`。
 
@@ -172,7 +173,7 @@ Agent 复核是业务判断，不是权限授予，也不能替代第一层。�
 outputs:
   report:
     output:
-      node: end
+      nodeId: end
       path: [report]
 ```
 
@@ -206,13 +207,13 @@ layout:
 
 ## 嵌套与人工节点约定
 
-- `core.subworkflow@1.with` 必须包含 `{ templateId, revision }`；`inputs` 直接作为 child workflow inputs，输出为 `{ runId, outputs }`。
+- `workflow.call@1.with` 必须包含 `{ templateId, revision }`；`inputs` 直接作为 child workflow inputs，输出为 `{ runId, outputs }`。
 - `core.foreach@1.with` 必须包含 `{ templateId, revision }`，可选 `maxConcurrency/maxItems`；节点输入是 `{ items, shared? }`，每个 child 收到 `{ item, index, shared }`，节点输出是按原 index 排序的 `{ results: [{ index, runId, outputs }] }`。
 - subworkflow/foreach 只解析精确 published revision。Catalog publish 校验版本存在、依赖无环和继承后的最大深度；运行时把有效 depth ceiling 写入每个 child checkpoint。
 - 每个 child invocation id 由 parent run/node/item index 稳定派生。同一 invocation 必须绑定同一模板 semantic hash、inputs 和 depth；冲突 fail loud。
 - foreach checkpoint 保存每个 item 的 `pending/running/completed` frame。崩溃后 running item 恢复同一 child run，不创建第二个副作用执行。
-- `dsh.human-approval@1.with` 必须包含 `{ action, reason }`；任意 `inputs` 作为只读详情。节点在调用 approval seam 前提交 `waiting` checkpoint，结果走 `approved/rejected` 端口。
-- `dsh.agent@1.with` 必须包含 `{ prompt }`，可选 `label/outputSchema/maxDepth`；它继承 owning DSH Agent scope，输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
+- `human.approval@1.with` 必须包含 `{ action, reason }`；任意 `inputs` 作为只读详情。节点在调用 approval seam 前提交 `waiting` checkpoint，结果走 `approved/rejected` 端口。
+- `agent.run@1.with` 必须包含 `{ prompt }`，可选 `label/outputSchema/maxDepth`；它继承 owning DSH Agent scope，输入以稳定 JSON 附加到 prompt，输出为 `{ runId, content, structured? }`。
 
 ## 发布校验
 

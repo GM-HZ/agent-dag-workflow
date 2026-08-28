@@ -115,12 +115,12 @@ class StubSession {
 
 function template(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'dsh-plugin-test', name: 'DSH plugin test' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'echo' },
       ],
       inputSchema: {
@@ -137,27 +137,27 @@ function template(): WorkflowTemplate {
       },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-        { id: 'echo', uses: 'dsh.tool@1', with: { name: 'echo' }, inputs: { message: { input: 'message' } } },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { answer: { output: { node: 'echo', path: ['result', 'echo'] } } } },
+        { id: 'echo', uses: 'tool.call@1', with: { uses: 'echo' }, inputs: { message: { input: { path: ['message'] } } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { answer: { output: { nodeId: 'echo', path: ['result', 'echo'] } } } },
       ],
       edges: [
         { id: 'start-echo', source: 'start', target: 'echo' },
         { id: 'echo-end', source: 'echo', target: 'end' },
       ],
-      outputs: { answer: { output: { node: 'end', path: ['answer'] } } },
+      outputs: { answer: { output: { nodeId: 'end', path: ['answer'] } } },
     },
   }
 }
 
 function agentApprovalTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'agent-approval-test', name: 'Agent approval test' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'dsh.subagents.start' },
-        { kind: 'capability', uses: 'dsh.approval.request' },
+        { kind: 'capability', uses: 'gateway.agent.execute' },
+        { kind: 'capability', uses: 'gateway.approval.request' },
         { kind: 'approval-action', uses: 'publish-report' },
       ],
       inputSchema: { type: 'object', additionalProperties: false },
@@ -171,27 +171,26 @@ function agentApprovalTemplate(): WorkflowTemplate {
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
         {
           id: 'delegate',
-          uses: 'dsh.agent@1',
+          uses: 'agent.run@1',
           with: {
             prompt: 'Produce the answer.',
-            label: 'workflow child',
             outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
           },
           inputs: { topic: { literal: 'DSH' } },
         },
         {
           id: 'approve',
-          uses: 'dsh.human-approval@1',
+          uses: 'human.approval@1',
           with: { action: 'publish-report', reason: 'Approve the generated report.' },
-          inputs: { answer: { output: { node: 'delegate', path: ['structured', 'answer'] } } },
+          inputs: { answer: { output: { nodeId: 'delegate', path: ['structured', 'answer'] } } },
         },
         {
           id: 'end',
           uses: 'core.end@1',
           with: {},
           inputs: {
-            answer: { output: { node: 'delegate', path: ['structured', 'answer'] } },
-            approved: { output: { node: 'approve', path: ['approved'] } },
+            answer: { output: { nodeId: 'delegate', path: ['structured', 'answer'] } },
+            approved: { output: { nodeId: 'approve', path: ['approved'] } },
           },
         },
       ],
@@ -202,8 +201,8 @@ function agentApprovalTemplate(): WorkflowTemplate {
         { id: 'approve-end-no', source: 'approve', target: 'end', sourcePort: 'rejected' },
       ],
       outputs: {
-        answer: { output: { node: 'end', path: ['answer'] } },
-        approved: { output: { node: 'end', path: ['approved'] } },
+        answer: { output: { nodeId: 'end', path: ['answer'] } },
+        approved: { output: { nodeId: 'end', path: ['approved'] } },
       },
     },
   }
@@ -211,7 +210,7 @@ function agentApprovalTemplate(): WorkflowTemplate {
 
 function childTemplate(id: string, foreach = false): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id, name: `${id} child` },
     spec: {
@@ -240,24 +239,23 @@ function childTemplate(id: string, foreach = false): WorkflowTemplate {
           id: 'end',
           uses: 'core.end@1',
           with: {},
-          inputs: { value: { input: foreach ? 'item' : 'message' } },
+          inputs: { value: { input: { path: [foreach ? 'item' : 'message'] } } },
         },
       ],
       edges: [{ id: 'start-end', source: 'start', target: 'end' }],
-      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+      outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
     },
   }
 }
 
 function nestedParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'nested-parent', name: 'Nested parent' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
-        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'capability', uses: 'gateway.workflow.call' },
         { kind: 'workflow', uses: 'nested-child@1' },
       ],
       inputSchema: {
@@ -276,30 +274,29 @@ function nestedParentTemplate(): WorkflowTemplate {
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
         {
           id: 'child',
-          uses: 'core.subworkflow@1',
+          uses: 'workflow.call@1',
           with: { templateId: 'nested-child', revision: 1 },
-          inputs: { message: { input: 'message' } },
+          inputs: { message: { input: { path: ['message'] } } },
         },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'child', path: ['outputs', 'value'] } } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'child', path: ['outputs', 'value'] } } } },
       ],
       edges: [
         { id: 'start-child', source: 'start', target: 'child' },
         { id: 'child-end', source: 'child', target: 'end' },
       ],
-      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+      outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
     },
   }
 }
 
 function foreachParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-parent', name: 'For each parent' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
-        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'capability', uses: 'gateway.workflow.call' },
         { kind: 'workflow', uses: 'item-worker@1' },
       ],
       inputSchema: {
@@ -320,15 +317,15 @@ function foreachParentTemplate(): WorkflowTemplate {
           id: 'map',
           uses: 'core.foreach@1',
           with: { templateId: 'item-worker', revision: 1, maxConcurrency: 2, maxItems: 5 },
-          inputs: { items: { input: 'items' }, shared: { literal: {} } },
+          inputs: { items: { input: { path: ['items'] } }, shared: { literal: {} } },
         },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { node: 'map', path: ['results'] } } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { nodeId: 'map', path: ['results'] } } } },
       ],
       edges: [
         { id: 'start-map', source: 'start', target: 'map' },
         { id: 'map-end', source: 'map', target: 'end' },
       ],
-      outputs: { results: { output: { node: 'end', path: ['results'] } } },
+      outputs: { results: { output: { nodeId: 'end', path: ['results'] } } },
     },
   }
 }
@@ -396,15 +393,15 @@ describe('DSH Cordis plugin', () => {
     expect(tools.requests).toHaveLength(1)
     expect(tools.requests[0]).toMatchObject({ name: 'echo', arguments: { message: 'hello' }, agent: parent })
     expect(ctx.workflowNodes.list().map(node => `${node.type}@${node.version}`)).toEqual([
+      'agent.run@1',
       'core.condition@1',
       'core.end@1',
       'core.foreach@1',
       'core.script@1',
       'core.start@1',
-      'core.subworkflow@1',
-      'dsh.agent@1',
-      'dsh.human-approval@1',
-      'dsh.tool@1',
+      'human.approval@1',
+      'tool.call@1',
+      'workflow.call@1',
     ])
     const draft = ctx.workflowTemplates.createDraft(template())
     const published = ctx.workflowTemplates.publish(draft.id, draft.revision)
@@ -497,13 +494,13 @@ describe('DSH Cordis plugin', () => {
       if (markerIndex < 0) throw new Error('missing workflow input marker')
       const inputs = JSON.parse(request.prompt[0]!.text.slice(markerIndex + marker.length)) as Record<string, unknown>
       let structured: unknown
-      if (request.label === 'plan-weekly-ai-model-searches') {
+      if (request.label === 'plan-searches') {
         structured = { batches: Array.from({ length: 13 }, (_, index) => ({
           queries: Array.from({ length: 4 }, (_unused, query) => `AI model topic ${index}-${query} ${from} ${to}`),
         })) }
-      } else if (request.label === 'normalize-weekly-ai-model-news') {
+      } else if (request.label === 'normalize-news') {
         structured = { items }
-      } else if (request.label === 'score-weekly-ai-model-news') {
+      } else if (request.label === 'score-news') {
         const candidates = inputs.items as readonly { readonly id: string }[]
         structured = {
             scores: candidates.map((item, index) => ({
@@ -563,10 +560,10 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.tools.requests.every(request => request.name === 'web_search')).toBe(true)
     expect(ctx.subagents.requests.every(args => args[0] === 'spawn')).toBe(true)
     expect(ctx.subagents.requests.map(args => args[1].label)).toEqual([
-      'plan-weekly-ai-model-searches',
-      'normalize-weekly-ai-model-news',
-      'score-weekly-ai-model-news',
-      'summarize-weekly-ai-model-news',
+      'plan-searches',
+      'normalize-news',
+      'score-news',
+      'summarize-top-10',
     ])
     const record = ctx.workflowRuns.loadRun(result.runId)
     expect(record?.checkpoint).toMatchObject({ status: 'completed' })
@@ -609,7 +606,7 @@ describe('DSH Cordis plugin', () => {
       },
     })
     const customTemplate: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
       metadata: { id: 'custom-node-dsh', name: 'Custom Node in DSH' },
       spec: {
         requires: [{ kind: 'capability', uses: 'acme.jobs.execute' }],
@@ -623,14 +620,14 @@ describe('DSH Cordis plugin', () => {
         },
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-          { id: 'custom', uses: 'acme.job@1', with: {}, inputs: { value: { input: 'value' } } },
-          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'custom', path: ['value'] } } } },
+          { id: 'custom', uses: 'acme.job@1', with: {}, inputs: { value: { input: { path: ['value'] } } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'custom', path: ['value'] } } } },
         ],
         edges: [
           { id: 'start-custom', source: 'start', target: 'custom' },
           { id: 'custom-end', source: 'custom', target: 'end' },
         ],
-        outputs: { value: { output: { node: 'end', path: ['value'] } } },
+        outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
       },
     }
 
@@ -697,7 +694,7 @@ describe('DSH Cordis plugin', () => {
       'spawn',
       expect.objectContaining({
         parent,
-        label: 'workflow child',
+        label: 'delegate',
         prompt: [{ type: 'text', text: expect.stringContaining('"topic":"DSH"') }],
       }),
     ])
@@ -705,7 +702,7 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.approval.requests[0]).toEqual(expect.objectContaining({
       agent: parent,
       toolName: 'publish-report',
-      callId: expect.stringMatching(/:approve:approval$/),
+      callId: expect.stringMatching(/:approve:\d+$/),
       reason: expect.stringContaining('child answer'),
     }))
     const record = ctx.workflowRuns.loadRun(result.runId)
@@ -769,15 +766,15 @@ describe('DSH Cordis plugin', () => {
         expect.objectContaining({ uses: 'core.foreach@1' }),
         expect.objectContaining({
           uses: 'core.script@1',
-          defaultConfig: expect.objectContaining({ language: 'dsh.expr@1' }),
+          defaultConfig: expect.objectContaining({ language: 'json.expr@1' }),
           dependencyKinds: ['script-runtime'],
           defaultRequirements: expect.arrayContaining([
             { kind: 'capability', uses: 'workflow.script.execute' },
-            { kind: 'script-runtime', uses: 'dsh.expr@1' },
+            { kind: 'script-runtime', uses: 'json.expr@1' },
           ]),
         }),
       ]),
-      scriptRuntimes: [expect.objectContaining({ uses: 'dsh.expr@1', deterministic: true })],
+      scriptRuntimes: [expect.objectContaining({ uses: 'json.expr@1', deterministic: true })],
       agent: expect.objectContaining({
         mode: 'current',
         capabilities: expect.objectContaining({ outputSchema: true }),
@@ -808,43 +805,34 @@ describe('DSH Cordis plugin', () => {
     await expect(call('workflow_run', { id: 'tool-authored', template: authored, inputs: {} })).rejects.toThrow(/exactly one/)
   })
 
-  it('resolves secret bindings through a scoped Host callback and persists only the owner reference', async () => {
+  it('keeps credentials out of the data plane and persists only opaque config and authority references', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
     ctx.tools.handler = async () => ({ isError: false, value: { echo: 'credential accepted' } })
     const parent: DshAgentLike = { session: new StubSession() }
-    const resolveSecret = vi.fn(async () => 'resolved-in-memory')
     await ctx.plugin(DshWorkflowPlugin, {
-      resolveSecret,
       recovery: {
         reference: value => value === parent ? 'session:secret-owner' : 'session:other',
         async resolve() { return parent },
       },
     })
     const base = template()
-    const secretTemplate = {
+    const referencedTemplate = {
       ...base,
       spec: {
         ...base.spec,
-        requires: [
-          ...(base.spec.requires ?? []),
-          { kind: 'capability', uses: 'workflow.secrets.resolve' },
-          { kind: 'secret', uses: 'credential:report-api' },
-        ],
         nodes: base.spec.nodes.map(node => node.id === 'echo'
-          ? { ...node, inputs: { message: { secret: { ref: 'credential:report-api' } } } }
+          ? { ...node, with: { ...node.with, credentialRef: 'credential:report-api' } }
           : node),
       },
     } as WorkflowTemplate
 
-    const result = await ctx.dagWorkflowEngine.start({ template: secretTemplate, inputs: { message: 'unused' }, parent }).result
+    const result = await ctx.dagWorkflowEngine.start({ template: referencedTemplate, inputs: { message: 'unused' }, parent }).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'credential accepted' } })
-    expect(resolveSecret).toHaveBeenCalledWith(expect.objectContaining({
-      ref: 'credential:report-api', nodeId: 'echo', parent,
-    }))
     const record = ctx.workflowRuns.loadRun(result.runId)
-    expect(record?.ownerRef).toBe('session:secret-owner')
+    expect(record?.execution.authorityRef).toBe('session:secret-owner')
+    expect(JSON.stringify(record)).toContain('credential:report-api')
     expect(JSON.stringify(record)).not.toContain('resolved-in-memory')
   })
 
@@ -855,16 +843,16 @@ describe('DSH Cordis plugin', () => {
     }))
     const warn = vi.fn()
     const records = [
-      { runId: 'run-owned', ownerRef: 'session:1', checkpoint: { status: 'running' } },
-      { runId: 'run-unowned', checkpoint: { status: 'running' } },
-      { runId: 'run-paused', ownerRef: 'session:1', checkpoint: { status: 'paused' } },
+      { runId: 'run-owned', execution: { authorityRef: 'session:1', origin: { type: 'host' } }, checkpoint: { status: 'running' } },
+      { runId: 'run-unowned', execution: { authorityRef: 'migration:unavailable', origin: { type: 'migration' } }, checkpoint: { status: 'running' } },
+      { runId: 'run-paused', execution: { authorityRef: 'session:1', origin: { type: 'host' } }, checkpoint: { status: 'paused' } },
     ] as unknown as readonly WorkflowRunRecord[]
     const fake = {
       workflowRuns: { listRecoverableRuns: () => records },
       dagWorkflowEngine: { resume },
       logger: { warn },
     } as unknown as Context
-    const resolve = vi.fn(async (ownerRef: string) => ownerRef === 'session:1' ? parent : undefined)
+    const resolve = vi.fn(async (authorityRef: string) => authorityRef === 'session:1' ? parent : undefined)
 
     const started = await DshWorkflowPlugin.recoverPersistedWorkflowRuns(fake, {
       reference: () => 'session:1', resolve,
@@ -872,7 +860,7 @@ describe('DSH Cordis plugin', () => {
 
     expect(started).toEqual(['run-owned'])
     expect(resume).toHaveBeenCalledWith(expect.objectContaining({ runId: 'run-owned', parent }))
-    expect(resolve).toHaveBeenCalledTimes(1)
+    expect(resolve).toHaveBeenCalledTimes(2)
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('run-unowned'))
   })
 })

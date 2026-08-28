@@ -1,15 +1,15 @@
 {
-  "apiVersion": "dsh.workflow/v1alpha1",
+  "apiVersion": "workflow.gm-hz.dev/v1alpha1",
   "kind": "WorkflowTemplate",
   "metadata": {
     "id": "script-transform-demo",
     "name": "Order normalization",
-    "description": "A deterministic data-processing workflow using the bounded dsh.expr runtime."
+    "description": "A deterministic data-processing workflow using the bounded json.expr runtime."
   },
   "spec": {
     "requires": [
       { "kind": "capability", "uses": "workflow.script.execute" },
-      { "kind": "script-runtime", "uses": "dsh.expr@1" }
+      { "kind": "script-runtime", "uses": "json.expr@1" }
     ],
     "inputSchema": {
       "type": "object",
@@ -56,13 +56,13 @@
         "uses": "core.script@1",
         "title": "Normalize order data",
         "with": {
-          "language": "dsh.expr@1",
+          "language": "json.expr@1",
           "maxOperations": 10000,
           "source": "{\n  customer: upper(trim(input.customer)),\n  orderCount: len(input.orders),\n  total: sum(mapGet(input.orders, \"amount\")),\n  approvedIds: mapGet(filterEq(input.orders, \"approved\", true), \"id\"),\n  summary: format(\"{{ customer }} / {{ count }} orders\", {\n    customer: trim(input.customer),\n    count: len(input.orders)\n  })\n}"
         },
         "inputs": {
-          "customer": { "input": "customer" },
-          "orders": { "input": "orders" }
+          "customer": { "input": { "path": ["customer"] } },
+          "orders": { "input": { "path": ["orders"] } }
         }
       },
       {
@@ -70,11 +70,11 @@
         "uses": "core.end@1",
         "with": {},
         "inputs": {
-          "customer": { "output": { "node": "normalize", "path": ["customer"] } },
-          "orderCount": { "output": { "node": "normalize", "path": ["orderCount"] } },
-          "total": { "output": { "node": "normalize", "path": ["total"] } },
-          "approvedIds": { "output": { "node": "normalize", "path": ["approvedIds"] } },
-          "summary": { "output": { "node": "normalize", "path": ["summary"] } }
+          "customer": { "output": { "nodeId": "normalize", "path": ["customer"] } },
+          "orderCount": { "output": { "nodeId": "normalize", "path": ["orderCount"] } },
+          "total": { "output": { "nodeId": "normalize", "path": ["total"] } },
+          "approvedIds": { "output": { "nodeId": "normalize", "path": ["approvedIds"] } },
+          "summary": { "output": { "nodeId": "normalize", "path": ["summary"] } }
         }
       }
     ],
@@ -83,11 +83,11 @@
       { "id": "normalize-end", "source": "normalize", "target": "end" }
     ],
     "outputs": {
-      "customer": { "output": { "node": "end", "path": ["customer"] } },
-      "orderCount": { "output": { "node": "end", "path": ["orderCount"] } },
-      "total": { "output": { "node": "end", "path": ["total"] } },
-      "approvedIds": { "output": { "node": "end", "path": ["approvedIds"] } },
-      "summary": { "output": { "node": "end", "path": ["summary"] } }
+      "customer": { "output": { "nodeId": "end", "path": ["customer"] } },
+      "orderCount": { "output": { "nodeId": "end", "path": ["orderCount"] } },
+      "total": { "output": { "nodeId": "end", "path": ["total"] } },
+      "approvedIds": { "output": { "nodeId": "end", "path": ["approvedIds"] } },
+      "summary": { "output": { "nodeId": "end", "path": ["summary"] } }
     },
     "policies": {
       "maxConcurrentNodes": 2,

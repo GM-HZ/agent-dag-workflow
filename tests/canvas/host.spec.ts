@@ -64,7 +64,7 @@ class Session {
 
 function workflow(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'canvas-host-test', name: 'Canvas host test' },
     spec: {
@@ -72,10 +72,10 @@ function workflow(): WorkflowTemplate {
       outputSchema: { type: 'object', additionalProperties: false, required: ['message'], properties: { message: { type: 'string' } } },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { message: { input: 'message' } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { message: { input: { path: ['message'] } } } },
       ],
       edges: [{ id: 'start-end', source: 'start', target: 'end' }],
-      outputs: { message: { output: { node: 'end', path: ['message'] } } },
+      outputs: { message: { output: { nodeId: 'end', path: ['message'] } } },
     },
   }
 }
@@ -140,21 +140,21 @@ describe('workflow canvas Host gateway', () => {
     expect((await ctx.workflowCanvas.nodes(agent.id)).map(node => node.uses)).toContain('core.start@1')
     expect(await ctx.workflowCanvas.nodes(agent.id)).toContainEqual(expect.objectContaining({
       uses: 'core.script@1',
-      defaultConfig: expect.objectContaining({ language: 'dsh.expr@1' }),
+      defaultConfig: expect.objectContaining({ language: 'json.expr@1' }),
       dependencyKinds: ['script-runtime'],
       defaultRequirements: expect.arrayContaining([
         { kind: 'capability', uses: 'workflow.script.execute' },
-        { kind: 'script-runtime', uses: 'dsh.expr@1' },
+        { kind: 'script-runtime', uses: 'json.expr@1' },
       ]),
     }))
     expect(await ctx.workflowCanvas.nodes(agent.id)).toContainEqual(expect.objectContaining({
       catalogId: 'tool:dms.query',
       kind: 'tool',
-      uses: 'dsh.tool@1',
+      uses: 'tool.call@1',
       toolName: 'dms.query',
-      defaultConfig: { name: 'dms.query' },
+      defaultConfig: { uses: 'dms.query' },
       defaultRequirements: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'dms.query' },
       ],
     }))

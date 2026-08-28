@@ -44,6 +44,8 @@ export interface DshSubagentRuntimeLike {
     readonly signal: AbortSignal
     readonly outputSchema?: Readonly<Record<string, unknown>>
     readonly maxDepth?: number
+    readonly tools?: readonly string[]
+    readonly skills?: readonly string[]
   }): Promise<DshSubagentRunLike>
 }
 
@@ -111,7 +113,7 @@ export interface DshSkillRuntimeLike {
   }): () => void
 }
 
-export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'owner' | 'ownerRef'> {
+export interface DshDagWorkflowStartRequest extends Omit<WorkflowStartRequest, 'execution'> {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
   readonly parent: object
@@ -122,25 +124,17 @@ export interface DshDagWorkflowEngine {
   resume(request: DshDagWorkflowResumeRequest): WorkflowRun
 }
 
-export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest, 'owner'> {
+export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest, 'execution'> {
   readonly parent: object
 }
 
 export interface DshWorkflowPluginConfig {
   readonly catalog?: 'memory' | 'external'
   readonly runStore?: 'memory' | 'external'
-  /** Optional scoped credential bridge. Secret values must never be logged or persisted by this callback. */
-  readonly resolveSecret?: (request: {
-    readonly ref: string
-    readonly runId: string
-    readonly nodeId: string
-    readonly signal: AbortSignal
-    readonly parent: DshAgentLike
-  }) => Promise<JsonValue>
   /** Optional restart coordinator. Both callbacks must use Host-owned session/Agent state. */
   readonly recovery?: {
     readonly reference: (parent: DshAgentLike) => string
-    readonly resolve: (ownerRef: string, context: {
+    readonly resolve: (authorityRef: string, context: {
       readonly runId: string
       readonly signal: AbortSignal
     }) => Promise<DshAgentLike | undefined>

@@ -77,7 +77,7 @@ flowchart TB
 
 扩展决策只有两条路径：
 
-1. 能以一次结构化调用表达的外部能力注册到 `ctx.tools`，统一由 `dsh.tool@1` 执行。Canvas 直接把 scope-visible Tool schema 显示为 palette 项，保存时仍是同一个通用 Tool 节点。
+1. 能以一次结构化调用表达的外部能力注册到 `ctx.tools`，统一由 `tool.call@1` 执行。Canvas 直接把 scope-visible Tool schema 显示为 palette 项，保存时仍是同一个通用 Tool 节点。
 2. 需要暂停恢复、长任务 checkpoint、事务补偿或特殊控制流时，注册完整 `WorkflowNodeDefinition`。自定义节点若需要 Host 生命周期服务，同时在 `ctx.workflowCapabilities` 注册绑定，并从节点的 scoped resolver 取得。
 
 `ctx.workflowCapabilities` 是自定义 Node 的安全 inject 投影，不是第三种业务扩展层；HTTP、数据库、消息、存储等普通调用不能借它绕开 DSH Tool policy。
@@ -112,7 +112,7 @@ Canvas renderer不是 Host 定义的一部分。Client 插件按相同 `type@ver
 
 `core.script@1` 不是开放的 JavaScript/Python eval 节点，而是一个版本化 runtime adapter。Host 通过 `ctx.workflowScripts` 注册 `language@version`；节点在编译期完成 runtime availability 与 source 语义校验，在运行期只传入深冻结 JSON input、AbortSignal 和操作预算，并只接受 JSON object 输出。
 
-内置 `dsh.expr@1` 覆盖 Coze/Dify 常见的字段映射、文本模板、数组筛选/投影、聚合和类型转换。`sortBy` 提供稳定多键排序，`withIndex` 从确定顺序生成序号；`joinBy` 对唯一 key 做一一对应 overlay 合并，并禁止覆盖原字段，可用于把 Agent 评分/摘要安全合并回 Tool 原始记录。它没有 I/O、时间、随机数、环境变量或 secret API，并拒绝 prototype key 与动态函数调用。外部 HTTP、数据库、知识库和凭据访问继续使用 `dsh.tool@1`；复杂非确定逻辑使用 `dsh.agent@1`。第三方 runtime 是受信任的 Host 插件代码，声明 `deterministic: true` 后仍由部署者负责审计。
+内置 `json.expr@1` 覆盖 Coze/Dify 常见的字段映射、文本模板、数组筛选/投影、聚合和类型转换。`sortBy` 提供稳定多键排序，`withIndex` 从确定顺序生成序号；`joinBy` 对唯一 key 做一一对应 overlay 合并，并禁止覆盖原字段，可用于把 Agent 评分/摘要安全合并回 Tool 原始记录。它没有 I/O、时间、随机数、环境变量或 secret API，并拒绝 prototype key 与动态函数调用。外部 HTTP、数据库、知识库和凭据访问继续使用 `tool.call@1`；复杂非确定逻辑使用 `agent.run@1`。第三方 runtime 是受信任的 Host 插件代码，声明 `deterministic: true` 后仍由部署者负责审计。
 
 ### 3.3 `ctx.workflowTemplates`
 
@@ -216,15 +216,15 @@ running after crash ----> needs_attention | ready(retry-safe)
 |---|---|---|
 | `core.start@1` | 验证并暴露 workflow inputs | 唯一 |
 | `core.end@1` | 组装 workflow outputs | 至少一个 |
-| `dsh.tool@1` | `ctx.tools.execute()` | 重新执行全部 DSH policy；默认崩溃后不自动重试 |
-| `dsh.agent@1` | `ctx.subagents` | parent 归属明确；输出可选 JSON Schema |
+| `tool.call@1` | `ctx.tools.execute()` | 重新执行全部 DSH policy；默认崩溃后不自动重试 |
+| `agent.run@1` | `ctx.subagents` | parent 归属明确；输出可选 JSON Schema |
 | `core.condition@1` | 受限表达式/JSON Logic | 禁止 `eval` 和任意 JS |
 | `core.script@1` | `ctx.workflowScripts` | 纯 JSON 变换；精确 runtime 版本；有 source/operation 上限 |
 | `core.foreach@1` | 显式容器 frame | 有界 item 与并发数，不允许普通回边 |
-| `core.subworkflow@1` | 调用固定发布 revision | 发布时检查依赖环和最大深度 |
-| `dsh.human-approval@1` | interaction/approval + checkpoint | resume token 一次性、带 authority |
+| `workflow.call@1` | 调用固定发布 revision | 发布时检查依赖环和最大深度 |
+| `human.approval@1` | interaction/approval + checkpoint | resume token 一次性、带 authority |
 
-HTTP、知识库、数据库不先做专属节点；它们通过 `dsh.tool@1` 使用 DSH 插件注册的工具。确定性数据处理通过 `core.script@1`，但它不能成为绕过 Tool policy 的 I/O 后门。只有当某能力需要独有的 Canvas、流式或 checkpoint 语义时，再增加专属节点。
+HTTP、知识库、数据库不先做专属节点；它们通过 `tool.call@1` 使用 DSH 插件注册的工具。确定性数据处理通过 `core.script@1`，但它不能成为绕过 Tool policy 的 I/O 后门。只有当某能力需要独有的 Canvas、流式或 checkpoint 语义时，再增加专属节点。
 
 ## 6. Agent 与 Skill 生成闭环
 

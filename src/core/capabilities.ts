@@ -10,7 +10,7 @@ const CAPABILITY_PATTERN = /^[a-z][a-zA-Z0-9._:/-]*$/
 /**
  * Host-owned service bindings for custom workflow nodes.
  *
- * Business integrations should normally be DSH Tools. This registry exists for
+ * Business integrations should normally be Host Tools. This registry exists for
  * custom nodes that need workflow-specific lifecycle services such as durable
  * progress, streaming, compensation, or another Host extension.
  */

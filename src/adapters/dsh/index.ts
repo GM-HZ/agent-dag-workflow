@@ -52,3 +52,5 @@ export {
 export { recoverPersistedWorkflowRuns } from './services.js'
 export { registerWorkflowAuthoring, WorkflowAuthoringService, workflowToolDefinitions } from './authoring.js'
 export type * from './types.js'
+export { createDshToolGateway } from './tool-gateway.js'
+export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './tool-gateway.js'

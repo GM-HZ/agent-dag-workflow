@@ -208,8 +208,8 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
     for (const [name, binding] of Object.entries(template.spec.outputs)) {
       if (!('output' in binding)) {
         diagnostics.push(diagnostic('WORKFLOW_OUTPUT_BINDING_INVALID', 'workflow output must reference an end node output', undefined, ['spec', 'outputs', name]))
-      } else if (definitions.get(binding.output.node)?.role !== 'end') {
-        diagnostics.push(diagnostic('WORKFLOW_OUTPUT_SOURCE_NOT_END', `workflow output must reference an end node: ${binding.output.node}`, undefined, ['spec', 'outputs', name]))
+      } else if (definitions.get(binding.output.nodeId)?.role !== 'end') {
+        diagnostics.push(diagnostic('WORKFLOW_OUTPUT_SOURCE_NOT_END', `workflow output must reference an end node: ${binding.output.nodeId}`, undefined, ['spec', 'outputs', name]))
       }
     }
   }
@@ -278,12 +278,6 @@ function collectNodeRequirements(
     ...definition.capabilities.map(uses => ({ kind: 'capability', uses })),
     ...(definition.dependencies?.(node.with) ?? []),
   ]
-  const secrets = Object.values(node.inputs)
-    .filter((binding): binding is Extract<WorkflowBinding, { readonly secret: unknown }> => 'secret' in binding)
-    .map(binding => binding.secret.ref)
-  if (secrets.length > 0) requested.push({ kind: 'capability', uses: 'workflow.secrets.resolve' })
-  for (const ref of secrets) requested.push({ kind: 'secret', uses: ref })
-
   const unique = new Map<string, WorkflowRequirement>()
   for (const requirement of requested) {
     if (!/^[a-z][a-z0-9.-]*$/u.test(requirement.kind) || requirement.uses.length === 0 || requirement.uses.length > 256) {
@@ -338,19 +332,17 @@ function validateBindings(
       }
       continue
     }
-    if ('secret' in binding) continue
-
     let sourceSchema: JsonSchema | undefined
     if ('input' in binding) {
-      const source = propertySchema(workflowInputSchema, binding.input)
-      if (source.forbidden) {
-        diagnostics.push(diagnostic('UNKNOWN_WORKFLOW_INPUT', `binding references unknown workflow input: ${binding.input}`, consumerNodeId, [...basePath, name, 'input']))
+      const resolved = schemaAtPath(workflowInputSchema, binding.input.path)
+      if (resolved.error !== undefined) {
+        diagnostics.push(diagnostic('UNKNOWN_WORKFLOW_INPUT', resolved.error, consumerNodeId, [...basePath, name, 'input', 'path']))
       }
-      sourceSchema = source.schema
+      sourceSchema = resolved.schema
     } else {
-      const sourceId = binding.output.node
+      const sourceId = binding.output.nodeId
       if (!nodes.has(sourceId)) {
-        diagnostics.push(diagnostic('UNKNOWN_BINDING_NODE', `binding references unknown node: ${sourceId}`, consumerNodeId, [...basePath, name, 'output', 'node']))
+        diagnostics.push(diagnostic('UNKNOWN_BINDING_NODE', `binding references unknown node: ${sourceId}`, consumerNodeId, [...basePath, name, 'output', 'nodeId']))
         continue
       }
       if (consumerNodeId !== undefined && !ancestors?.get(consumerNodeId)?.has(sourceId)) {

@@ -190,7 +190,7 @@ function isDraft(value: unknown): value is CanvasWorkflowDraft {
 
 export function starterTemplate(seed = Date.now()): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
     metadata: { id: `hello-workflow-${seed}`, name: '第一个工作流', description: '接收一段文本，并通过可审计 DAG 原样输出。' },
     spec: {
       inputSchema: {
@@ -203,10 +203,10 @@ export function starterTemplate(seed = Date.now()): CanvasWorkflowTemplate {
       },
       nodes: [
         { id: 'start', uses: 'core.start@1', title: '开始', with: {}, inputs: {} },
-        { id: 'end', uses: 'core.end@1', title: '输出结果', with: {}, inputs: { message: { input: 'message' } } },
+        { id: 'end', uses: 'core.end@1', title: '输出结果', with: {}, inputs: { message: { input: { path: ['message'] } } } },
       ],
       edges: [{ id: 'start-end', source: 'start', target: 'end' }],
-      outputs: { message: { output: { node: 'end', path: ['message'] } } },
+      outputs: { message: { output: { nodeId: 'end', path: ['message'] } } },
     },
     layout: { canvas: { positions: { start: { x: 180, y: 220 }, end: { x: 540, y: 220 } } } },
   }
@@ -222,9 +222,9 @@ const builtInNodeCopy: Record<string, readonly [string, string]> = {
   'core.condition@1': ['条件分支', '使用固定且无 eval 的运算符选择 true 或 false 路径。'],
   'core.foreach@1': ['批量处理', '对每项运行固定发布修订，并持久化每个处理进度。'],
   'core.script@1': ['确定性 JSON 变换', '通过受限脚本运行时变换 JSON；外部调用仍走 DSH Tool。'],
-  'core.subworkflow@1': ['子工作流', '以可恢复子调用运行一个固定的已发布修订。'],
-  'dsh.agent@1': ['Agent 执行', '在当前 DSH Agent 权限范围内运行一个前台子 Agent。'],
-  'dsh.human-approval@1': ['人工审批', '通过 DSH 审批边界请求一次默认拒绝的明确决定。'],
+  'workflow.call@1': ['子工作流', '以可恢复子调用运行一个固定的已发布修订。'],
+  'agent.run@1': ['Agent 执行', '在当前 DSH Agent 权限范围内运行一个前台子 Agent。'],
+  'human.approval@1': ['人工审批', '通过 DSH 审批边界请求一次默认拒绝的明确决定。'],
 }
 
 export function definitionDisplayTitle(definition: CanvasNodeDefinition): string {
@@ -246,7 +246,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isTemplate(value: unknown): value is CanvasWorkflowTemplate {
-  return isRecord(value) && value.apiVersion === 'dsh.workflow/v1alpha1' && value.kind === 'WorkflowTemplate'
+  return isRecord(value) && value.apiVersion === 'workflow.gm-hz.dev/v1alpha1' && value.kind === 'WorkflowTemplate'
     && isRecord(value.metadata) && typeof value.metadata.id === 'string' && typeof value.metadata.name === 'string'
     && isRecord(value.spec) && Array.isArray(value.spec.nodes) && Array.isArray(value.spec.edges)
 }

@@ -1,30 +1,32 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  createDshToolGateway,
   DagWorkflowEngine,
+  parseWorkflowTemplate,
   registerCoreNodes,
   WorkflowCapabilityRegistry,
   WorkflowNodeRegistry,
-  type DshToolExecutionInput,
   type WorkflowToolRequest,
   type WorkflowTemplate,
 } from '../../src/core/index.js'
+import { createDshToolGateway, type DshToolExecutionInput } from '../../src/adapters/dsh/index.js'
 import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
+
+const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
 
 describe('DAG workflow engine', () => {
   it('executes tool nodes only through the injected gateway', async () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
-    const execute = vi.fn(async (request: WorkflowToolRequest) => ({ echo: request.input.message ?? null }))
+    const execute = vi.fn(async (request: WorkflowToolRequest) => ({ echo: request.inputs.message ?? null }))
     const engine = new DagWorkflowEngine(registry, { tools: { execute } })
 
-    const result = await engine.start({ template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
+    const result = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
     expect(result.outputs).toEqual({ answer: 'hello' })
     expect(execute).toHaveBeenCalledOnce()
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ name: 'echo', nodeId: 'call', input: { message: 'hello' } }))
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ uses: 'echo', nodeId: 'call', inputs: { message: 'hello' }, authority: testExecution.authority }))
     expect(result.events.map(event => event.seq)).toEqual(result.events.map((_, index) => index + 1))
   })
 
@@ -35,13 +37,13 @@ describe('DAG workflow engine', () => {
     const engine = new DagWorkflowEngine(registry, {
       tools: {
         async execute(request) {
-          calls.push(request.name)
-          return request.input.value ?? null
+          calls.push(request.uses)
+          return request.inputs.value ?? null
         },
       },
     })
 
-    const result = await engine.start({ template: branchingWorkflowTemplate(), inputs: { enabled: true } }).result
+    const result = await engine.start({ execution: testExecution, template: branchingWorkflowTemplate(), inputs: { enabled: true } }).result
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
@@ -60,7 +62,7 @@ describe('DAG workflow engine', () => {
       tools: { async execute() { throw new Error('policy denied') } },
     })
 
-    const result = await engine.start({ template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
+    const result = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } }).result
 
     expect(result).toMatchObject({ status: 'failed', error: 'policy denied' })
     expect(result.nodeStates.call).toBe('failed')
@@ -72,51 +74,40 @@ describe('DAG workflow engine', () => {
     const gateway = createDshToolGateway(execute)
     const signal = new AbortController().signal
 
-    await expect(gateway.execute({ runId: 'run-1', nodeId: 'node-1', name: 'search', input: { q: 'dsh' }, signal }))
+    const authority = { session: 'test' }
+    await expect(gateway.execute({
+      runId: 'run-1', nodeId: 'node-1', invocationId: 'run-1:node-1:1', uses: 'search',
+      inputs: { q: 'dsh' }, config: { uses: 'search' }, authority, signal,
+    }))
       .resolves.toEqual({ received: { q: 'dsh' } })
-    expect(execute).toHaveBeenCalledWith({ callId: 'run-1:node-1', name: 'search', arguments: { q: 'dsh' }, signal })
+    expect(execute).toHaveBeenCalledWith({ callId: 'run-1:node-1:1', name: 'search', arguments: { q: 'dsh' }, agent: authority, signal })
   })
 
-  it('keeps resolved secrets transient and rejects node outputs that leak them', async () => {
-    const registry = new WorkflowNodeRegistry()
-    registerCoreNodes(registry)
+  it('rejects generic secret bindings before compilation', () => {
     const base = toolWorkflowTemplate()
     const template = {
       ...base,
       spec: {
         ...base.spec,
-        requires: [
-          ...(base.spec.requires ?? []),
-          { kind: 'capability', uses: 'workflow.secrets.resolve' },
-          { kind: 'secret', uses: 'credential:test' },
-        ],
         nodes: base.spec.nodes.map(node => node.id === 'call'
           ? { ...node, inputs: { message: { secret: { ref: 'credential:test' } } } }
           : node),
       },
-    } as WorkflowTemplate
-    const engine = new DagWorkflowEngine(registry, {
-      secrets: { async resolve() { return 'top-secret-value' } },
-      tools: { async execute(request) { return { echoed: request.input.message ?? null } } },
-    })
-
-    const result = await engine.start({ template, inputs: { message: 'unused' } }).result
-
-    expect(result).toMatchObject({ status: 'failed', error: 'node output contains a resolved secret value and cannot be persisted' })
-    expect(JSON.stringify(result)).not.toContain('top-secret-value')
+    }
+    expect(() => parseWorkflowTemplate(JSON.stringify(template))).toThrow(/must match exactly one schema in oneOf/)
   })
 
   it('executes deterministic script nodes as standardized JSON transforms', async () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const template: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1',
       kind: 'WorkflowTemplate',
       metadata: { id: 'script-transform', name: 'Script transform' },
       spec: {
         requires: [
           { kind: 'capability', uses: 'workflow.script.execute' },
-          { kind: 'script-runtime', uses: 'dsh.expr@1' },
+          { kind: 'script-runtime', uses: 'json.expr@1' },
         ],
         inputSchema: {
           type: 'object', additionalProperties: false, required: ['name', 'scores'],
@@ -131,15 +122,15 @@ describe('DAG workflow engine', () => {
           {
             id: 'transform', uses: 'core.script@1',
             with: {
-              language: 'dsh.expr@1',
+              language: 'json.expr@1',
               source: '{ message: format("Hello {{ name }}", input), total: sum(input.scores) }',
             },
-            inputs: { name: { input: 'name' }, scores: { input: 'scores' } },
+            inputs: { name: { input: { path: ['name'] } }, scores: { input: { path: ['scores'] } } },
           },
           {
             id: 'end', uses: 'core.end@1', with: {}, inputs: {
-              message: { output: { node: 'transform', path: ['message'] } },
-              total: { output: { node: 'transform', path: ['total'] } },
+              message: { output: { nodeId: 'transform', path: ['message'] } },
+              total: { output: { nodeId: 'transform', path: ['total'] } },
             },
           },
         ],
@@ -148,13 +139,13 @@ describe('DAG workflow engine', () => {
           { id: 'transform-end', source: 'transform', target: 'end' },
         ],
         outputs: {
-          message: { output: { node: 'end', path: ['message'] } },
-          total: { output: { node: 'end', path: ['total'] } },
+          message: { output: { nodeId: 'end', path: ['message'] } },
+          total: { output: { nodeId: 'end', path: ['total'] } },
         },
       },
     }
 
-    const result = await new DagWorkflowEngine(registry).start({ template, inputs: { name: 'Lin', scores: [2, 3, 5] } }).result
+    const result = await new DagWorkflowEngine(registry).start({ execution: testExecution, template, inputs: { name: 'Lin', scores: [2, 3, 5] } }).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { message: 'Hello Lin', total: 10 } })
     expect(result.nodeStates.transform).toBe('succeeded')
@@ -187,7 +178,7 @@ describe('DAG workflow engine', () => {
     }
     const engine = new DagWorkflowEngine(registry, { tools: { async execute() { return { echo: 42 } } } })
 
-    const result = await engine.start({ template, inputs: { message: 'hello' } }).result
+    const result = await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } }).result
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('must be string') })
     expect(result.nodeStates.call).toBe('failed')
@@ -205,7 +196,7 @@ describe('DAG workflow engine', () => {
       async execute(context) { return { outputs: { isolated: context.services.tools === undefined } } },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
       metadata: { id: 'service-isolation', name: 'Service isolation' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -213,18 +204,18 @@ describe('DAG workflow engine', () => {
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
           { id: 'isolated', uses: 'test.isolated@1', with: {}, inputs: {} },
-          { id: 'end', uses: 'core.end@1', with: {}, inputs: { isolated: { output: { node: 'isolated', path: ['isolated'] } } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { isolated: { output: { nodeId: 'isolated', path: ['isolated'] } } } },
         ],
         edges: [
           { id: 'start-isolated', source: 'start', target: 'isolated' },
           { id: 'isolated-end', source: 'isolated', target: 'end' },
         ],
-        outputs: { isolated: { output: { node: 'end', path: ['isolated'] } } },
+        outputs: { isolated: { output: { nodeId: 'end', path: ['isolated'] } } },
       },
     }
     const engine = new DagWorkflowEngine(registry, { tools: { async execute() { return null } } })
 
-    await expect(engine.start({ template, inputs: {} }).result).resolves.toMatchObject({
+    await expect(engine.start({ execution: testExecution, template, inputs: {} }).result).resolves.toMatchObject({
       status: 'completed', outputs: { isolated: true },
     })
   })
@@ -259,7 +250,7 @@ describe('DAG workflow engine', () => {
       },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
       metadata: { id: 'custom-node', name: 'Custom node' },
       spec: {
         requires: [
@@ -274,13 +265,13 @@ describe('DAG workflow engine', () => {
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
           { id: 'job', uses: 'acme.durable-job@1', with: { queue: 'critical' }, inputs: { value: { literal: 'payload' } } },
-          { id: 'end', uses: 'core.end@1', with: {}, inputs: { result: { output: { node: 'job', path: ['result'] } } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { result: { output: { nodeId: 'job', path: ['result'] } } } },
         ],
         edges: [
           { id: 'start-job', source: 'start', target: 'job' },
           { id: 'job-end', source: 'job', target: 'end' },
         ],
-        outputs: { result: { output: { node: 'end', path: ['result'] } } },
+        outputs: { result: { output: { nodeId: 'end', path: ['result'] } } },
       },
     }
     const capabilities = new WorkflowCapabilityRegistry()
@@ -288,7 +279,7 @@ describe('DAG workflow engine', () => {
       async run(queue: string, value: string) { return `${queue}:${value}` },
     })
 
-    await expect(new DagWorkflowEngine(registry, { capabilities }).start({ template, inputs: {} }).result)
+    await expect(new DagWorkflowEngine(registry, { capabilities }).start({ execution: testExecution, template, inputs: {} }).result)
       .resolves.toMatchObject({ status: 'completed', outputs: { result: 'critical:payload' } })
   })
 
@@ -309,7 +300,7 @@ describe('DAG workflow engine', () => {
       tools: { async execute() { return { echo: 'this output is intentionally too large' } } },
     })
 
-    const result = await engine.start({ template, inputs: { message: 'hello' } }).result
+    const result = await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } }).result
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('limit is 16') })
     expect(result.nodeStates.call).toBe('failed')

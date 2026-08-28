@@ -1,9 +1,7 @@
 export { compileWorkflow, compileWorkflowOrThrow } from './compiler.js'
 export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileResult } from './compiler.js'
 export { createScopedWorkflowCapabilityResolver, WorkflowCapabilityRegistry } from './capabilities.js'
-export { createDshToolGateway } from './dsh-tool-adapter.js'
-export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './dsh-tool-adapter.js'
-export { validateDshObjectJsonSchema } from './dsh-schema.js'
+export { validateStructuredObjectSchema } from './structured-output-schema.js'
 export { DagWorkflowEngine } from './engine.js'
 export { WorkflowCompileError, WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 export {
@@ -33,7 +31,7 @@ export { nodeDefinitionKey, WorkflowNodeRegistry } from './registry.js'
 export type { WorkflowNodeDisposer } from './registry.js'
 export {
   createDefaultWorkflowScriptRuntimeRegistry,
-  dshExpressionRuntime,
+  jsonExpressionRuntime,
   scriptRuntimeKey,
   WorkflowScriptRuntimeRegistry,
 } from './script-runtime.js'

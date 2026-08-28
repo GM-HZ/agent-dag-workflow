@@ -65,6 +65,8 @@ describe('workflow script runtime registry', () => {
     await expect(definition.execute({
       runId: 'run-1',
       nodeId: 'rules',
+      invocationId: 'run-1:rules:1',
+      authority: { id: 'test-user' },
       config: { language: 'acme.rules@1', source: 'accept' },
       inputs: { orderId: 'order-1' },
       workflowInputs: {},

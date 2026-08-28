@@ -1,12 +1,12 @@
-import { WorkflowExecutionError } from './errors.js'
-import type { JsonObject, JsonValue, WorkflowToolGateway, WorkflowToolRequest } from './types.js'
+import { WorkflowExecutionError } from '../../core/errors.js'
+import type { JsonObject, JsonValue, WorkflowToolGateway, WorkflowToolRequest } from '../../core/types.js'
 
 export interface DshToolExecutionInput {
   readonly callId: string
   readonly name: string
   readonly arguments: JsonObject
   readonly signal: AbortSignal
-  readonly owner?: unknown
+  readonly agent: unknown
 }
 
 export type DshToolExecutionResult =
@@ -24,11 +24,11 @@ export function createDshToolGateway(execute: DshToolExecute): WorkflowToolGatew
   return {
     async execute(request: WorkflowToolRequest): Promise<JsonValue> {
       const result = await execute({
-        callId: `${request.runId}:${request.nodeId}`,
-        name: request.name,
-        arguments: request.input,
+        callId: request.invocationId,
+        name: request.uses,
+        arguments: request.inputs,
         signal: request.signal,
-        ...(request.owner === undefined ? {} : { owner: request.owner }),
+        agent: request.authority,
       })
       if (result.isError) {
         throw new WorkflowExecutionError('DSH_TOOL_FAILED', renderToolError(result.error), { nodeId: request.nodeId })

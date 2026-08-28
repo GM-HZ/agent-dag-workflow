@@ -13,6 +13,8 @@ import {
 } from '../../src/core/index.js'
 import { toolWorkflowTemplate } from './fixtures.js'
 
+const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
+
 class OneShotFailingStore extends InMemoryWorkflowRunStore {
   private armed = true
 
@@ -39,19 +41,19 @@ function tools(onCall?: () => void) {
   return {
     async execute(request: WorkflowToolRequest): Promise<JsonValue> {
       onCall?.()
-      return { echo: request.input.message ?? null }
+      return { echo: request.inputs.message ?? null }
     },
   }
 }
 
 function approvalWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'approval-flow', name: 'Approval flow' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'dsh.approval.request' },
+        { kind: 'capability', uses: 'gateway.approval.request' },
         { kind: 'approval-action', uses: 'publish' },
       ],
       inputSchema: { type: 'object', additionalProperties: false },
@@ -65,7 +67,7 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
         {
           id: 'approval',
-          uses: 'dsh.human-approval@1',
+          uses: 'human.approval@1',
           with: { action: 'publish', reason: 'Publish this artifact?' },
           inputs: { artifact: { literal: 'report' } },
         },
@@ -73,7 +75,7 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
           id: 'end',
           uses: 'core.end@1',
           with: {},
-          inputs: { approved: { output: { node: 'approval', path: ['approved'] } } },
+          inputs: { approved: { output: { nodeId: 'approval', path: ['approved'] } } },
         },
       ],
       edges: [
@@ -81,20 +83,19 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
         { id: 'approval-end-yes', source: 'approval', target: 'end', sourcePort: 'approved' },
         { id: 'approval-end-no', source: 'approval', target: 'end', sourcePort: 'rejected' },
       ],
-      outputs: { approved: { output: { node: 'end', path: ['approved'] } } },
+      outputs: { approved: { output: { nodeId: 'end', path: ['approved'] } } },
     },
   }
 }
 
 function foreachWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-flow', name: 'For each flow' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
-        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'capability', uses: 'gateway.workflow.call' },
         { kind: 'workflow', uses: 'item-worker@1' },
       ],
       inputSchema: {
@@ -115,28 +116,27 @@ function foreachWorkflowTemplate(): WorkflowTemplate {
           id: 'map',
           uses: 'core.foreach@1',
           with: { templateId: 'item-worker', revision: 1, maxConcurrency: 1, maxItems: 4 },
-          inputs: { items: { input: 'items' }, shared: { literal: { topic: 'test' } } },
+          inputs: { items: { input: { path: ['items'] } }, shared: { literal: { topic: 'test' } } },
         },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { node: 'map', path: ['results'] } } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { results: { output: { nodeId: 'map', path: ['results'] } } } },
       ],
       edges: [
         { id: 'start-map', source: 'start', target: 'map' },
         { id: 'map-end', source: 'map', target: 'end' },
       ],
-      outputs: { results: { output: { node: 'end', path: ['results'] } } },
+      outputs: { results: { output: { nodeId: 'end', path: ['results'] } } },
     },
   }
 }
 
 function subworkflowParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'subworkflow-parent', name: 'Subworkflow parent' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'workflowTemplates.getPublished' },
-        { kind: 'capability', uses: 'dagWorkflowEngine.invoke' },
+        { kind: 'capability', uses: 'gateway.workflow.call' },
         { kind: 'workflow', uses: 'child@1' },
       ],
       inputSchema: { type: 'object', additionalProperties: false },
@@ -148,14 +148,14 @@ function subworkflowParentTemplate(): WorkflowTemplate {
       },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-        { id: 'child', uses: 'core.subworkflow@1', with: { templateId: 'child', revision: 1 }, inputs: {} },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'child', path: ['outputs', 'value'] } } } },
+        { id: 'child', uses: 'workflow.call@1', with: { templateId: 'child', revision: 1 }, inputs: {} },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'child', path: ['outputs', 'value'] } } } },
       ],
       edges: [
         { id: 'start-child', source: 'start', target: 'child' },
         { id: 'child-end', source: 'child', target: 'end' },
       ],
-      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+      outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
     },
   }
 }
@@ -164,7 +164,7 @@ describe('workflow run store and recovery', () => {
   it('journals contiguous events and a terminal checkpoint', async () => {
     const store = new InMemoryWorkflowRunStore()
     const engine = new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store, now: () => 100 })
-    const run = engine.start({ template: toolWorkflowTemplate(), inputs: { message: 'persisted' } })
+    const run = engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'persisted' } })
     const result = await run.result
     const record = store.loadRun(run.id)
 
@@ -180,14 +180,14 @@ describe('workflow run store and recovery', () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'node.completed' && event.nodeId === 'start'))
     let toolCalls = 0
     const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store })
-    const first = firstEngine.start({ template: toolWorkflowTemplate(), inputs: { message: 'resume-safe' } })
+    const first = firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'resume-safe' } })
     const interrupted = await first.result
 
     expect(interrupted).toMatchObject({ status: 'failed', error: 'simulated process crash before checkpoint commit' })
     expect(store.loadRun(first.id)?.checkpoint.nodeStates.start).toBe('running')
     expect(toolCalls).toBe(0)
 
-    const resumed = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store }).resume({ runId: first.id })
+    const resumed = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store }).resume({ execution: testExecution, runId: first.id })
     const result = await resumed.result
 
     expect(result.status).toBe('completed')
@@ -199,18 +199,18 @@ describe('workflow run store and recovery', () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'node.completed' && event.nodeId === 'call'))
     let sideEffects = 0
     const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
-    const first = firstEngine.start({ template: toolWorkflowTemplate(), inputs: { message: 'side-effect' } })
+    const first = firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'side-effect' } })
     expect((await first.result).status).toBe('failed')
     expect(sideEffects).toBe(1)
     expect(store.loadRun(first.id)?.checkpoint.nodeStates.call).toBe('running')
 
     const recoveryEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
-    const paused = await recoveryEngine.resume({ runId: first.id }).result
+    const paused = await recoveryEngine.resume({ execution: testExecution, runId: first.id }).result
     expect(paused).toMatchObject({ status: 'paused', needsAttention: ['call'] })
     expect(sideEffects).toBe(1)
     expect(store.loadRun(first.id)?.checkpoint.nodeStates.call).toBe('needs_attention')
 
-    const retried = await recoveryEngine.resume({
+    const retried = await recoveryEngine.resume({ execution: testExecution,
       runId: first.id,
       unknownNodeResolutions: { call: 'retry' },
     }).result
@@ -235,7 +235,7 @@ describe('workflow run store and recovery', () => {
       { tools: tools(() => { toolCalls++ }) },
       { runStore: store, now: () => now },
     )
-    const first = firstEngine.start({ template, inputs: { message: 'expired' } })
+    const first = firstEngine.start({ execution: testExecution, template, inputs: { message: 'expired' } })
     expect((await first.result).status).toBe('failed')
 
     now = 100
@@ -243,7 +243,7 @@ describe('workflow run store and recovery', () => {
       registry(),
       { tools: tools(() => { toolCalls++ }) },
       { runStore: store, now: () => now },
-    ).resume({ runId: first.id }).result
+    ).resume({ execution: testExecution, runId: first.id }).result
 
     expect(result).toMatchObject({ status: 'failed', error: 'workflow duration exceeded' })
     expect(toolCalls).toBe(0)
@@ -265,7 +265,7 @@ describe('workflow run store and recovery', () => {
       },
     }, { runStore: store })
 
-    const result = await engine.start({ template: approvalWorkflowTemplate(), inputs: {} }).result
+    const result = await engine.start({ execution: testExecution, template: approvalWorkflowTemplate(), inputs: {} }).result
 
     expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
     expect(durableStatusAtRequest).toBe('waiting')
@@ -277,6 +277,7 @@ describe('workflow run store and recovery', () => {
     let toolCalls = 0
     const engine = new DagWorkflowEngine(registry(), { tools: tools(() => { toolCalls++ }) }, { runStore: store })
     const request = {
+      execution: testExecution,
       invocationId: 'parent:node:item:0',
       depth: 1,
       subworkflowDepthLimit: 8,
@@ -313,7 +314,7 @@ describe('workflow run store and recovery', () => {
       },
     }
     const firstEngine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
-    const first = firstEngine.start({ template: foreachWorkflowTemplate(), inputs: { items: ['a', 'b'] } })
+    const first = firstEngine.start({ execution: testExecution, template: foreachWorkflowTemplate(), inputs: { items: ['a', 'b'] } })
 
     expect(await first.result).toMatchObject({ status: 'failed', error: 'simulated process crash before checkpoint commit' })
     expect(store.loadRun(first.id)?.checkpoint.nodeStates.map).toBe('running')
@@ -322,7 +323,7 @@ describe('workflow run store and recovery', () => {
       items: [{ index: 0, status: 'running' }, { index: 1, status: 'pending' }],
     })
 
-    const result = await new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store }).resume({ runId: first.id }).result
+    const result = await new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store }).resume({ execution: testExecution, runId: first.id }).result
 
     expect(result).toMatchObject({
       status: 'completed',
@@ -346,14 +347,14 @@ describe('workflow run store and recovery', () => {
       },
     }
     const engine = new DagWorkflowEngine(registry(), { subworkflows }, { runStore: store })
-    const run = engine.start({ template: subworkflowParentTemplate(), inputs: {} })
+    const run = engine.start({ execution: testExecution, template: subworkflowParentTemplate(), inputs: {} })
     const paused = await run.result
 
     expect(paused).toMatchObject({ status: 'paused', needsAttention: ['child'] })
     expect(store.loadRun(run.id)?.checkpoint.nodeStates.child).toBe('needs_attention')
 
     childResolved = true
-    const result = await engine.resume({ runId: run.id, unknownNodeResolutions: { child: 'retry' } }).result
+    const result = await engine.resume({ execution: testExecution, runId: run.id, unknownNodeResolutions: { child: 'retry' } }).result
     expect(result).toMatchObject({ status: 'completed', outputs: { value: 'resolved' } })
   })
 })

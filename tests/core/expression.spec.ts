@@ -11,7 +11,7 @@ function run(source: string, input: Record<string, import('../../src/core/index.
   return evaluateWorkflowExpression(source, input, { signal, maxOperations: 10000 })
 }
 
-describe('dsh.expr@1', () => {
+describe('json.expr@1', () => {
   it('builds typed object outputs from input paths and operators', () => {
     expect(run(`{
       fullName: upper(input.first + " " + input.last),

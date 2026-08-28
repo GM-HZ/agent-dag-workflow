@@ -98,7 +98,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   async nodes(sessionId: string): Promise<readonly CanvasNodeDefinition[]> {
     const principal = await this.guard(sessionId, 'nodes:list')
     const nodes = this.host.workflowNodes.list()
-      .filter(node => `${node.type}@${node.version}` !== 'dsh.tool@1')
+      .filter(node => `${node.type}@${node.version}` !== 'tool.call@1')
       .map(node => ({
       catalogId: `${node.type}@${node.version}`,
       kind: 'node' as const,
@@ -126,7 +126,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       .map(tool => ({
         catalogId: `tool:${tool.name}`,
         kind: 'tool' as const,
-        uses: 'dsh.tool@1',
+        uses: 'tool.call@1',
         toolName: tool.name,
         title: tool.name,
         description: tool.description,
@@ -134,20 +134,20 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
         configSchema: snapshotJsonObject({
           type: 'object',
           additionalProperties: false,
-          required: ['name'],
-          properties: { name: { type: 'string', enum: [tool.name] } },
+          required: ['uses'],
+          properties: { uses: { type: 'string', enum: [tool.name] } },
         }),
-        defaultConfig: snapshotJsonObject({ name: tool.name }),
+        defaultConfig: snapshotJsonObject({ uses: tool.name }),
         inputSchema: snapshotJsonObject(tool.parameters),
         outputSchema: snapshotJsonObject({
           type: 'object', additionalProperties: false, required: ['result'], properties: { result: {} },
         }),
         outputPorts: ['success'],
         requiredOutputPorts: [],
-        capabilities: ['dsh.tools.execute'],
+        capabilities: ['gateway.tool.execute'],
         dependencyKinds: ['tool'],
         defaultRequirements: [
-          { kind: 'capability', uses: 'dsh.tools.execute' },
+          { kind: 'capability', uses: 'gateway.tool.execute' },
           { kind: 'tool', uses: tool.name },
         ],
         retry: 'never' as const,

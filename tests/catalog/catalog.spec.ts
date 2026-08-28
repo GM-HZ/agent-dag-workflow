@@ -9,7 +9,7 @@ import {
 
 function template(overrides: { name?: string; layoutX?: number; endUses?: string } = {}): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'catalog-test', name: overrides.name ?? 'Catalog test' },
     spec: {
@@ -31,19 +31,18 @@ function dependencyTemplate(id: string, dependency?: { readonly id: string; read
     ? []
     : [{
         id: 'child',
-        uses: 'core.subworkflow@1',
+        uses: 'workflow.call@1',
         with: { templateId: dependency.id, revision: dependency.revision },
         inputs: {},
       }]
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id, name: id },
     spec: {
       ...(dependency === undefined ? {} : {
         requires: [
-          { kind: 'capability' as const, uses: 'workflowTemplates.getPublished' },
-          { kind: 'capability' as const, uses: 'dagWorkflowEngine.invoke' },
+          { kind: 'capability' as const, uses: 'gateway.workflow.call' },
           { kind: 'workflow' as const, uses: `${dependency.id}@${dependency.revision}` },
         ],
       }),

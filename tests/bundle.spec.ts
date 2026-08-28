@@ -64,7 +64,7 @@ async function host(): Promise<Context> {
 
 function template(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'bundle-smoke', name: 'Bundle smoke' },
     spec: {
@@ -72,10 +72,10 @@ function template(): WorkflowTemplate {
       outputSchema: { type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'string' } } },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { input: 'value' } } },
+        { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { input: { path: ['value'] } } } },
       ],
       edges: [{ id: 'start-end', source: 'start', target: 'end' }],
-      outputs: { value: { output: { node: 'end', path: ['value'] } } },
+      outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
     },
   }
 }

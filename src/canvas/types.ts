@@ -4,9 +4,8 @@ export interface CanvasJsonObject { [key: string]: CanvasJsonValue }
 
 export type CanvasWorkflowBinding =
   | { readonly literal: CanvasJsonValue }
-  | { readonly input: string }
-  | { readonly output: { readonly node: string; readonly path: readonly (string | number)[] } }
-  | { readonly secret: { readonly ref: string } }
+  | { readonly input: { readonly path: readonly (string | number)[] } }
+  | { readonly output: { readonly nodeId: string; readonly path: readonly (string | number)[] } }
 
 export interface CanvasWorkflowNode {
   readonly id: string
@@ -26,7 +25,7 @@ export interface CanvasWorkflowEdge {
 }
 
 export interface CanvasWorkflowTemplate {
-  readonly apiVersion: 'dsh.workflow/v1alpha1'
+  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
   readonly kind: 'WorkflowTemplate'
   readonly metadata: { readonly id: string; readonly name: string; readonly description?: string }
   readonly spec: {
@@ -96,7 +95,7 @@ export interface WorkflowCanvasConfig {
 }
 
 export interface CanvasNodeDefinition {
-  /** Unique palette identity; Tool entries share dsh.tool@1 but have distinct catalog ids. */
+  /** Unique palette identity; Tool entries share tool.call@1 but have distinct catalog ids. */
   readonly catalogId: string
   readonly kind: 'tool' | 'node'
   readonly uses: string

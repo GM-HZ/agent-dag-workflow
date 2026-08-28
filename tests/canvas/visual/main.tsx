@@ -5,22 +5,22 @@ import type { CanvasNodeDefinition, CanvasWorkflowTemplate } from '../../../src/
 
 const definitions: CanvasNodeDefinition[] = [
   node('core.start@1', 'Start', 'start', ['success']),
-  node('dsh.agent@1', 'Agent delegate', 'regular', ['success']),
+  node('agent.run@1', 'Agent delegate', 'regular', ['success']),
   node('core.condition@1', 'Quality gate', 'regular', ['true', 'false']),
-  node('dsh.human-approval@1', 'Human approval', 'regular', ['approved', 'rejected']),
+  node('human.approval@1', 'Human approval', 'regular', ['approved', 'rejected']),
   node('core.end@1', 'End', 'end', []),
 ]
 
 const template: CanvasWorkflowTemplate = {
-  apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+  apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
   metadata: { id: 'research-signal', name: 'Research quality signal', description: 'Visual fixture' },
   spec: {
     inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, outputs: {},
     nodes: [
       { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-      { id: 'research', uses: 'dsh.agent@1', title: 'Collect evidence', with: { prompt: 'Collect evidence for the requested topic.' }, inputs: {} },
+      { id: 'research', uses: 'agent.run@1', title: 'Collect evidence', with: { prompt: 'Collect evidence for the requested topic.' }, inputs: {} },
       { id: 'quality', uses: 'core.condition@1', title: 'Evidence ≥ 3?', with: { op: 'gte' }, inputs: {} },
-      { id: 'approve', uses: 'dsh.human-approval@1', title: 'Editorial sign-off', with: { action: 'publish' }, inputs: {} },
+      { id: 'approve', uses: 'human.approval@1', title: 'Editorial sign-off', with: { action: 'publish' }, inputs: {} },
       { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
     ],
     edges: [

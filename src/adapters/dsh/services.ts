@@ -1,4 +1,5 @@
 import { Context, Service } from '@deepseek-ai/cordis'
+import { randomUUID } from 'node:crypto'
 import {
   DagWorkflowEngine as CoreDagWorkflowEngine,
   InMemoryWorkflowRunStore,
@@ -7,7 +8,7 @@ import {
   WorkflowPauseError,
   WorkflowNodeRegistry,
   WorkflowScriptRuntimeRegistry,
-  dshExpressionRuntime,
+  jsonExpressionRuntime,
   registerCoreNodes,
   snapshotJsonValue,
   stableJsonStringify,
@@ -82,7 +83,7 @@ export class WorkflowScriptRuntimeRegistryService extends Service {
 
   constructor(ctx: Context) {
     super(ctx, 'workflowScripts')
-    ctx.effect(() => this.registry.register(dshExpressionRuntime), 'dsh-dag-workflow: dsh.expr runtime')
+    ctx.effect(() => this.registry.register(jsonExpressionRuntime), 'agent-dag-workflow: json.expr runtime')
   }
 
   register(definition: WorkflowScriptRuntimeDefinition): WorkflowScriptRuntimeDisposer {
@@ -208,6 +209,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
 
   private readonly engine: CoreDagWorkflowEngine
   private readonly active = new Map<string, WorkflowRun>()
+  private readonly authorityRefs = new WeakMap<object, string>()
   constructor(ctx: Context, private readonly config: DshWorkflowPluginConfig = {}) {
     super(ctx)
     const runtime = ctx as DshRuntimeContext
@@ -215,33 +217,17 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     let engine: CoreDagWorkflowEngine
     engine = new CoreDagWorkflowEngine(ctx.workflowNodes.registry, {
       capabilities: ctx.workflowCapabilities.registry,
-      ...(config.resolveSecret === undefined ? {} : {
-        secrets: {
-          resolve: async (ref, context) => {
-            if (!isDshAgentLike(context.owner)) {
-              throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'secret bindings require the owning DSH Agent', { nodeId: context.nodeId })
-            }
-            return snapshotJsonValue(await config.resolveSecret!({
-              ref,
-              runId: context.runId,
-              nodeId: context.nodeId,
-              signal: context.signal,
-              parent: context.owner,
-            }))
-          },
-        },
-      }),
       tools: {
         execute: async request => {
-          if (!isDshAgentLike(request.owner)) {
-            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.tool requires the owning DSH Agent', { nodeId: request.nodeId })
+          if (!isDshAgentLike(request.authority)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'tool.call requires the owning DSH Agent', { nodeId: request.nodeId })
           }
           const result = await tools.execute({
-            callId: `${request.runId}:${request.nodeId}`,
-            name: request.name,
-            arguments: request.input,
+            callId: request.invocationId,
+            name: request.uses,
+            arguments: request.inputs,
             signal: request.signal,
-            agent: request.owner,
+            agent: request.authority,
           })
           if (result.isError) {
             throw new WorkflowExecutionError('DSH_TOOL_FAILED', renderError(result.error), { nodeId: request.nodeId })
@@ -251,20 +237,21 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       },
       agents: {
         execute: async request => {
-          if (!isDshAgentLike(request.owner)) {
-            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.agent requires the owning DSH Agent', { nodeId: request.nodeId })
+          if (!isDshAgentLike(request.authority)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'agent.run requires the owning DSH Agent', { nodeId: request.nodeId })
           }
           const target = selectCurrentAgentTarget(runtime.subagents, {
             structuredOutput: request.outputSchema !== undefined,
-            depthLimit: request.maxDepth !== undefined,
+            depthLimit: false,
           })
           const run = await runtime.subagents.start(target, {
+            label: request.nodeId,
             prompt: [{ type: 'text', text: request.prompt }],
-            parent: request.owner,
+            parent: request.authority,
             signal: request.signal,
-            ...(request.label === undefined ? {} : { label: request.label }),
             ...(request.outputSchema === undefined ? {} : { outputSchema: request.outputSchema }),
-            ...(request.maxDepth === undefined ? {} : { maxDepth: request.maxDepth }),
+            ...(request.tools === undefined ? {} : { tools: request.tools }),
+            ...(request.skills === undefined ? {} : { skills: request.skills }),
           })
           let execution: Awaited<typeof run.result> | undefined
           let executionError: unknown
@@ -301,16 +288,16 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       },
       approvals: {
         request: async request => {
-          if (!isDshAgentLike(request.owner)) {
-            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'dsh.human-approval requires the owning DSH Agent', { nodeId: request.nodeId })
+          if (!isDshAgentLike(request.authority)) {
+            throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'human.approval requires the owning DSH Agent', { nodeId: request.nodeId })
           }
           const details = Object.keys(request.details).length === 0
             ? ''
             : `\nWorkflow details: ${stableJsonStringify(request.details)}`
           return runtime.approval.request({
-            agent: request.owner,
+            agent: request.authority,
             toolName: request.action,
-            callId: request.token,
+            callId: request.invocationId,
             reason: `${request.reason}${details}`,
             signal: request.signal,
           })
@@ -318,23 +305,26 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       },
       subworkflows: {
         execute: async request => {
-          if (!isDshAgentLike(request.owner)) {
+          if (!isDshAgentLike(request.authority)) {
             throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'nested workflows require the owning DSH Agent', { nodeId: request.nodeId })
           }
           const published = ctx.workflowTemplates.getPublished(request.templateId, request.revision)
           if (published.revision !== request.revision) {
             throw new WorkflowExecutionError('SUBWORKFLOW_REVISION_MISMATCH', `expected ${request.templateId}@${request.revision}, received revision ${published.revision}`, { nodeId: request.nodeId })
           }
-          const observe = createRunObserver(ctx, request.owner)
-          const childOwnerRef = ownerReference(config, request.owner)
+          const observe = createRunObserver(ctx, request.authority)
+          const childAuthorityRef = this.authorityReference(request.authority)
           const child = engine.invoke({
             invocationId: request.invocationId,
             depth: request.depth,
             subworkflowDepthLimit: request.depthLimit,
             template: published.template,
             inputs: request.inputs,
-            owner: request.owner,
-            ...(childOwnerRef === undefined ? {} : { ownerRef: childOwnerRef }),
+            execution: {
+              authorityRef: childAuthorityRef,
+              authority: request.authority,
+              origin: { type: 'host', source: 'dsh-subworkflow', sourceRef: request.parentRunId },
+            },
             signal: request.signal,
             onEvent: observe,
           })
@@ -381,12 +371,11 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
-    const ownerRef = ownerReference(this.config, parent)
+    const authorityRef = this.authorityReference(parent)
     const run = this.engine.start({
       template: request.template,
       inputs: request.inputs,
-      owner: parent,
-      ...(ownerRef === undefined ? {} : { ownerRef }),
+      execution: { authorityRef, authority: parent, origin: { type: 'host', source: 'dsh' } },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       onEvent: observe,
     })
@@ -404,7 +393,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
     const run = this.engine.resume({
       runId: request.runId,
-      owner: parent,
+      execution: { authorityRef: record.execution.authorityRef, authority: parent, origin: { type: 'host', source: 'dsh-resume' } },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
       onEvent: observe,
@@ -412,6 +401,15 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     this.active.set(run.id, run)
     void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
     return run
+  }
+
+  private authorityReference(parent: DshAgentLike): string {
+    if (this.config.recovery !== undefined) return ownerReference(this.config, parent)
+    const existing = this.authorityRefs.get(parent)
+    if (existing !== undefined) return existing
+    const reference = `dsh-session:${randomUUID()}`
+    this.authorityRefs.set(parent, reference)
+    return reference
   }
 }
 
@@ -443,12 +441,8 @@ export async function recoverPersistedWorkflowRuns(
   for (const record of ctx.workflowRuns.listRecoverableRuns()) {
     signal.throwIfAborted()
     if (record.checkpoint.status !== 'running') continue
-    if (record.ownerRef === undefined) {
-      ctx.logger.warn(`dsh-dag-workflow: run ${record.runId} cannot auto-recover without an owner reference`)
-      continue
-    }
     try {
-      const parent = await recovery.resolve(record.ownerRef, { runId: record.runId, signal })
+      const parent = await recovery.resolve(record.execution.authorityRef, { runId: record.runId, signal })
       signal.throwIfAborted()
       if (parent === undefined) {
         ctx.logger.warn(`dsh-dag-workflow: authority unavailable for run ${record.runId}; leaving it recoverable`)
@@ -458,8 +452,8 @@ export async function recoverPersistedWorkflowRuns(
         ctx.logger.warn(`dsh-dag-workflow: authority returned an invalid Agent for run ${record.runId}`)
         continue
       }
-      if (recovery.reference(parent) !== record.ownerRef) {
-        ctx.logger.warn(`dsh-dag-workflow: authority owner reference mismatch for run ${record.runId}`)
+      if (recovery.reference(parent) !== record.execution.authorityRef) {
+        ctx.logger.warn(`dsh-dag-workflow: authority reference mismatch for run ${record.runId}`)
         continue
       }
       ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, signal })
@@ -493,8 +487,8 @@ function isDshAgentLike(value: unknown): value is DshAgentLike {
   return session !== null && typeof session === 'object' && 'append' in session && typeof session.append === 'function'
 }
 
-function ownerReference(config: DshWorkflowPluginConfig, parent: DshAgentLike): string | undefined {
-  if (config.recovery === undefined) return undefined
+function ownerReference(config: DshWorkflowPluginConfig, parent: DshAgentLike): string {
+  if (config.recovery === undefined) throw new Error('recovery configuration is required')
   const reference = config.recovery.reference(parent)
   if (typeof reference !== 'string' || reference.length === 0 || reference.length > 1024) {
     throw new WorkflowExecutionError('RUN_OWNER_REFERENCE_INVALID', 'recovery.reference must return 1-1024 characters')

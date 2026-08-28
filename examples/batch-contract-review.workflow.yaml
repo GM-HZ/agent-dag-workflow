@@ -1,4 +1,4 @@
-apiVersion: dsh.workflow/v1alpha1
+apiVersion: workflow.gm-hz.dev/v1alpha1
 kind: WorkflowTemplate
 metadata:
   id: batch-contract-review
@@ -6,10 +6,9 @@ metadata:
   description: Fan out a published clause-review workflow with durable foreach frames, then synthesize a portfolio-level legal review.
 spec:
   requires:
-    - { kind: capability, uses: workflowTemplates.getPublished }
-    - { kind: capability, uses: dagWorkflowEngine.invoke }
+    - { kind: capability, uses: gateway.workflow.call }
     - { kind: workflow, uses: contract-clause-review-worker@2 }
-    - { kind: capability, uses: dsh.subagents.start }
+    - { kind: capability, uses: gateway.agent.execute }
   inputSchema:
     type: object
     additionalProperties: false
@@ -42,13 +41,12 @@ spec:
         maxConcurrency: 6
         maxItems: 200
       inputs:
-        items: { input: clauses }
-        shared: { input: policy }
+        items: { input: { path: [clauses] } }
+        shared: { input: { path: [policy] } }
     - id: synthesize
-      uses: dsh.agent@1
+      uses: agent.run@1
       title: Synthesize contract risk
       with:
-        label: contract-portfolio-synthesis
         prompt: The inputs are immutable outputs from schema-validated child workflows. Produce an executive summary and a list of blocking issues. Do not invent clauses or legal facts. Return only the declared structured result.
         outputSchema: &summaryOutput
           type: object
@@ -69,26 +67,26 @@ spec:
             content: { type: array }
             structured: *summaryOutput
       inputs:
-        contractId: { input: contractId }
-        results: { output: { node: review-clauses, path: [results] } }
+        contractId: { input: { path: [contractId] } }
+        results: { output: { nodeId: review-clauses, path: [results] } }
     - id: end
       uses: core.end@1
       title: Contract review report
       with: {}
       inputs:
-        contractId: { input: contractId }
-        reviewedClauses: { output: { node: synthesize, path: [structured, reviewedClauses] } }
-        executiveSummary: { output: { node: synthesize, path: [structured, executiveSummary] } }
-        blockingIssues: { output: { node: synthesize, path: [structured, blockingIssues] } }
+        contractId: { input: { path: [contractId] } }
+        reviewedClauses: { output: { nodeId: synthesize, path: [structured, reviewedClauses] } }
+        executiveSummary: { output: { nodeId: synthesize, path: [structured, executiveSummary] } }
+        blockingIssues: { output: { nodeId: synthesize, path: [structured, blockingIssues] } }
   edges:
     - { id: start-review, source: start, target: review-clauses }
     - { id: review-synthesize, source: review-clauses, target: synthesize }
     - { id: synthesize-end, source: synthesize, target: end }
   outputs:
-    contractId: { output: { node: end, path: [contractId] } }
-    reviewedClauses: { output: { node: end, path: [reviewedClauses] } }
-    executiveSummary: { output: { node: end, path: [executiveSummary] } }
-    blockingIssues: { output: { node: end, path: [blockingIssues] } }
+    contractId: { output: { nodeId: end, path: [contractId] } }
+    reviewedClauses: { output: { nodeId: end, path: [reviewedClauses] } }
+    executiveSummary: { output: { nodeId: end, path: [executiveSummary] } }
+    blockingIssues: { output: { nodeId: end, path: [blockingIssues] } }
   policies:
     maxConcurrentNodes: 8
     maxNodeRuns: 16

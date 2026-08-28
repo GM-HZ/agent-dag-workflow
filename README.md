@@ -22,25 +22,25 @@ flowchart LR
 
 - **一个真源**：Agent、Engine 和 Canvas 都读写 `WorkflowTemplate`，不再维护第二套 Canvas DSL。
 - **精确解析**：节点使用 `type@version`，发布后的 Workflow 和子流程固定到不可变 revision。
-- **能力不越权**：`dsh.tool@1`、`dsh.agent@1`、`dsh.human-approval@1` 始终经过当前 DSH scope 的 tool、subagent、approval 和 owning Agent。
+- **能力不越权**：`tool.call@1`、`agent.run@1`、`human.approval@1` 始终经过当前 DSH scope 的 tool、subagent、approval 和 owning Agent。
 - **依赖先声明**：动态节点的 capability、Tool、脚本 runtime、secret 和子流程必须出现在 `spec.requires`；Agent 节点继承当前 DSH Agent scope，模板声明只会收窄权限，不会授予新权限。
 - **结果先契约化**：节点可用 `expects.schema/maxBytes` 声明实例级结果契约，输出必须在写入 checkpoint 前通过确定性校验；需要业务语义复核时再显式连接 Agent 节点。
 - **逻辑可扩展、边界不模糊**：确定性 JSON 处理使用可插拔的 `core.script@1` runtime；网络、文件、密钥和外部副作用仍必须走 DSH Tool/Agent 节点。
-- **外部扩展只有两级**：普通外部能力注册为 DSH Tool，由通用 `dsh.tool@1` 执行；只有暂停恢复、长任务、事务补偿等特殊工作流语义才实现自定义 Node。
+- **外部扩展只有两级**：普通外部能力注册为 DSH Tool，由通用 `tool.call@1` 执行；只有暂停恢复、长任务、事务补偿等特殊工作流语义才实现自定义 Node。
 - **执行可恢复**：每次状态推进同时追加有序事件并提交 checkpoint；未知副作用不会自动重试，而是进入 `needs_attention`。
 - **布局不污染语义**：节点位置和 viewport 位于 `layout`，移动节点只产生 layout diff，不改变 Workflow 的 semantic hash。
 
 一个模板包含输入/输出 Schema、节点、边、binding、执行策略和可选布局：
 
 ```yaml
-apiVersion: dsh.workflow/v1alpha1
+apiVersion: workflow.gm-hz.dev/v1alpha1
 kind: WorkflowTemplate
 metadata:
   id: echo-message
   name: Echo message
 spec:
   requires:
-    - { kind: capability, uses: dsh.tools.execute }
+    - { kind: capability, uses: gateway.tool.execute }
     - { kind: tool, uses: echo }
   inputSchema:
     type: object
@@ -58,8 +58,8 @@ spec:
       with: {}
       inputs: {}
     - id: echo
-      uses: dsh.tool@1
-      with: { name: echo }
+      uses: tool.call@1
+      with: { uses: echo }
       expects:
         schema:
           type: object
@@ -67,17 +67,17 @@ spec:
           properties:
             result: { type: object }
       inputs:
-        message: { input: message }
+        message: { input: { path: [message] } }
     - id: end
       uses: core.end@1
       with: {}
       inputs:
-        answer: { output: { node: echo, path: [result, echo] } }
+        answer: { output: { nodeId: echo, path: [result, echo] } }
   edges:
     - { id: start-echo, source: start, target: echo }
     - { id: echo-end, source: echo, target: end }
   outputs:
-    answer: { output: { node: end, path: [answer] } }
+    answer: { output: { nodeId: end, path: [answer] } }
 ```
 
 完整字段、校验规则和分支语义见 [Workflow Template v1 规范](spec/workflow-template-v1.md)。复杂场景统一收录在 [Showcase workflows](docs/showcase-workflows.md)：包括生产发布门禁、可恢复批量合同审查、多源尽调和 AI 模型周报，覆盖并行 Agent、Tool、受限脚本、审批、子 Workflow、foreach 恢复和审计追踪。真实外部数据的完整验收模板见 [weekly-ai-model-news.workflow.json](examples/weekly-ai-model-news.workflow.json)：13 路 DSH `web_search` 检索一周内候选，Agent 归一化最多 100 条并返回评分/摘要 overlay，受限脚本严格合并、稳定排序并输出 Top 10。
@@ -211,7 +211,7 @@ Skill 引导 Agent 按 `查询节点和 Tool → 生成拓扑 → 创建或导�
 ### 2. 从代码执行
 
 ```ts
-const published = ctx.workflowTemplates.getPublished('research-report', 1)
+const published = ctx.gateway.workflow.call('research-report', 1)
 const run = ctx.dagWorkflowEngine.start({
   template: published.template,
   inputs: { topic: 'DSH plugin architecture' },
@@ -230,17 +230,17 @@ if (result.status === 'completed') {
 
 ### 确定性脚本节点
 
-`core.script@1` 用于字段整理、模板拼接、数组筛选/投影和数值聚合。内置 `dsh.expr@1` 是有操作数上限的纯表达式语言，不使用 `eval`，表达式必须返回 JSON object：
+`core.script@1` 用于字段整理、模板拼接、数组筛选/投影和数值聚合。内置 `json.expr@1` 是有操作数上限的纯表达式语言，不使用 `eval`，表达式必须返回 JSON object：
 
 ```json
 {
-  "language": "dsh.expr@1",
+  "language": "json.expr@1",
   "maxOperations": 10000,
   "source": "{ customer: upper(trim(input.customer)), total: sum(mapGet(input.orders, \"amount\")) }"
 }
 ```
 
-可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。`sortBy` 支持对象数组的稳定多键排序，`joinBy` 用唯一 key 严格合并等长 overlay，并拒绝未知、重复、缺失 key 或覆盖原字段。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `dsh.tool@1` 或 `dsh.agent@1`，再把其结构化输出交给脚本节点。
+可运行示例见 [script-transform.workflow.json](examples/script-transform.workflow.json)。`sortBy` 支持对象数组的稳定多键排序，`joinBy` 用唯一 key 严格合并等长 overlay，并拒绝未知、重复、缺失 key 或覆盖原字段。脚本没有 I/O、时间、随机数或凭据接口；这些能力应拆成 `tool.call@1` 或 `agent.run@1`，再把其结构化输出交给脚本节点。
 
 周报验收模板只使用 DSH 已有的 `web_search` Tool：Agent 先规划 13 组查询，Runtime 并行执行 Tool，随后将最多 100 条候选交给 Agent 结构化和评分。确定性脚本用 `joinBy` 将 `{id, ...新增字段}` overlay 合并回原记录，因此排序、截断和关键字段合并不由 Agent 隐式控制。
 
@@ -279,7 +279,7 @@ await ctx.plugin(WorkflowCanvas, {
 
 省略 `authorize` 时使用面向本地单用户 profile 的默认边界：不存在、未附着或属于 subagent 的 session identity 会被拒绝，但 `sessionId` 本身不是多租户身份凭证。
 
-包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 会把当前 Agent scope 可见的每个 DSH Tool 直接显示为一个 palette 项，拖入后保存的仍是 `dsh.tool@1 + with.name`。它同时支持自定义节点、边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
+包内的 `dsh.client` manifest 会加载 XYFlow Studio。Studio 会把当前 Agent scope 可见的每个 DSH Tool 直接显示为一个 palette 项，拖入后保存的仍是 `tool.call@1 + with.name`。它同时支持自定义节点、边编辑、Schema/config 编辑、诊断、CAS 保存、语义/布局 diff、发布、draft 测试运行、持久 trace，以及未知副作用的 retry/fail 决策。
 
 其他 DSH Client 插件也可以打开同一个 overlay：
 
@@ -299,13 +299,13 @@ ctx.workflowCanvasUi.open({
 
 ```yaml
 - id: dms-query
-  uses: dsh.tool@1
-  with: { name: dms.query }
+  uses: tool.call@1
+  with: { uses: dms.query }
   inputs:
-    sql: { input: sql }
+    sql: { input: { path: [sql] } }
 ```
 
-编译器自动要求模板声明 `capability:dsh.tools.execute` 和 `tool:dms.query`。DMS 的目标库、SQL 风险、审批、脱敏等领域规则全部留在 DMS Tool 中。
+编译器自动要求模板声明 `capability:gateway.tool.execute` 和 `tool:dms.query`。DMS 的目标库、SQL 风险、审批、脱敏等领域规则全部留在 DMS Tool 中。
 
 ### 二级：自定义 Node
 
@@ -366,9 +366,9 @@ ctx.effect(() => ctx.workflowScripts.register({
 ## 可靠性与安全边界
 
 - draft 使用 revision CAS，published revision 不可变；运行发布版本时必须指定精确 revision。
-- `core.subworkflow@1` 和 `core.foreach@1` 只调用固定 published revision，并设置继承深度上限。
+- `workflow.call@1` 和 `core.foreach@1` 只调用固定 published revision，并设置继承深度上限。
 - secret binding 只保存引用；原值通过 Host 的 scoped resolver 进入瞬时节点输入，若流入节点输出则拒绝持久化。
-- 自动恢复只处理 `running + ownerRef + 可重新解析的 Agent`；paused 或无 authority 的 run 保持不动。
+- 自动恢复只处理 `running + authorityRef + 可重新解析的 Agent`；paused 或无法解析 authority 的 run 保持不动。
 - Canvas 所有读写和运行 RPC 都先解析 Host 中的实时顶层 Agent；多人部署必须叠加用户/workspace/action/resource 授权策略。
 - 模板、输入、binding 和输出在执行/存储边界进行 lossless JSON materialize 与深冻结。
 

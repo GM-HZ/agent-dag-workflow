@@ -7,7 +7,7 @@ import type { WorkflowNodeDisposer, WorkflowNodeRegistry } from './registry.js'
 import { createDefaultWorkflowScriptRuntimeRegistry, type WorkflowScriptRuntimeRegistry } from './script-runtime.js'
 import { WorkflowExecutionError } from './errors.js'
 import { stableJsonStringify } from './json.js'
-import { validateDshObjectJsonSchema } from './dsh-schema.js'
+import { validateStructuredObjectSchema } from './structured-output-schema.js'
 
 const objectSchema = { type: 'object' } as const
 
@@ -90,7 +90,7 @@ export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegist
     type: 'core.script',
     version: 1,
     title: 'Deterministic script',
-    description: 'Transforms JSON with a bounded, plugin-provided deterministic script runtime; I/O must use DSH tools.',
+    description: 'Transforms JSON with a bounded deterministic runtime; I/O must use a Host Tool gateway.',
     configSchema: {
       type: 'object',
       additionalProperties: false,
@@ -101,7 +101,7 @@ export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegist
           type: 'string',
           minLength: 1,
           maxLength: 32768,
-          'x-dsh-editor': 'multiline',
+          'x-workflow-editor': 'multiline',
           description: 'A pure expression that must return one JSON object. The input object is available as `input`.',
         },
         maxOperations: {
@@ -113,7 +113,7 @@ export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegist
       },
     },
     defaultConfig: {
-      language: 'dsh.expr@1',
+      language: 'json.expr@1',
       source: '{ result: input }',
       maxOperations: 10000,
     },
@@ -157,15 +157,19 @@ export function createScriptNodeDefinition(runtimes: WorkflowScriptRuntimeRegist
 export const scriptNodeDefinition = createScriptNodeDefinition(defaultScriptRuntimes)
 
 export const toolNodeDefinition: WorkflowNodeDefinition = {
-  type: 'dsh.tool',
+  type: 'tool.call',
   version: 1,
-  title: 'DSH Tool',
-  description: 'Executes a tool through the injected DSH tool policy pipeline.',
+  title: 'Tool call',
+  description: 'Executes one fixed Host tool through its policy gateway.',
   configSchema: {
     type: 'object',
     additionalProperties: false,
-    required: ['name'],
-    properties: { name: { type: 'string', minLength: 1 } },
+    required: ['uses'],
+    properties: {
+      uses: { type: 'string', minLength: 1 },
+      connectionRef: { type: 'string', minLength: 1 },
+      credentialRef: { type: 'string', minLength: 1 },
+    },
   },
   inputSchema: objectSchema,
   outputSchema: {
@@ -175,45 +179,47 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
     properties: { result: {} },
   },
   outputPorts: ['success'],
-  capabilities: ['dsh.tools.execute'],
+  capabilities: ['gateway.tool.execute'],
   dependencyKinds: ['tool'],
   retry: 'never',
   dependencies(config) {
-    return typeof config.name === 'string' ? [{ kind: 'tool', uses: config.name }] : []
+    return typeof config.uses === 'string' ? [{ kind: 'tool', uses: config.uses }] : []
   },
   async execute(context) {
     const tools = context.services.tools
     if (tools === undefined) {
-      throw new WorkflowExecutionError('TOOL_GATEWAY_MISSING', 'dsh.tool requires a WorkflowToolGateway', { nodeId: context.nodeId })
+      throw new WorkflowExecutionError('TOOL_GATEWAY_MISSING', 'tool.call requires a WorkflowToolGateway', { nodeId: context.nodeId })
     }
-    const name = context.config.name
-    if (typeof name !== 'string') throw new WorkflowExecutionError('TOOL_CONFIG', 'tool name is missing', { nodeId: context.nodeId })
+    const uses = context.config.uses
+    if (typeof uses !== 'string') throw new WorkflowExecutionError('TOOL_CONFIG', 'tool uses is missing', { nodeId: context.nodeId })
     const value = await tools.execute({
       runId: context.runId,
       nodeId: context.nodeId,
-      name,
-      input: context.inputs,
+      invocationId: context.invocationId,
+      uses,
+      inputs: context.inputs,
+      config: context.config,
+      authority: context.authority,
       signal: context.signal,
-      ...(context.owner === undefined ? {} : { owner: context.owner }),
     })
     return { outputs: { result: value } }
   },
 }
 
 export const agentNodeDefinition: WorkflowNodeDefinition = {
-  type: 'dsh.agent',
+  type: 'agent.run',
   version: 1,
-  title: 'DSH Agent',
-  description: 'Runs one foreground child through the injected DSH subagent seam.',
+  title: 'Agent run',
+  description: 'Runs one structured Agent task through the Host gateway.',
   configSchema: {
     type: 'object',
     additionalProperties: false,
     required: ['prompt'],
     properties: {
       prompt: { type: 'string', minLength: 1 },
-      label: { type: 'string', minLength: 1 },
       outputSchema: { type: 'object' },
-      maxDepth: { type: 'integer', minimum: 0 },
+      tools: { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true },
+      skills: { type: 'array', items: { type: 'string', minLength: 1 }, uniqueItems: true },
     },
   },
   inputSchema: objectSchema,
@@ -228,19 +234,26 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
     },
   },
   outputPorts: ['success'],
-  capabilities: ['dsh.subagents.start'],
+  capabilities: ['gateway.agent.execute'],
+  dependencyKinds: ['tool', 'skill'],
   retry: 'never',
+  dependencies(config) {
+    return [
+      ...(Array.isArray(config.tools) ? config.tools.filter((value): value is string => typeof value === 'string').map(uses => ({ kind: 'tool', uses })) : []),
+      ...(Array.isArray(config.skills) ? config.skills.filter((value): value is string => typeof value === 'string').map(uses => ({ kind: 'skill', uses })) : []),
+    ]
+  },
   validateConfig(config) {
-    return config.outputSchema === undefined ? [] : validateDshObjectJsonSchema(config.outputSchema)
+    return config.outputSchema === undefined ? [] : validateStructuredObjectSchema(config.outputSchema)
   },
   async execute(context) {
     const agents = context.services.agents
     if (agents === undefined) {
-      throw new WorkflowExecutionError('AGENT_GATEWAY_MISSING', 'dsh.agent requires a WorkflowAgentGateway', { nodeId: context.nodeId })
+      throw new WorkflowExecutionError('AGENT_GATEWAY_MISSING', 'agent.run requires a WorkflowAgentGateway', { nodeId: context.nodeId })
     }
     const prompt = stringConfig(context.config, 'prompt', context.nodeId)
-    const label = optionalStringConfig(context.config, 'label', context.nodeId)
-    const maxDepth = optionalIntegerConfig(context.config, 'maxDepth', context.nodeId)
+    const tools = stringArrayConfig(context.config, 'tools', context.nodeId)
+    const skills = stringArrayConfig(context.config, 'skills', context.nodeId)
     const outputSchema = context.config.outputSchema
     if (outputSchema !== undefined && !isObject(outputSchema)) {
       throw new WorkflowExecutionError('AGENT_CONFIG', 'agent outputSchema must be an object', { nodeId: context.nodeId })
@@ -248,12 +261,14 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
     const result = await agents.execute({
       runId: context.runId,
       nodeId: context.nodeId,
+      invocationId: context.invocationId,
       prompt: renderAgentPrompt(prompt, context.inputs),
+      inputs: context.inputs,
+      authority: context.authority,
       signal: context.signal,
-      ...(label === undefined ? {} : { label }),
-      ...(maxDepth === undefined ? {} : { maxDepth }),
       ...(outputSchema === undefined ? {} : { outputSchema }),
-      ...(context.owner === undefined ? {} : { owner: context.owner }),
+      ...(tools === undefined ? {} : { tools }),
+      ...(skills === undefined ? {} : { skills }),
     })
     return {
       outputs: {
@@ -266,10 +281,10 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
 }
 
 export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
-  type: 'dsh.human-approval',
+  type: 'human.approval',
   version: 1,
   title: 'Human approval',
-  description: 'Requests a fail-closed one-shot decision through the DSH approval seam.',
+  description: 'Requests a fail-closed decision through the Host approval gateway.',
   configSchema: {
     type: 'object',
     additionalProperties: false,
@@ -292,7 +307,7 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   },
   outputPorts: ['approved', 'rejected'],
   requiredOutputPorts: ['approved', 'rejected'],
-  capabilities: ['dsh.approval.request'],
+  capabilities: ['gateway.approval.request'],
   dependencyKinds: ['approval-action'],
   retry: 'safe',
   execution: 'human-wait',
@@ -302,20 +317,20 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
   async execute(context) {
     const approvals = context.services.approvals
     if (approvals === undefined) {
-      throw new WorkflowExecutionError('APPROVAL_GATEWAY_MISSING', 'dsh.human-approval requires a WorkflowApprovalGateway', { nodeId: context.nodeId })
+      throw new WorkflowExecutionError('APPROVAL_GATEWAY_MISSING', 'human.approval requires a WorkflowApprovalGateway', { nodeId: context.nodeId })
     }
     const action = stringConfig(context.config, 'action', context.nodeId)
     const reason = stringConfig(context.config, 'reason', context.nodeId)
-    const token = `${context.runId}:${context.nodeId}:approval`
+    const token = context.invocationId
     const outcome = await approvals.request({
       runId: context.runId,
       nodeId: context.nodeId,
-      token,
+      invocationId: token,
       action,
       reason,
       details: context.inputs,
+      authority: context.authority,
       signal: context.signal,
-      ...(context.owner === undefined ? {} : { owner: context.owner }),
     })
     const approved = outcome === 'allowed-once'
     return { outputs: { outcome, approved, token }, selectedPorts: [approved ? 'approved' : 'rejected'] }
@@ -323,7 +338,7 @@ export const humanApprovalNodeDefinition: WorkflowNodeDefinition = {
 }
 
 export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
-  type: 'core.subworkflow',
+  type: 'workflow.call',
   version: 1,
   title: 'Subworkflow',
   description: 'Runs one fixed published workflow revision as a durable child invocation.',
@@ -344,7 +359,7 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
     properties: { runId: { type: 'string' }, outputs: { type: 'object' } },
   },
   outputPorts: ['success'],
-  capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  capabilities: ['gateway.workflow.call'],
   dependencyKinds: ['workflow'],
   retry: 'safe',
   dependencies(config) {
@@ -363,8 +378,8 @@ export const subworkflowNodeDefinition: WorkflowNodeDefinition = {
       inputs: context.inputs,
       depth,
       depthLimit: context.subworkflowMaxDepth,
+      authority: context.authority,
       signal: context.signal,
-      ...(context.owner === undefined ? {} : { owner: context.owner }),
     })
     return { outputs: { runId: result.runId, outputs: result.outputs } }
   },
@@ -409,7 +424,7 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
     },
   },
   outputPorts: ['success'],
-  capabilities: ['workflowTemplates.getPublished', 'dagWorkflowEngine.invoke'],
+  capabilities: ['gateway.workflow.call'],
   dependencyKinds: ['workflow'],
   retry: 'safe',
   dependencies(config) {
@@ -451,8 +466,8 @@ export const foreachNodeDefinition: WorkflowNodeDefinition = {
             inputs: { item: items[index]!, index, shared: sharedValue },
             depth,
             depthLimit: context.subworkflowMaxDepth,
+            authority: context.authority,
             signal,
-            ...(context.owner === undefined ? {} : { owner: context.owner }),
           })
           frames[index] = { index, status: 'completed', runId: result.runId, outputs: result.outputs }
           checkpointFrames()
@@ -525,6 +540,15 @@ function optionalStringConfig(config: JsonObject, name: string, nodeId: string):
     throw new WorkflowExecutionError('NODE_CONFIG', `${name} must be a non-empty string`, { nodeId })
   }
   return value
+}
+
+function stringArrayConfig(config: JsonObject, name: string, nodeId: string): readonly string[] | undefined {
+  const value = config[name]
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string' || item.length === 0)) {
+    throw new WorkflowExecutionError('NODE_CONFIG', `${name} must be an array of non-empty strings`, { nodeId })
+  }
+  return Object.freeze([...value] as string[])
 }
 
 function optionalIntegerConfig(config: JsonObject, name: string, nodeId: string): number | undefined {

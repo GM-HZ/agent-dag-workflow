@@ -34,7 +34,7 @@ describe('workflow compiler', () => {
 
     dispose()
     expect(registry.list()).toEqual([])
-    expect(first.nodes.get('call')?.definition.type).toBe('dsh.tool')
+    expect(first.nodes.get('call')?.definition.type).toBe('tool.call')
     expect(compileWorkflow(template, registry).diagnostics).toContainEqual(expect.objectContaining({ code: 'UNKNOWN_NODE_TYPE' }))
   })
 
@@ -47,7 +47,7 @@ describe('workflow compiler', () => {
       spec: {
         ...template.spec,
         nodes: template.spec.nodes.map(node => node.id === 'call'
-          ? { ...node, inputs: { message: { output: { node: 'end', path: ['answer'] } } } }
+          ? { ...node, inputs: { message: { output: { nodeId: 'end', path: ['answer'] } } } }
           : node),
       },
     } as typeof template
@@ -84,9 +84,9 @@ describe('workflow compiler', () => {
       spec: {
         ...base.spec,
         nodes: base.spec.nodes.map(node => node.id === 'call'
-          ? { ...node, inputs: { message: { input: 'missing' } } }
+          ? { ...node, inputs: { message: { input: { path: ['missing'] } } } }
           : node.id === 'end'
-            ? { ...node, inputs: { answer: { output: { node: 'call', path: ['missing'] } } } }
+            ? { ...node, inputs: { answer: { output: { nodeId: 'call', path: ['missing'] } } } }
             : node),
         outputs: {},
       },
@@ -110,7 +110,7 @@ describe('workflow compiler', () => {
       type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'number' } },
     }))
     const template: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
       metadata: { id: 'type-mismatch', name: 'Type mismatch' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -118,15 +118,15 @@ describe('workflow compiler', () => {
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
           { id: 'text', uses: 'test.string@1', with: {}, inputs: {} },
-          { id: 'number', uses: 'test.number@1', with: {}, inputs: { value: { output: { node: 'text', path: ['value'] } } } },
-          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { node: 'number', path: ['value'] } } } },
+          { id: 'number', uses: 'test.number@1', with: {}, inputs: { value: { output: { nodeId: 'text', path: ['value'] } } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'number', path: ['value'] } } } },
         ],
         edges: [
           { id: 's-t', source: 'start', target: 'text' },
           { id: 't-n', source: 'text', target: 'number' },
           { id: 'n-e', source: 'number', target: 'end' },
         ],
-        outputs: { value: { output: { node: 'end', path: ['value'] } } },
+        outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
       },
     }
 
@@ -144,7 +144,7 @@ describe('workflow compiler', () => {
       spec: {
         ...base.spec,
         nodes: base.spec.nodes.map(node => node.id === 'call'
-          ? { ...node, uses: 'core.script@1', with: { language: 'dsh.expr@1', source: '{ result: input. }' } }
+          ? { ...node, uses: 'core.script@1', with: { language: 'json.expr@1', source: '{ result: input. }' } }
           : node),
       },
     } as WorkflowTemplate
@@ -163,7 +163,7 @@ describe('workflow compiler', () => {
     const undeclared = { ...template, spec: { ...template.spec, requires: [] } }
 
     expect(compileWorkflow(undeclared, registry).diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'WORKFLOW_REQUIREMENT_UNDECLARED', nodeId: 'call', message: 'node requires undeclared dependency: capability:dsh.tools.execute' }),
+      expect.objectContaining({ code: 'WORKFLOW_REQUIREMENT_UNDECLARED', nodeId: 'call', message: 'node requires undeclared dependency: capability:gateway.tool.execute' }),
       expect.objectContaining({ code: 'WORKFLOW_REQUIREMENT_UNDECLARED', nodeId: 'call', message: 'node requires undeclared dependency: tool:echo' }),
     ]))
   })
@@ -172,24 +172,24 @@ describe('workflow compiler', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const template: WorkflowTemplate = {
-      apiVersion: 'dsh.workflow/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
       metadata: { id: 'current-agent', name: 'Current Agent' },
       spec: {
-        requires: [{ kind: 'capability', uses: 'dsh.subagents.start' }],
+        requires: [{ kind: 'capability', uses: 'gateway.agent.execute' }],
         inputSchema: { type: 'object', additionalProperties: false },
         outputSchema: {
           type: 'object', additionalProperties: false, required: ['runId'], properties: { runId: { type: 'string' } },
         },
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-          { id: 'agent', uses: 'dsh.agent@1', with: { prompt: 'Produce an answer.' }, inputs: {} },
-          { id: 'end', uses: 'core.end@1', with: {}, inputs: { runId: { output: { node: 'agent', path: ['runId'] } } } },
+          { id: 'agent', uses: 'agent.run@1', with: { prompt: 'Produce an answer.' }, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { runId: { output: { nodeId: 'agent', path: ['runId'] } } } },
         ],
         edges: [
           { id: 'start-agent', source: 'start', target: 'agent' },
           { id: 'agent-end', source: 'agent', target: 'end' },
         ],
-        outputs: { runId: { output: { node: 'end', path: ['runId'] } } },
+        outputs: { runId: { output: { nodeId: 'end', path: ['runId'] } } },
       },
     }
 

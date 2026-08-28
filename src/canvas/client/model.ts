@@ -99,7 +99,7 @@ export function findNodeDefinition(
   definitions: readonly CanvasNodeDefinition[],
   node: CanvasWorkflowNode,
 ): CanvasNodeDefinition | undefined {
-  const toolName = typeof node.with.name === 'string' ? node.with.name : undefined
+  const toolName = typeof node.with.uses === 'string' ? node.with.uses : undefined
   return definitions.find(definition => definition.uses === node.uses && definition.toolName === toolName)
     ?? definitions.find(definition => definition.uses === node.uses && definition.toolName === undefined)
 }
@@ -146,7 +146,7 @@ export function removeEdge(template: CanvasWorkflowTemplate, edgeId: string): Ca
 
 export function blankTemplate(seed = Date.now()): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: `workflow-${seed}`, name: '未命名工作流' },
     spec: {

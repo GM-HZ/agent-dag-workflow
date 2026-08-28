@@ -2,12 +2,12 @@ import type { WorkflowTemplate } from '../../src/core/index.js'
 
 export function toolWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'tool-flow', name: 'Tool flow' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'echo' },
       ],
       inputSchema: {
@@ -26,22 +26,22 @@ export function toolWorkflowTemplate(): WorkflowTemplate {
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
         {
           id: 'call',
-          uses: 'dsh.tool@1',
-          with: { name: 'echo' },
-          inputs: { message: { input: 'message' } },
+          uses: 'tool.call@1',
+          with: { uses: 'echo' },
+          inputs: { message: { input: { path: ['message'] } } },
         },
         {
           id: 'end',
           uses: 'core.end@1',
           with: {},
-          inputs: { answer: { output: { node: 'call', path: ['result', 'echo'] } } },
+          inputs: { answer: { output: { nodeId: 'call', path: ['result', 'echo'] } } },
         },
       ],
       edges: [
         { id: 'start-call', source: 'start', target: 'call' },
         { id: 'call-end', source: 'call', target: 'end' },
       ],
-      outputs: { answer: { output: { node: 'end', path: ['answer'] } } },
+      outputs: { answer: { output: { nodeId: 'end', path: ['answer'] } } },
       policies: { maxConcurrentNodes: 2, maxNodeRuns: 8, maxDurationMs: 5_000, maxOutputBytes: 10_000 },
     },
     layout: { nodes: { start: { x: 0, y: 0 } } },
@@ -50,12 +50,12 @@ export function toolWorkflowTemplate(): WorkflowTemplate {
 
 export function branchingWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'branch-flow', name: 'Branch flow' },
     spec: {
       requires: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'enabled-tool' },
         { kind: 'tool', uses: 'disabled-tool' },
       ],
@@ -77,25 +77,25 @@ export function branchingWorkflowTemplate(): WorkflowTemplate {
           id: 'choose',
           uses: 'core.condition@1',
           with: { operator: 'truthy' },
-          inputs: { left: { input: 'enabled' } },
+          inputs: { left: { input: { path: ['enabled'] } } },
         },
         {
           id: 'enabled',
-          uses: 'dsh.tool@1',
-          with: { name: 'enabled-tool' },
+          uses: 'tool.call@1',
+          with: { uses: 'enabled-tool' },
           inputs: { value: { literal: 'selected' } },
         },
         {
           id: 'disabled',
-          uses: 'dsh.tool@1',
-          with: { name: 'disabled-tool' },
+          uses: 'tool.call@1',
+          with: { uses: 'disabled-tool' },
           inputs: { value: { literal: 'not-selected' } },
         },
         {
           id: 'end',
           uses: 'core.end@1',
           with: {},
-          inputs: { answer: { output: { node: 'enabled', path: ['result'] } } },
+          inputs: { answer: { output: { nodeId: 'enabled', path: ['result'] } } },
         },
       ],
       edges: [
@@ -105,7 +105,7 @@ export function branchingWorkflowTemplate(): WorkflowTemplate {
         { id: 'enabled-end', source: 'enabled', target: 'end' },
         { id: 'disabled-end', source: 'disabled', target: 'end' },
       ],
-      outputs: { answer: { output: { node: 'end', path: ['answer'] } } },
+      outputs: { answer: { output: { nodeId: 'end', path: ['answer'] } } },
     },
   }
 }

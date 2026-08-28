@@ -5,9 +5,8 @@ export type JsonSchema = Record<string, unknown>
 
 export type WorkflowBinding =
   | { readonly literal: JsonValue }
-  | { readonly input: string }
-  | { readonly output: { readonly node: string; readonly path: readonly (string | number)[] } }
-  | { readonly secret: { readonly ref: string } }
+  | { readonly input: { readonly path: readonly (string | number)[] } }
+  | { readonly output: { readonly nodeId: string; readonly path: readonly (string | number)[] } }
 
 /** A dependency declaration is an allowlist entry, never a permission grant. */
 export interface WorkflowRequirement {
@@ -51,7 +50,7 @@ export interface WorkflowPolicies {
 }
 
 export interface WorkflowTemplate {
-  readonly apiVersion: 'dsh.workflow/v1alpha1'
+  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
   readonly kind: 'WorkflowTemplate'
   readonly metadata: {
     readonly id: string
@@ -81,6 +80,28 @@ export interface WorkflowDiagnostic {
 export type NodeRole = 'start' | 'end' | 'regular'
 export type NodeRetryMode = 'never' | 'safe' | 'idempotent'
 
+export interface WorkflowRunOrigin {
+  readonly type: 'sdk' | 'cli' | 'mcp' | 'host' | 'trigger' | 'replay' | string
+  readonly source?: string
+  readonly sourceRef?: string
+}
+
+export interface WorkflowTraceContext {
+  readonly traceId: string
+  readonly parentSpanId?: string
+}
+
+export interface WorkflowExecutionContext {
+  readonly authorityRef: string
+  readonly authority?: unknown
+  readonly origin: WorkflowRunOrigin
+  readonly traceContext?: WorkflowTraceContext
+}
+
+export interface WorkflowAuthorityResolver {
+  resolve(authorityRef: string, signal: AbortSignal): Promise<unknown | undefined>
+}
+
 export interface WorkflowNodeExecutionResult {
   readonly outputs: JsonObject
   readonly selectedPorts?: readonly string[]
@@ -89,34 +110,39 @@ export interface WorkflowNodeExecutionResult {
 export interface WorkflowToolRequest {
   readonly runId: string
   readonly nodeId: string
-  readonly name: string
-  readonly input: JsonObject
+  readonly invocationId: string
+  readonly uses: string
+  readonly inputs: JsonObject
+  readonly config: JsonObject
+  readonly authority: unknown
   readonly signal: AbortSignal
-  readonly owner?: unknown
 }
 
 export interface WorkflowToolGateway {
+  list?(authority: unknown): Promise<readonly WorkflowToolDescriptor[]>
   execute(request: WorkflowToolRequest): Promise<JsonValue>
 }
 
-export interface WorkflowSecretGateway {
-  resolve(ref: string, context: {
-    readonly runId: string
-    readonly nodeId: string
-    readonly signal: AbortSignal
-    readonly owner?: unknown
-  }): Promise<JsonValue>
+export interface WorkflowToolDescriptor {
+  readonly uses: string
+  readonly title: string
+  readonly description: string
+  readonly inputSchema: JsonSchema
+  readonly outputSchema?: JsonSchema
+  readonly idempotency: NodeRetryMode
 }
 
 export interface WorkflowAgentRequest {
   readonly runId: string
   readonly nodeId: string
+  readonly invocationId: string
   readonly prompt: string
-  readonly label?: string
+  readonly inputs: JsonObject
   readonly outputSchema?: JsonSchema
-  readonly maxDepth?: number
+  readonly tools?: readonly string[]
+  readonly skills?: readonly string[]
+  readonly authority: unknown
   readonly signal: AbortSignal
-  readonly owner?: unknown
 }
 
 export interface WorkflowAgentResult {
@@ -134,12 +160,12 @@ export type WorkflowApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' 
 export interface WorkflowApprovalRequest {
   readonly runId: string
   readonly nodeId: string
-  readonly token: string
+  readonly invocationId: string
   readonly action: string
   readonly reason: string
   readonly details: JsonObject
+  readonly authority: unknown
   readonly signal: AbortSignal
-  readonly owner?: unknown
 }
 
 export interface WorkflowApprovalGateway {
@@ -155,8 +181,8 @@ export interface WorkflowSubworkflowRequest {
   readonly inputs: JsonObject
   readonly depth: number
   readonly depthLimit: number
+  readonly authority: unknown
   readonly signal: AbortSignal
-  readonly owner?: unknown
 }
 
 export interface WorkflowSubworkflowResult {
@@ -171,7 +197,6 @@ export interface WorkflowSubworkflowGateway {
 
 export interface WorkflowNodeServices {
   readonly tools?: WorkflowToolGateway
-  readonly secrets?: WorkflowSecretGateway
   readonly agents?: WorkflowAgentGateway
   readonly approvals?: WorkflowApprovalGateway
   readonly subworkflows?: WorkflowSubworkflowGateway
@@ -179,7 +204,7 @@ export interface WorkflowNodeServices {
 
 export type WorkflowCapabilityDisposer = () => void
 
-/** Host-owned capability bindings. Normal external business operations belong in DSH Tools. */
+/** Host-owned capability bindings. Normal external business operations belong in Host Tools. */
 export interface WorkflowCapabilitySource {
   resolve<T = unknown>(capability: string): T | undefined
 }
@@ -200,6 +225,7 @@ export interface WorkflowEngineServices extends WorkflowNodeServices {
 export interface WorkflowNodeExecutionContext {
   readonly runId: string
   readonly nodeId: string
+  readonly invocationId: string
   readonly workflowInputs: JsonObject
   readonly inputs: JsonObject
   readonly config: JsonObject
@@ -214,7 +240,7 @@ export interface WorkflowNodeExecutionContext {
   readonly subworkflowMaxDepth: number
   readonly progress?: JsonValue
   checkpointProgress(progress: JsonValue): void
-  readonly owner?: unknown
+  readonly authority: unknown
 }
 
 export interface WorkflowNodeDefinition {
@@ -252,7 +278,7 @@ export interface WorkflowScriptExecutionRequest {
 /**
  * Script runtimes are deliberately pure data transforms. Runtimes that need I/O,
  * credentials, host modules, or ambient authority must register a normal workflow
- * node or DSH tool instead of using this interface.
+ * node or Host Tool instead of using this interface.
  */
 export interface WorkflowScriptRuntimeDefinition {
   readonly language: string
@@ -326,16 +352,14 @@ export interface WorkflowRun {
 export interface WorkflowStartRequest {
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
-  readonly owner?: unknown
-  /** Serializable Host-owned identity used only to reacquire owner authority after restart. */
-  readonly ownerRef?: string
+  readonly execution: WorkflowExecutionContext
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
 
 export interface WorkflowResumeRequest {
   readonly runId: string
-  readonly owner?: unknown
+  readonly execution: WorkflowExecutionContext
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
@@ -374,7 +398,7 @@ export interface WorkflowRunRecord {
   readonly template: WorkflowTemplate
   readonly semanticHash: string
   readonly inputs: JsonObject
-  readonly ownerRef?: string
+  readonly execution: Omit<WorkflowExecutionContext, 'authority'>
   readonly createdAt: number
   readonly checkpoint: WorkflowRunCheckpoint
   readonly events: readonly WorkflowEvent[]

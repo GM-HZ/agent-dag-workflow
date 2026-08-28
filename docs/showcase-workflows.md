@@ -49,7 +49,7 @@ pnpm showcase:install -- --db /absolute/path/to/workflows.db
 
 ## 运行 AI 模型周报
 
-该模板需要当前 DSH Agent 能看到 `web_search` Tool。它不是 Workflow 自己实现的 Provider：13 个检索节点都通过通用 `dsh.tool@1` 调用当前 DSH Tool，模板只声明精确依赖。
+该模板需要当前 DSH Agent 能看到 `web_search` Tool。它不是 Workflow 自己实现的 Provider：13 个检索节点都通过通用 `tool.call@1` 调用当前 DSH Tool，模板只声明精确依赖。
 
 1. 运行 `pnpm showcase:install`，然后启动使用同一 DSH home 的 Web profile。
 2. 打开一个拥有 `web_search` 的顶层会话，点击右下角 `工作流`。

@@ -25,7 +25,7 @@ const definition: CanvasNodeDefinition = {
 
 function template(): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'dsh.workflow/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'canvas-test', name: 'Canvas test' },
     spec: { inputSchema: {}, outputSchema: {}, nodes: [], edges: [], outputs: {} },
@@ -57,21 +57,21 @@ describe('canvas template projection', () => {
     const tool: CanvasNodeDefinition = {
       catalogId: 'tool:dms.query',
       kind: 'tool',
-      uses: 'dsh.tool@1',
+      uses: 'tool.call@1',
       toolName: 'dms.query',
       title: 'DMS query',
       description: 'Queries an authorized database.',
       role: 'regular',
       configSchema: { type: 'object' },
-      defaultConfig: { name: 'dms.query' },
+      defaultConfig: { uses: 'dms.query' },
       inputSchema: { type: 'object' },
       outputSchema: { type: 'object' },
       outputPorts: ['success'],
       requiredOutputPorts: [],
-      capabilities: ['dsh.tools.execute'],
+      capabilities: ['gateway.tool.execute'],
       dependencyKinds: ['tool'],
       defaultRequirements: [
-        { kind: 'capability', uses: 'dsh.tools.execute' },
+        { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'dms.query' },
       ],
       retry: 'never',
@@ -80,7 +80,7 @@ describe('canvas template projection', () => {
     const withTool = addNode(template(), tool, { x: 10, y: 20 })
     const node = withTool.spec.nodes[0]!
 
-    expect(node).toMatchObject({ id: 'dms-query', uses: 'dsh.tool@1', with: { name: 'dms.query' } })
+    expect(node).toMatchObject({ id: 'dms-query', uses: 'tool.call@1', with: { uses: 'dms.query' } })
     expect(withTool.spec.requires).toEqual(tool.defaultRequirements)
     expect(templateToFlow(withTool, [tool]).nodes[0]?.data.definition?.catalogId).toBe('tool:dms.query')
   })

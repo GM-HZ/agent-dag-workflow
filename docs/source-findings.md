@@ -49,7 +49,7 @@
 - Dify [`api/core/workflow/generator/runner.py`](../ref_project/dify/api/core/workflow/generator/runner.py) 使用 router -> planner -> bounded parallel node builders -> deterministic postprocess -> structural validation。这个拆分非常适合 workflow builder skill。
 - [`api/core/workflow/generator/tool_catalogue.py`](../ref_project/dify/api/core/workflow/generator/tool_catalogue.py) 区分“完整 inventory 用于校验”和“截断/路由后的 catalog 用于 prompt”，避免大量插件挤爆上下文，同时不把 catalog 外的真实工具误报为缺失。
 - [`web/app/components/workflow/workflow-generator/graph-diff.ts`](../ref_project/dify/web/app/components/workflow/workflow-generator/graph-diff.ts) 和 [`apply.ts`](../ref_project/dify/web/app/components/workflow/workflow-generator/apply.ts) 在覆盖 draft 前展示差异，并用 hash 处理并发编辑。DSH draft API 应直接提供 revision/hash compare-and-swap。
-- Dify planner 的 code/template-transform/list-operator/assigner/iteration/loop，以及 Coze 的 code/textprocessor/json/variableassigner，说明成熟 Workflow 需要一层位于“结构化 binding”和“外部 Tool”之间的确定性数据处理面。DSH 采用一个 `core.script@1` adapter + 可插拔纯 runtime registry，先用 `dsh.expr@1` 覆盖高频 JSON 变换，避免复制大量窄节点或开放任意代码执行。
+- Dify planner 的 code/template-transform/list-operator/assigner/iteration/loop，以及 Coze 的 code/textprocessor/json/variableassigner，说明成熟 Workflow 需要一层位于“结构化 binding”和“外部 Tool”之间的确定性数据处理面。DSH 采用一个 `core.script@1` adapter + 可插拔纯 runtime registry，先用 `json.expr@1` 覆盖高频 JSON 变换，避免复制大量窄节点或开放任意代码执行。
 
 ### 不直接照搬
 
@@ -67,12 +67,12 @@
 | Saved/reusable workflow | 新的 versioned DAG template | DSH gap + Coze/Dify |
 | Canvas/runtime separation | semantic template + separate layout + executable IR | Coze 分层，修正 Coze/Dify UI 耦合 |
 | Variable binding | literal/ref 的结构化 union + field path | Coze |
-| Deterministic data plane | `core.script@1` + versioned pure runtime；内置 bounded `dsh.expr@1` | Dify/Coze 节点族，按 DSH 插件边界重构 |
+| Deterministic data plane | `core.script@1` + versioned pure runtime；内置 bounded `json.expr@1` | Dify/Coze 节点族，按 DSH 插件边界重构 |
 | Branch/join | edge unknown/taken/skipped | Graphon |
 | Pause/resume | versioned full runtime checkpoint + host context | Coze + Dify/Graphon |
 | Generation | topology planner + schema-driven node build + deterministic validation | Dify |
 | Tool execution | 始终走 `ctx.tools.execute()` | DSH |
-| External extension model | 两级：通用 DSH Tool + 自定义 Node；Canvas Tool 条目仍物化为 `dsh.tool@1` | Coze Plugin ExecuteTool + Dify Tool runtime/Node registry 分层 |
+| External extension model | 两级：通用 DSH Tool + 自定义 Node；Canvas Tool 条目仍物化为 `tool.call@1` | Coze Plugin ExecuteTool + Dify Tool runtime/Node registry 分层 |
 | Capability isolation | NodeDefinition declaration + `spec.requires` + scoped Host resolver | DSH inject/policy，扩展为模板协议 |
 | Dynamic result contract | definition schema + node `expects` + optional explicit Agent review | Coze/Dify structured outputs，按可审计 checkpoint 边界重构 |
 | Canvas host bridge | Typert Remote + Client module + `shell.overlay` | DSH |

@@ -19,7 +19,7 @@ describe('Canvas experience model', () => {
     expect(template.metadata).toMatchObject({ id: 'hello-workflow-42', name: '第一个工作流' })
     expect(template.spec.nodes.map(node => node.uses)).toEqual(['core.start@1', 'core.end@1'])
     expect(template.spec.edges).toEqual([{ id: 'start-end', source: 'start', target: 'end' }])
-    expect(template.spec.outputs).toEqual({ message: { output: { node: 'end', path: ['message'] } } })
+    expect(template.spec.outputs).toEqual({ message: { output: { nodeId: 'end', path: ['message'] } } })
   })
 
   it('round-trips a complete recovery snapshot and rejects corrupt local state', () => {
@@ -78,7 +78,7 @@ describe('Canvas experience model', () => {
       catalogId: 'core.start@1', kind: 'node' as const, uses: 'core.start@1', title: 'Start', description: 'English', role: 'start' as const,
       configSchema: {}, inputSchema: {}, outputSchema: {}, outputPorts: ['success'], requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], retry: 'safe' as const,
     }
-    const tool = { ...start, catalogId: 'tool:web_search', kind: 'tool' as const, uses: 'dsh.tool@1', title: 'web_search', description: 'Search the web.', role: 'regular' as const }
+    const tool = { ...start, catalogId: 'tool:web_search', kind: 'tool' as const, uses: 'tool.call@1', title: 'web_search', description: 'Search the web.', role: 'regular' as const }
     expect(definitionDisplayTitle(start)).toBe('开始')
     expect(definitionDisplayDescription(start)).toContain('工作流输入')
     expect(definitionDisplayTitle(tool)).toBe('web_search')

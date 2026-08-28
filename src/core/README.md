@@ -37,7 +37,7 @@ const resumed = engine.resume({
 
 ## 能力依赖与结果契约
 
-外部集成只有两级：普通业务能力使用通用 `dsh.tool@1`；只有特殊工作流生命周期才实现自定义 `WorkflowNodeDefinition`。节点通过 `capabilities + dependencies(config)` 声明依赖，并由模板 `spec.requires` 精确 allowlist。Agent 节点继承 owning DSH Agent scope；编译器拒绝未声明的 capability、Tool、Runtime、secret 与 subworkflow。
+外部集成只有两级：普通业务能力使用通用 `tool.call@1`；只有特殊工作流生命周期才实现自定义 `WorkflowNodeDefinition`。节点通过 `capabilities + dependencies(config)` 声明依赖，并由模板 `spec.requires` 精确 allowlist。Agent 节点继承 owning DSH Agent scope；编译器拒绝未声明的 capability、Tool、Runtime、secret 与 subworkflow。
 
 自定义 Node 可以把 Host 服务注册到 `WorkflowCapabilityRegistry`，再通过 `context.capabilities.require(name)` 获取节点级安全投影。resolver 不会暴露 NodeDefinition 未声明的能力，并对已声明但未安装的绑定 fail closed。这个 registry 只服务自定义工作流语义；HTTP、数据库、消息等普通业务调用仍应走 DSH Tool。
 
@@ -48,14 +48,14 @@ const resumed = engine.resume({
 - `core.start@1`：暴露并验证 Workflow 输入。
 - `core.end@1`：组装一个终态输出对象。
 - `core.condition@1`：使用固定 operator 选择 `true/false` 端口，不执行任意代码。
-- `core.script@1`：通过版本化纯脚本 runtime 执行有界 JSON 变换；默认语言为 `dsh.expr@1`。
-- `dsh.tool@1`：只能通过注入的 `WorkflowToolGateway` 执行工具。
-- `dsh.agent@1`：通过 `WorkflowAgentGateway` 执行并收敛 foreground subagent。
-- `dsh.human-approval@1`：通过 `WorkflowApprovalGateway` 获取 fail-closed 决策，并产生 `approved/rejected` 端口。
-- `core.subworkflow@1`：执行 `with.templateId + revision` 指定的不可变发布版本。
+- `core.script@1`：通过版本化纯脚本 runtime 执行有界 JSON 变换；默认语言为 `json.expr@1`。
+- `tool.call@1`：只能通过注入的 `WorkflowToolGateway` 执行工具。
+- `agent.run@1`：通过 `WorkflowAgentGateway` 执行并收敛 foreground subagent。
+- `human.approval@1`：通过 `WorkflowApprovalGateway` 获取 fail-closed 决策，并产生 `approved/rejected` 端口。
+- `workflow.call@1`：执行 `with.templateId + revision` 指定的不可变发布版本。
 - `core.foreach@1`：对 `inputs.items` 并行调用固定发布版本；child 标准输入为 `{ item, index, shared }`。
 
-## `dsh.expr@1`
+## `json.expr@1`
 
 表达式只读取 `input`，必须返回 object。支持 JSON literal、成员/索引访问、`! - ?? || && == != === !== > >= < <= + - * / %` 和三元表达式。内置函数：
 

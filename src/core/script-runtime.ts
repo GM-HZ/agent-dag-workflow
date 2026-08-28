@@ -33,10 +33,10 @@ export class WorkflowScriptRuntimeRegistry {
   }
 }
 
-export const dshExpressionRuntime: WorkflowScriptRuntimeDefinition = {
-  language: 'dsh.expr',
+export const jsonExpressionRuntime: WorkflowScriptRuntimeDefinition = {
+  language: 'json.expr',
   version: 1,
-  title: 'DSH Expression',
+  title: 'JSON Expression',
   description: 'Pure deterministic JSON expression language with bounded operations and no I/O or eval.',
   deterministic: true,
   validate: validateWorkflowExpression,
@@ -47,7 +47,7 @@ export const dshExpressionRuntime: WorkflowScriptRuntimeDefinition = {
 
 export function createDefaultWorkflowScriptRuntimeRegistry(): WorkflowScriptRuntimeRegistry {
   const registry = new WorkflowScriptRuntimeRegistry()
-  registry.register(dshExpressionRuntime)
+  registry.register(jsonExpressionRuntime)
   return registry
 }
 

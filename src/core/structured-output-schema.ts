@@ -15,15 +15,15 @@ const SCHEMA_TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 
 const ONE_OF_SIBLINGS = ['properties', 'required', 'additionalProperties', 'items', 'enum', 'const'] as const
 
 /**
- * Validate the enforced DSH structured-output subset before a dsh.agent node
+ * Validate the enforced structured-output subset before an agent.run node
  * reaches the Host. This intentionally mirrors the stable public subset used
- * by DSH tools/subagents without coupling the workflow core to a Harness
+ * by Host gateways without coupling the workflow core to a Harness
  * package version.
  */
-export function validateDshObjectJsonSchema(schema: JsonValue): readonly string[] {
+export function validateStructuredObjectSchema(schema: JsonValue): readonly string[] {
   const diagnostics: string[] = []
   if (!isObject(schema) || schema.type !== 'object') {
-    diagnostics.push('outputSchema.type must be "object" (DSH structured output is object-rooted)')
+    diagnostics.push('outputSchema.type must be "object" (structured output is object-rooted)')
   }
   const stack: { readonly value: JsonValue; readonly path: string }[] = [{ value: schema, path: 'outputSchema' }]
   while (stack.length > 0) {
@@ -35,7 +35,7 @@ export function validateDshObjectJsonSchema(schema: JsonValue): readonly string[
     const node = task.value
     for (const key of Object.keys(node)) {
       if (!CONSTRAINT_KEYWORDS.has(key) && !ANNOTATION_KEYWORDS.has(key)) {
-        diagnostics.push(`${task.path}.${key} is not supported by the DSH structured-output schema subset`)
+        diagnostics.push(`${task.path}.${key} is not supported by the structured-output schema subset`)
       }
     }
     if (node.description !== undefined && typeof node.description !== 'string') {

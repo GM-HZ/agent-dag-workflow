@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { validateDshObjectJsonSchema } from '../../src/core/index.js'
+import { validateStructuredObjectSchema } from '../../src/core/index.js'
 
 describe('DSH structured output schema compatibility', () => {
   it('accepts the enforced object-rooted subset', () => {
-    expect(validateDshObjectJsonSchema({
+    expect(validateStructuredObjectSchema({
       type: 'object',
       additionalProperties: false,
       required: ['items'],
@@ -21,7 +21,7 @@ describe('DSH structured output schema compatibility', () => {
   })
 
   it('rejects unsupported constraints before a subagent starts', () => {
-    expect(validateDshObjectJsonSchema({
+    expect(validateStructuredObjectSchema({
       type: 'object',
       properties: {
         items: { type: 'array', maxItems: 10, items: { type: 'string', minLength: 1 } },
@@ -36,9 +36,9 @@ describe('DSH structured output schema compatibility', () => {
   })
 
   it('requires an object root and validates required property names', () => {
-    expect(validateDshObjectJsonSchema({ type: 'array', items: { type: 'string' } })[0])
+    expect(validateStructuredObjectSchema({ type: 'array', items: { type: 'string' } })[0])
       .toMatch(/object-rooted/)
-    expect(validateDshObjectJsonSchema({
+    expect(validateStructuredObjectSchema({
       type: 'object',
       properties: { present: { type: 'string' } },
       required: ['missing'],

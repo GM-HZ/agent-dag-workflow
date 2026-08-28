@@ -15,7 +15,14 @@ const bindingSchema = {
       type: 'object',
       additionalProperties: false,
       required: ['input'],
-      properties: { input: { type: 'string', minLength: 1 } },
+      properties: {
+        input: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['path'],
+          properties: { path: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'integer', minimum: 0 }] } } },
+        },
+      },
     },
     {
       type: 'object',
@@ -25,24 +32,11 @@ const bindingSchema = {
         output: {
           type: 'object',
           additionalProperties: false,
-          required: ['node', 'path'],
+          required: ['nodeId', 'path'],
           properties: {
-            node: { type: 'string', minLength: 1 },
+            nodeId: { type: 'string', minLength: 1 },
             path: { type: 'array', items: { anyOf: [{ type: 'string' }, { type: 'integer', minimum: 0 }] } },
           },
-        },
-      },
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['secret'],
-      properties: {
-        secret: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['ref'],
-          properties: { ref: { type: 'string', minLength: 1 } },
         },
       },
     },
@@ -64,7 +58,7 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
   additionalProperties: false,
   required: ['apiVersion', 'kind', 'metadata', 'spec'],
   properties: {
-    apiVersion: { const: 'dsh.workflow/v1alpha1' },
+    apiVersion: { const: 'workflow.gm-hz.dev/v1alpha1' },
     kind: { const: 'WorkflowTemplate' },
     metadata: {
       type: 'object',
@@ -159,7 +153,12 @@ const validateTemplateSchema = ajv.compile(WORKFLOW_TEMPLATE_SCHEMA)
 
 export function parseWorkflowTemplate(source: string): WorkflowTemplate {
   const parsed: unknown = parse(source)
-  return snapshotJsonValue(parsed) as unknown as WorkflowTemplate
+  const snapshot = snapshotJsonValue(parsed)
+  const diagnostics = structuralDiagnostics(snapshot)
+  if (diagnostics.length > 0) {
+    throw new Error(`workflow template is structurally invalid:\n${diagnostics.map(item => `- ${item.message}`).join('\n')}`)
+  }
+  return snapshot as unknown as WorkflowTemplate
 }
 
 export function structuralDiagnostics(candidate: unknown): WorkflowDiagnostic[] {
