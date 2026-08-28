@@ -11,6 +11,7 @@ import type {
 } from '@gm-hz/dsh-dag-workflow-host'
 import { describe, expect, it, vi } from 'vitest'
 import * as CanvasPlugin from '../lib/index.js'
+import { starterTemplate } from '../src/client/ux.js'
 import type { CanvasWorkflowTemplate, WorkflowCanvasAction } from '../src/types.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -91,6 +92,24 @@ async function runtime(): Promise<Context> {
 }
 
 describe('workflow canvas Host gateway', () => {
+  it('validates and runs the first-use starter through the real DAG engine', async () => {
+    const ctx = await runtime()
+    const agent = { id: 'starter-session', session: new Session() }
+    ctx.agents.register(agent.id, agent)
+    await ctx.plugin(CanvasPlugin.WorkflowCanvasGateway)
+    const template = starterTemplate(101)
+
+    await expect(ctx.workflowCanvas.validate(agent.id, { template })).resolves.toEqual({ diagnostics: [] })
+    const result = await ctx.workflowCanvas.runDraft(agent.id, {
+      template, inputs: { message: 'first success' },
+    }, new AbortController().signal)
+    const trace = await ctx.workflowCanvas.trace(agent.id, { runId: result.runId })
+
+    expect(result).toMatchObject({ status: 'completed', outputs: { message: 'first success' } })
+    expect(trace.nodeStates).toEqual({ start: 'succeeded', end: 'succeeded' })
+    expect(trace.events.map(event => event.type)).toEqual(expect.arrayContaining(['run.started', 'node.completed', 'run.completed']))
+  })
+
   it('uses the local-profile authorization boundary when the gateway receives no config', async () => {
     const ctx = await runtime()
     const agent = { id: 'session-default-config', session: new Session() }

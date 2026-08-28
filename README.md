@@ -115,7 +115,16 @@ dsh plugin --profile web add \
 dsh web
 ```
 
-打开任意顶层会话后，页面右下角会出现 `◇ FLOW`。本仓库提供了一个可直接执行的风险分流模板 [approval-gate.workflow.json](examples/approval-gate.workflow.json)：`riskScore > 70` 走 `true` 边，否则走 `false` 边，两路汇合并输出类型稳定的 `{ request, highRisk }`。
+打开任意顶层会话后，页面右下角会出现 `◇ 工作流`。首次打开有三条清晰路径：运行不依赖外部 Tool 的回显示例、复制指令让 Agent 创建，或者继续最近草稿。Canvas 会跟随 DSH 明暗主题，并把高级 Schema、依赖和原始 JSON 收进渐进配置。
+
+最短验证路径：
+
+1. 点击 `◇ 工作流` → `从可运行示例开始`。
+2. 保持预填的 `{ "message": "你好，DSH Workflow" }`，点击 `试运行`。
+3. 在底部看到开始、节点完成和运行完成；选择节点可查看本次输出。
+4. 点击 `校验`，确认 0 个错误后保存。只有发布不可变修订时才会二次确认。
+
+连接中断或 DSH 重启时，Canvas 会保留未保存模板和运行输入、自动重连并区分连接、权限、CAS 冲突、Schema 与执行错误。详细交互约束见 [体验与故障恢复](docs/experience.md)。本仓库另提供可直接执行的风险分流模板 [approval-gate.workflow.json](examples/approval-gate.workflow.json)：`riskScore > 70` 走 `true` 边，否则走 `false` 边，两路汇合并输出类型稳定的 `{ request, highRisk }`。
 
 先单独验证模板和 DAG Engine：
 
@@ -196,6 +205,8 @@ workflow_run
 > 创建一个“研究主题 → 两路独立调研 → 汇总报告 → 人工确认”的 workflow。先展示校验结果和 diff，得到我确认后再发布，并运行发布的精确 revision。
 
 Skill 引导 Agent 按 `查询节点和 Tool → 生成拓扑 → 创建或导入 draft → 校验 → diff → 发布 → 运行` 的顺序工作。大型模板使用 `workflow_draft_import` 传递完整 JSON 字符串，避免模型把 object 参数错误序列化。Skill 不绕过工具直接修改 Catalog，因此原有的 scope、guard、approval 和 observer 策略仍然生效。
+
+创建或更新完成后，Agent 默认只返回工作流名称、草稿 ID、草稿修订、校验结果和下一步，不会把完整模板塞进对话。用户打开 `工作流` 看到的是同一份 WorkflowTemplate，而不是另一份 Canvas 副本；只有明确要求原始 JSON 时才展开模板。
 
 ### 2. 从代码执行
 

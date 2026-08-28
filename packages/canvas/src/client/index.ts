@@ -62,7 +62,7 @@ export async function apply(ctx: WorkflowCanvasClientContext): Promise<void> {
       name: 'shell.overlay',
       id: 'dsh-dag-workflow-canvas',
       order: 80,
-      label: 'Workflow Signal Studio',
+      label: 'DSH DAG Workflow',
       inject: () => ({ remote: scope.remote.workflowCanvas, sessions: scope.sessions.list, controller }),
     }, WorkflowCanvasOverlay))
   })

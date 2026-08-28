@@ -33,7 +33,7 @@ pnpm build
 pnpm test
 ```
 
-在 DSH Canvas 中导入模板时，先通过 `CHECK` 查看依赖声明是否完整。批量合同示例固定引用 `contract-clause-review-worker` revision 2，需要先发布该 revision，再发布并运行父模板。外部 Tool 名称由当前 DSH profile 提供；模板不会自动扩大当前 Agent 的权限。
+在 DSH Canvas 中导入模板时，先通过 `校验` 查看依赖声明是否完整。批量合同示例固定引用 `contract-clause-review-worker` revision 2，需要先发布该 revision，再发布并运行父模板。外部 Tool 名称由当前 DSH profile 提供；模板不会自动扩大当前 Agent 的权限。
 
 也可以把整套 Showcase 作为草稿一键装入本机 DSH（脚本会自动准备批量合同示例依赖的 worker revision 2）：
 
@@ -46,3 +46,15 @@ pnpm showcase:install
 ```bash
 pnpm showcase:install -- --db /absolute/path/to/workflows.db
 ```
+
+## 运行 AI 模型周报
+
+该模板需要当前 DSH Agent 能看到 `web_search` Tool。它不是 Workflow 自己实现的 Provider：13 个检索节点都通过通用 `dsh.tool@1` 调用当前 DSH Tool，模板只声明精确依赖。
+
+1. 运行 `pnpm showcase:install`，然后启动使用同一 DSH home 的 Web profile。
+2. 打开一个拥有 `web_search` 的顶层会话，点击右下角 `工作流`。
+3. 选择 `AI 模型周报`，点击 `校验`。如果当前 profile 没有 `web_search`，问题面板会明确显示 Tool 不可用。
+4. 在运行输入中填写 `from` 和 `to` 日期窗口，点击 `试运行`。模板内部已经把候选上限固定为 100 条。
+5. 底部先显示 13 路 Tool 调用，再显示 Agent 结构化评分与确定性脚本合并/排序；最终输出只保留 Top 10。
+
+完整验收仍以 [weekly-ai-model-news.workflow.json](../examples/weekly-ai-model-news.workflow.json) 中声明的 input Schema 为准，不要在脚本节点中放入网络调用、密钥或动态代码。

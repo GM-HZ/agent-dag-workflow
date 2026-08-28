@@ -148,7 +148,7 @@ export function blankTemplate(seed = Date.now()): CanvasWorkflowTemplate {
   return {
     apiVersion: 'dsh.workflow/v1alpha1',
     kind: 'WorkflowTemplate',
-    metadata: { id: `workflow-${seed}`, name: 'Untitled signal' },
+    metadata: { id: `workflow-${seed}`, name: '未命名工作流' },
     spec: {
       inputSchema: { type: 'object', additionalProperties: true },
       outputSchema: { type: 'object' },

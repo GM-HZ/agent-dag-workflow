@@ -212,13 +212,68 @@ function tool(
     },
     output: {
       schema: objectOutput,
-      render(_args, value) { return [{ type: 'text', text: stableJsonStringify(value) }] },
+      render(_args, value) { return [{ type: 'text', text: renderWorkflowToolOutput(name, value) }] },
     },
     ...(concurrencySafe ? { isConcurrencySafe: () => true } : {}),
     async execute(args, context) {
       return snapshotJsonValue(await execute(snapshotJsonObject(args), context))
     },
   }
+}
+
+/** Keep Agent/Canvas handoff concise while preserving the complete structured value for DSH. */
+export function renderWorkflowToolOutput(name: string, value: JsonValue): string {
+  if (!isJsonObject(value)) return stableJsonStringify(value)
+  if (name === 'workflow_draft_create' || name === 'workflow_draft_update' || name === 'workflow_draft_import') {
+    const template = isJsonObject(value.template) ? value.template : undefined
+    const metadata = template !== undefined && isJsonObject(template.metadata) ? template.metadata : undefined
+    const id = typeof value.id === 'string' ? value.id : typeof metadata?.id === 'string' ? metadata.id : 'unknown'
+    const title = typeof metadata?.name === 'string' ? metadata.name : id
+    const revision = typeof value.revision === 'number' ? value.revision : '?'
+    return [
+      `工作流草稿已保存：${title}`,
+      `草稿 ID：${id}`,
+      `草稿修订：${revision}`,
+      '下一步：校验该草稿；然后在 DSH 右下角打开“工作流”查看同一份 WorkflowTemplate。',
+    ].join('\n')
+  }
+  if (name === 'workflow_publish') {
+    return [
+      `工作流已发布：${String(value.id ?? 'unknown')}`,
+      `不可变修订：${String(value.revision ?? '?')}`,
+      `来源草稿修订：${String(value.sourceDraftRevision ?? '?')}`,
+      '运行时请明确引用该发布修订。',
+    ].join('\n')
+  }
+  if (name === 'workflow_draft_validate' || name === 'workflow_validate') {
+    const diagnostics = Array.isArray(value.diagnostics) ? value.diagnostics : []
+    const errors = diagnostics.filter(item => isJsonObject(item) && item.severity === 'error').length
+    const warnings = diagnostics.length - errors
+    return diagnostics.length === 0
+      ? `工作流校验通过${typeof value.revision === 'number' ? `（草稿修订 ${value.revision}）` : ''}：0 个错误，0 个警告。可以在画布中检查后再决定是否发布。`
+      : [`工作流校验未通过：${errors} 个错误，${warnings} 个警告。`, stableJsonStringify({ diagnostics })].join('\n')
+  }
+  if (name === 'workflow_diff') {
+    return [
+      `工作流变更：语义${value.semanticChanged === true ? '已改变' : '未改变'}，布局${value.layoutChanged === true ? '已改变' : '未改变'}。`,
+      stableJsonStringify(value),
+    ].join('\n')
+  }
+  if (name === 'workflow_run') {
+    const details: JsonObject = value.outputs === undefined
+      ? {
+          ...(value.error === undefined ? {} : { error: value.error }),
+          ...(value.needsAttention === undefined ? {} : { needsAttention: value.needsAttention }),
+        }
+      : { outputs: value.outputs }
+    return [
+      `工作流运行${value.status === 'completed' ? '完成' : '结束'}：${String(value.status ?? 'unknown')}`,
+      `运行 ID：${String(value.runId ?? 'unknown')}`,
+      stableJsonStringify(details),
+      '可在“工作流 → 运行与审计”中查看节点路径和持久化轨迹。',
+    ].join('\n')
+  }
+  return stableJsonStringify(value)
 }
 
 async function settleRun(run: ReturnType<Context['dagWorkflowEngine']['start']>) {

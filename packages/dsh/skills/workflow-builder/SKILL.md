@@ -23,4 +23,6 @@ Use only the `workflow_*` tools for catalog mutations and runs. Do not write a t
 8. Publish only when the user already requested publication or confirms after seeing the diff. Call `workflow_publish` with the exact current draft revision; never retry a CAS conflict without reading and reviewing the newer draft.
 9. When requested, call `workflow_run` with an exact published id/revision. Use inline templates only for an explicitly described draft test. Report the run id and paused/needs-attention state without treating it as success.
 
+After creating or updating a draft, keep the user-facing handoff compact: report the workflow name, draft id, current draft revision, validation counts, and the next decision. Tell the user to open **工作流** in DSH to inspect the same template. Do not paste the complete WorkflowTemplate into chat unless the user explicitly asks for the raw JSON. Never imply that the Canvas contains a separate copy.
+
 Keep Canvas and generated content as projections of the same template. Do not create a second DSL or encode runtime behavior in layout fields.
