@@ -1,5 +1,7 @@
 # DSH DAG Workflow 总体架构
 
+> 本文描述当前 `0.2.x` DSH 集成架构。去除 DSH Core 标识、收敛为单一公开包并引入通用 Journal/Adapter/Trigger 边界的 `0.3.0` 提案见 [Agent DAG Workflow 核心通用化重构方案](core-generalization-refactor.md)。
+
 ## 1. 产品定位
 
 DSH DAG Workflow 是一组可组合插件，而不是一个拥有独立模型、工具、权限和会话体系的平台。它提供四件事：版本化模板、可恢复执行、Agent 生成/调用入口、Canvas 可视化。
