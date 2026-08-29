@@ -6,8 +6,8 @@
     "name": "GM-HZ",
     "url": "https://github.com/GM-HZ"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow",
-  "repository": "https://github.com/GM-HZ/dsh-dag-workflow",
+  "homepage": "https://github.com/GM-HZ/agent-dag-workflow",
+  "repository": "https://github.com/GM-HZ/agent-dag-workflow",
   "license": "MIT",
   "keywords": ["agent", "dag", "workflow", "cli", "mcp"],
   "skills": "./skills/",
@@ -18,7 +18,7 @@
     "developerName": "GM-HZ",
     "category": "Productivity",
     "capabilities": ["Workflow discovery", "Durable execution", "Trace and replay"],
-    "websiteURL": "https://github.com/GM-HZ/dsh-dag-workflow",
+    "websiteURL": "https://github.com/GM-HZ/agent-dag-workflow",
     "defaultPrompt": [
       "Find and run the best workflow for this task.",
       "Build and validate a reusable DAG workflow.",

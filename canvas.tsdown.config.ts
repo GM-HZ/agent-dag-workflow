@@ -3,7 +3,7 @@ import { createRequire } from 'node:module'
 import { defineConfig } from 'tsdown'
 
 const PACKAGE_ID = '@gm-hz/agent-dag-workflow'
-const CSS_PREFIX = '\0dsh-dag-workflow-css:'
+const CSS_PREFIX = '\0agent-dag-workflow-css:'
 const CSS_SUFFIX = '.mjs'
 const require = createRequire(import.meta.url)
 const sharedModules = new Set([
@@ -37,7 +37,7 @@ export default defineConfig({
     'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
   },
   plugins: [{
-    name: 'dsh-dag-workflow-global-css',
+    name: 'agent-dag-workflow-global-css',
     resolveId(source: string) {
       if (!source.endsWith('.css')) return null
       return `${CSS_PREFIX}${require.resolve(source)}${CSS_SUFFIX}`

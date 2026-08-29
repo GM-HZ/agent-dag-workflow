@@ -18,7 +18,7 @@ describe('published root package manifest', () => {
     expect(manifest.name).toBe('@gm-hz/agent-dag-workflow')
     expect(manifest.repository).toEqual({
       type: 'git',
-      url: 'git+https://github.com/GM-HZ/dsh-dag-workflow.git',
+      url: 'git+https://github.com/GM-HZ/agent-dag-workflow.git',
     })
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(manifest.dsh?.client).toMatchObject({ platform: 'web', immediately: true })

@@ -187,7 +187,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git"
+    "url": "git+https://github.com/GM-HZ/agent-dag-workflow.git"
   },
   "keywords": [
     "agent",
@@ -202,9 +202,9 @@
   "author": "GM-HZ",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/GM-HZ/dsh-dag-workflow/issues"
+    "url": "https://github.com/GM-HZ/agent-dag-workflow/issues"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme",
+  "homepage": "https://github.com/GM-HZ/agent-dag-workflow#readme",
   "directories": {
     "doc": "docs",
     "example": "examples",
