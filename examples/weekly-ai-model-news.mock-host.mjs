@@ -21,9 +21,11 @@ export default {
     tools: {
       async execute(request) {
         if (request.uses !== 'web_search') throw new Error(`unexpected Tool: ${request.uses}`)
+        const batch = Number(request.nodeId.slice('search-'.length)) - 1
+        const sources = items.slice(batch * 8, batch * 8 + 8)
         return {
           content: `Deterministic search result for ${request.nodeId}`,
-          sources: items.slice(0, 8).map(item => ({
+          sources: sources.map(item => ({
             url: item.url,
             title: item.title,
             snippet: item.summary,

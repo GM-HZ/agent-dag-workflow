@@ -17,3 +17,4 @@ coverage/
 *.tsbuildinfo
 .playwright-cli/
 output/
+/.agent-dag-workflow.db*

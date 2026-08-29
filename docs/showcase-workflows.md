@@ -51,13 +51,27 @@ pnpm showcase:install -- --db /absolute/path/to/workflows.db
 
 该模板需要 Host 提供 `web_search` Tool。它不是 Workflow 自己实现的 Provider：13 个检索节点都通过通用 `tool.call@1` 调用 Host Tool，模板只声明精确依赖。
 
-不接外部网络也可以用确定性 Mock Host 验证完整 DAG：
+不接外部网络也可以用一条命令验证完整 DAG。示例驱动器会使用持久化 SQLite，依次完成模板校验、草稿安装、不可变 revision 发布、运行，并打印结果和读取完整 Trace 的命令：
+
+```bash
+pnpm example:weekly
+```
+
+默认数据写入当前目录的 `.agent-dag-workflow.db`，不会创建一次性 Runtime。重复运行时，相同模板复用既有发布 revision；模板语义发生变化才发布新 revision。默认 Mock Host 是确定性离线验收数据，13 次检索合计覆盖 100 条候选，不代表实时新闻。
+
+接入真实 Tool/Agent Gateway 时仍运行同一模板，只替换 Host Adapter：
+
+```bash
+pnpm example:weekly -- --host /absolute/path/to/my-host.mjs \
+  --input /absolute/path/to/inputs.json \
+  --db /absolute/path/to/workflows.db
+```
+
+Host 模块只需要实现通用 `services.tools.execute` 和 `services.agents.execute`；无需创建 `Provider`、无需修改模板节点，也不能绕过模板的 `spec.requires` 和输出 Schema。自动化程序在构建后可直接执行 Runner 的 `--json` 模式，stdout 只有一个包含 `workflowRef`、`runId`、最终输出、审计计数与可执行 Trace 命令的 JSON 对象：
 
 ```bash
 pnpm build
-node lib/cli.js run examples/weekly-ai-model-news.workflow.json \
-  --input examples/weekly-ai-model-news.inputs.json \
-  --host examples/weekly-ai-model-news.mock-host.mjs
+node examples/run-weekly-ai-model-news.mjs --json > weekly-result.json
 ```
 
 在 DSH 中运行真实检索时：

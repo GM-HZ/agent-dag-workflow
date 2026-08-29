@@ -121,7 +121,8 @@ function weeklyServices(onTool = () => {}, onAgent = () => {}): WorkflowEngineSe
     tools: { async execute(request) {
       onTool()
       if (request.uses !== 'web_search') throw new Error(`unexpected Tool: ${request.uses}`)
-      return { content: request.nodeId, sources: items.slice(0, 8).map(item => ({ url: item.url, title: item.title, snippet: item.summary, publishedAt: item.publishedAt })), truncated: true }
+      const batch = Number(request.nodeId.slice('search-'.length)) - 1
+      return { content: request.nodeId, sources: items.slice(batch * 8, batch * 8 + 8).map(item => ({ url: item.url, title: item.title, snippet: item.summary, publishedAt: item.publishedAt })), truncated: true }
     } },
     agents: { async execute(request) {
       onAgent()

@@ -292,6 +292,9 @@ CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个
 pnpm install
 pnpm check
 pnpm demo
+pnpm example:weekly
 ```
+
+`pnpm example:weekly` 会在本地持久化数据库中真实执行 21 节点的“AI 模型周报”模板：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。默认使用离线确定性 Host；替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
 
 项目使用 MIT License。发布、兼容性和实现门禁以 [重构方案](docs/core-generalization-refactor.md) 的完成定义为准。

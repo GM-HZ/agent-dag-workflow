@@ -12,6 +12,7 @@
     "build": "pnpm sync:codex-plugin && pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
     "check": "pnpm typecheck && pnpm test",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
+    "example:weekly": "pnpm build && node examples/run-weekly-ai-model-news.mjs",
     "generate:typert": "node scripts/canvas/generate-typert.mjs",
     "showcase:install": "pnpm build && node examples/install-showcases.mjs",
     "sync:codex-plugin": "node scripts/sync-codex-plugin.mjs",
