@@ -24,6 +24,13 @@ describe('user experience contract', () => {
     }
   })
 
+  it('ships one structural skin without retaining the legacy dark Canvas stylesheet', () => {
+    expect(studio).toContain('const STRUCTURE_CSS')
+    expect(studio).not.toContain('const CANVAS_CSS')
+    expect(studio).not.toContain('#0d0f0e')
+    expect(studio).not.toContain('IBM Plex Mono')
+  })
+
   it('instructs the Agent to hand off a compact reference to the same template', () => {
     expect(skill).toContain('report only the Workflow name/id, current draft revision')
     expect(skill).toContain('Never print complete templates, execution plans, event histories')

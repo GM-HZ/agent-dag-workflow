@@ -7,6 +7,7 @@ import {
   diagnosticTitle,
   documentStateLabel,
   hasUnsavedChanges,
+  nodeRequirementPresentation,
   parseRecoverySnapshot,
   serializeRecoverySnapshot,
   starterTemplate,
@@ -49,6 +50,7 @@ describe('Canvas experience model', () => {
     ["internal: / must have required property 'message'", 'validation', false],
     ['workflow run not found', 'not-found', false],
     ['DSH_TOOL_FAILED: upstream rejected', 'execution', false],
+    ['tool.call requires a WorkflowToolGateway', 'validation', false],
   ] as const)('classifies %s as an actionable %s error', (message, kind, retryable) => {
     expect(classifyWorkflowError(message)).toMatchObject({ kind, retryable })
   })
@@ -67,6 +69,28 @@ describe('Canvas experience model', () => {
     expect(visibleTraceEvents(trace).map(event => event.title)).toEqual(['开始运行', '节点执行失败'])
     expect(visibleTraceEvents(trace, true)).toHaveLength(4)
     expect(visibleTraceEvents(trace)[1]).toMatchObject({ nodeId: 'call', tone: 'danger', detail: 'DSH_TOOL_FAILED' })
+  })
+
+  it('projects external capability events and exact node dependency status', () => {
+    expect(visibleTraceEvents({
+      runId: 'run-2', templateId: 'inventory-audit', semanticHash: 'hash', createdAt: 1, status: 'completed', checkpointSeq: 2,
+      nodeStates: {}, edgeStates: {}, nodeOutputs: {}, nodeProgress: {}, events: [
+        { seq: 1, type: 'capability.requested', runId: 'run-2', nodeId: 'query', invocationId: 'i-1' },
+        { seq: 2, type: 'capability.completed', runId: 'run-2', nodeId: 'query', invocationId: 'i-1' },
+      ],
+    }).map(event => event.title)).toEqual(['请求外部能力', '外部能力已返回'])
+    const definition = {
+      catalogId: 'tool:inventory.lookup', kind: 'tool' as const, uses: 'tool.call@1', toolName: 'inventory.lookup', title: 'inventory.lookup', description: '', role: 'regular' as const,
+      configSchema: {}, inputSchema: {}, outputSchema: {}, outputPorts: ['success'], requiredOutputPorts: [], capabilities: ['gateway.tool.execute'], dependencyKinds: ['tool'],
+      defaultRequirements: [{ kind: 'capability', uses: 'gateway.tool.execute' }, { kind: 'tool', uses: 'inventory.lookup' }], retry: 'never' as const,
+    }
+    expect(nodeRequirementPresentation(
+      { id: 'query', uses: 'tool.call@1', with: { uses: 'inventory.lookup' }, inputs: {} }, definition,
+      [{ kind: 'capability', uses: 'gateway.tool.execute' }],
+    )).toEqual([
+      { kind: 'capability', uses: 'gateway.tool.execute', declared: true },
+      { kind: 'tool', uses: 'inventory.lookup', declared: false },
+    ])
   })
 
   it('maps stable compiler diagnostics to user-facing titles', () => {

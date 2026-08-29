@@ -19,6 +19,8 @@ export { SqliteWorkflowIngressStore } from './storage/sqlite/ingress-store.js'
 export type { SqliteWorkflowIngressStoreOptions } from './storage/sqlite/ingress-store.js'
 export { SqliteWorkflowDeliveryStore } from './storage/sqlite/delivery-store.js'
 export type { SqliteWorkflowDeliveryStoreOptions } from './storage/sqlite/delivery-store.js'
+export { SqliteWorkflowBindingRepository } from './storage/sqlite/binding-repository.js'
+export type { SqliteWorkflowBindingRepositoryOptions } from './storage/sqlite/binding-repository.js'
 
 /**
  * DSH treats the package named by the bundle patch as the owner of both the

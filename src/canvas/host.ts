@@ -5,7 +5,6 @@ import {
   snapshotJsonValue,
   type WorkflowDiagnostic,
   type WorkflowNodeDefinition,
-  type WorkflowRun,
   type WorkflowRunCheckpoint,
   type WorkflowRunMetadata,
   type WorkflowEvent,
@@ -57,6 +56,13 @@ interface WorkflowCanvasTemplateHost {
   list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
+interface WorkflowCanvasRun {
+  readonly id: string
+  readonly result: Promise<WorkflowRunResult>
+  cancel(reason?: string): Promise<void>
+  dispose(): Promise<void>
+}
+
 interface WorkflowCanvasEngineHost {
   start(request: {
     readonly template?: WorkflowTemplate
@@ -64,13 +70,13 @@ interface WorkflowCanvasEngineHost {
     readonly inputs: import('../core/index.js').JsonObject
     readonly parent: WorkflowCanvasPrincipal['agent']
     readonly signal: AbortSignal
-  }): Promise<WorkflowRun>
+  }): Promise<WorkflowCanvasRun>
   resume(request: {
     readonly runId: string
     readonly parent: WorkflowCanvasPrincipal['agent']
     readonly signal: AbortSignal
     readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
-  }): Promise<WorkflowRun>
+  }): Promise<WorkflowCanvasRun>
 }
 
 type WorkflowCanvasHostContext = Context & {
@@ -272,12 +278,13 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       this.host.workflowRuns.getCheckpoint(request.runId),
     ])
     if (record === undefined || checkpoint === undefined) throw new Error(`workflow run not found: ${request.runId}`)
-    const events: WorkflowEvent[] = []
-    for (;;) {
-      const page = await this.host.workflowRuns.readEvents(request.runId, { afterSeq: events.at(-1)?.seq ?? 0, limit: 1000 })
-      events.push(...page)
-      if (page.length < 1000) break
-    }
+    const afterSeq = request.afterSeq ?? 0
+    const limit = request.limit ?? 200
+    if (!Number.isSafeInteger(afterSeq) || afterSeq < 0) throw new Error('Canvas trace afterSeq must be a non-negative safe integer')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('Canvas trace limit must be between 1 and 1000')
+    const page = await this.host.workflowRuns.readEvents(request.runId, { afterSeq, limit: limit + 1 })
+    const events = page.slice(0, limit)
+    const nextAfterSeq = page.length > limit ? events.at(-1)?.seq : undefined
     return {
       runId: record.runId,
       templateId: record.templateId,
@@ -290,6 +297,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       nodeOutputs: checkpoint.nodeOutputs,
       nodeProgress: checkpoint.nodeProgress,
       events: events.map(event => snapshotJsonObject(event)),
+      ...(nextAfterSeq === undefined ? {} : { nextAfterSeq }),
       ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
     }
   }
@@ -330,7 +338,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   }
 }
 
-async function settle(run: WorkflowRun): Promise<CanvasRunResult> {
+async function settle(run: WorkflowCanvasRun): Promise<CanvasRunResult> {
   let result: WorkflowRunResult | undefined
   let executionError: unknown
   try { result = await run.result } catch (error: unknown) { executionError = error }

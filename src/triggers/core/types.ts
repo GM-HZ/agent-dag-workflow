@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue } from '../../core/index.js'
+import type { JsonObject, JsonSchema, JsonValue } from '../../core/index.js'
 
 export interface WorkflowTriggerEnvelope {
   readonly schemaVersion: 1
@@ -28,6 +28,25 @@ export interface WorkflowTriggerBinding {
     readonly enabled?: boolean
     readonly deliveryRef?: string
   }
+}
+
+export type WorkflowTriggerBindingCandidate = Omit<WorkflowTriggerBinding, 'metadata'> & {
+  readonly metadata: { readonly id: string }
+}
+
+export interface WorkflowBindingRepository {
+  publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number, publishedAt: number): Promise<WorkflowTriggerBinding>
+  get(id: string, revision?: number): Promise<WorkflowTriggerBinding | undefined>
+  list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]>
+}
+
+export interface WorkflowBindingTargetCatalog {
+  getPublished(id: string, revision?: number): Promise<{ readonly template: { readonly spec: { readonly inputSchema: JsonSchema } } }>
+}
+
+export interface WorkflowTriggerDefinition {
+  readonly uses: string
+  readonly configSchema: JsonSchema
 }
 
 export type WorkflowIngressStatus = 'received' | 'rejected' | 'deduplicated' | 'launched'

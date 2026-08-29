@@ -418,7 +418,8 @@ export interface WorkflowRunFailure {
 
 export type WorkflowRunResult = WorkflowRunSuccess | WorkflowRunFailure
 
-export interface WorkflowRun {
+/** Low-level engine handle. Host integrations should normally expose WorkflowRunHandle from the Runtime facade. */
+export interface WorkflowEngineRun {
   readonly id: string
   readonly result: Promise<WorkflowRunResult>
   cancel(reason?: string): Promise<void>
@@ -440,7 +441,8 @@ export interface WorkflowExecutionPlanSnapshot {
   readonly replayable: boolean
 }
 
-export interface WorkflowStartRequest {
+/** Low-level engine request used by WorkflowRuntime after launch policy and plan resolution. */
+export interface WorkflowEngineStartRequest {
   readonly runId?: string
   readonly template: WorkflowTemplate
   readonly inputs: JsonObject
@@ -469,7 +471,7 @@ export interface WorkflowCancelRequest {
   readonly onEvent?: (event: WorkflowEvent) => void
 }
 
-export interface WorkflowInvocationRequest extends WorkflowStartRequest {
+export interface WorkflowInvocationRequest extends WorkflowEngineStartRequest {
   readonly invocationId: string
   readonly depth: number
   readonly subworkflowDepthLimit: number

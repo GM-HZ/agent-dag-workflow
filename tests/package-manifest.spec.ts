@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 
 interface PackageManifest {
@@ -33,6 +36,14 @@ describe('published root package manifest', () => {
     expect(manifest.dependencies?.['@modelcontextprotocol/sdk']).toBe('1.30.0')
     const plugin = JSON.parse(readFileSync(new URL('../integrations/codex/agent-dag-workflow/.codex-plugin/plugin.json', import.meta.url), 'utf8')) as { version?: string; name?: string }
     expect(plugin).toMatchObject({ name: 'agent-dag-workflow', version: manifest.version })
+    const marketplace = JSON.parse(readFileSync(new URL('../integrations/codex/.agents/plugins/marketplace.json', import.meta.url), 'utf8')) as {
+      name?: string
+      plugins?: Array<{ name?: string; source?: { source?: string; path?: string } }>
+    }
+    expect(marketplace).toMatchObject({
+      name: 'agent-dag-workflow-local',
+      plugins: [{ name: 'agent-dag-workflow', source: { source: 'local', path: './agent-dag-workflow' } }],
+    })
     expect(readFileSync(new URL('../integrations/codex/agent-dag-workflow/skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')).toBe(
       readFileSync(new URL('../skills/workflow-builder/SKILL.md', import.meta.url), 'utf8'),
     )
@@ -41,5 +52,24 @@ describe('published root package manifest', () => {
   it('does not publish workspace-only runtime dependency ranges', () => {
     expect(Object.values(manifest.dependencies ?? {})).not.toContainEqual(expect.stringMatching(/^workspace:/))
     expect(Object.keys(manifest.dependencies ?? {})).not.toContainEqual(expect.stringMatching(/^@gm-hz\/dsh-dag-workflow/))
+  })
+
+  it('ships a Codex Plugin whose on-demand wrapper reaches the package CLI', () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'agent-dag-codex-plugin-'))
+    try {
+      const wrapper = new URL('../integrations/codex/agent-dag-workflow/scripts/agent-workflow.mjs', import.meta.url)
+      const result = spawnSync(process.execPath, [wrapper.pathname, 'search', '--db', join(workspace, 'workflow.db')], {
+        cwd: new URL('..', import.meta.url),
+        encoding: 'utf8',
+      })
+      expect(result.status).toBe(0)
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        protocolVersion: 'agent-workflow.cli/v1',
+        ok: true,
+        data: { items: [] },
+      })
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })

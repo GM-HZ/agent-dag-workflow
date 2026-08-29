@@ -78,8 +78,9 @@ describe('agent-workflow CLI protocol', () => {
     const diagnostics: string[] = []
     const io: WorkflowCliIo = { stdout: line => output.push(line), stderr: line => diagnostics.push(line), async readStdin() { return '' } }
     expect(await runWorkflowCli(['run', 'script-transform-demo', '--db', join(root, 'workflow.db')], io)).toBe(2)
-    const envelope = JSON.parse(output.pop()!) as { readonly ok: boolean; readonly error: { readonly code: string } }
+    const envelope = JSON.parse(output.pop()!) as { readonly ok: boolean; readonly error: { readonly code: string; readonly hints?: readonly string[] } }
     expect(envelope).toMatchObject({ protocolVersion: 'agent-workflow.cli/v1', ok: false, error: { code: 'WORKFLOW_REVISION_REQUIRED' } })
+    expect(envelope.error.hints?.join('\n')).toContain('exact published id@revision')
   })
 
   it('fails closed on unknown, duplicate, or trailing command arguments', async () => {
@@ -131,6 +132,38 @@ describe('agent-workflow CLI protocol', () => {
     expect(data(lines.pop()!)).toMatchObject({ runId: accepted.runId, status: 'completed' })
     expect(await runWorkflowCli(['run-get', accepted.runId, '--db', database, '--host', host], line => lines.push(line))).toBe(0)
     expect(data(lines.pop()!)).toMatchObject({ status: 'completed', outputs: { customer: 'DETACHED' } })
+  })
+
+  it('projects live progress as bounded JSONL while Journal remains the authoritative recovery source', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-workflow-cli-live-'))
+    roots.push(root)
+    const database = join(root, 'workflow.db')
+    const host = join(root, 'host.mjs')
+    writeFileSync(host, `export default {
+      authorityRef: 'cli:live-test',
+      authorityResolver: { async resolve(ref) { return ref === 'cli:live-test' ? { kind: 'worker-authority' } : undefined } }
+    }\n`)
+    const template = join(process.cwd(), 'examples', 'script-transform.workflow.json')
+    const setup: string[] = []
+    await runWorkflowCli(['draft', 'put', template, '--db', database, '--host', host], line => setup.push(line)); setup.pop()
+    await runWorkflowCli(['publish', 'script-transform-demo', '--expected', '1', '--db', database, '--host', host], line => setup.push(line)); setup.pop()
+    await runWorkflowCli([
+      'run', 'script-transform-demo@1', '--input-json', JSON.stringify({ customer: ' live ', orders: [] }),
+      '--detach', '--db', database, '--host', host,
+    ], line => setup.push(line))
+    const accepted = data(setup.pop()!) as { readonly runId: string }
+    const stream: string[] = []
+    const [followCode, workerCode] = await Promise.all([
+      runWorkflowCli(['trace', accepted.runId, '--follow', '--db', database, '--host', host], line => stream.push(line)),
+      new Promise<number>(resolve => setTimeout(() => {
+        void runWorkflowCli(['worker', '--once', '--db', database, '--host', host], () => {}).then(resolve)
+      }, 25)),
+    ])
+    expect(followCode).toBe(0)
+    expect(workerCode).toBe(0)
+    const events = stream.map(line => data(line) as { readonly seq: number; readonly type: string })
+    expect(events.map(event => event.type)).toEqual(expect.arrayContaining(['run.accepted', 'run.started', 'node.completed', 'run.completed']))
+    expect(events.map(event => event.seq)).toEqual([...events.map(event => event.seq)].sort((left, right) => left - right))
   })
 })
 

@@ -112,6 +112,23 @@ describe('installable DSH workflow package', () => {
         source: 'accept',
       })).toEqual([])
       const draft = await first.workflowTemplates.createDraft(template())
+      const published = await first.workflowTemplates.publish(draft.id, draft.revision)
+      const disposeTrigger = first.workflowTriggers.register({
+        uses: 'cron@1',
+        configSchema: {
+          type: 'object', additionalProperties: false, required: ['expression'],
+          properties: { expression: { type: 'string' } },
+        },
+      })
+      const binding = await first.workflowBindings.publish({
+        apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'bundle-nightly' },
+        spec: {
+          workflow: { id: draft.id, revision: published.revision },
+          trigger: { uses: 'cron@1', with: { expression: '0 9 * * 1' } },
+          inputMapping: { value: { literal: 'scheduled' } },
+          authorityRef: 'service:bundle-cron',
+        },
+      }, 0)
       const run = await first.dagWorkflowEngine.start({
         template: draft.template,
         inputs: { value: 'persisted' },
@@ -119,6 +136,7 @@ describe('installable DSH workflow package', () => {
       })
       expect(await run.result).toMatchObject({ status: 'completed', outputs: { value: 'persisted' } })
       await run.dispose()
+      disposeTrigger()
       disposeRules()
       disposeCapability()
       await firstPlugin.dispose()
@@ -127,6 +145,7 @@ describe('installable DSH workflow package', () => {
       const secondPlugin = await second.plugin(Workflow, { databasePath })
       expect(await second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
       expect((await second.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('completed')
+      expect(await second.workflowBindings.get(binding.metadata.id)).toEqual(binding)
       await secondPlugin.dispose()
     } finally {
       rmSync(directory, { recursive: true, force: true })

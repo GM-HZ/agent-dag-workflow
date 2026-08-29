@@ -10,7 +10,7 @@ import { parseWorkflowTemplate, snapshotJsonObject, snapshotJsonValue, type Json
 import { migrateLegacyWorkflowTemplate } from '../../migrations/index.js'
 import { WorkflowRunWorker } from '../../triggers/core/index.js'
 import { createWorkflowCliApplication, type WorkflowCliApplication } from './application.js'
-import { workflowCliExitCode, workflowCliFailure, workflowCliSuccess } from './protocol.js'
+import { workflowCliExitCode, workflowCliFailure, workflowCliRunHints, workflowCliSuccess } from './protocol.js'
 
 export interface WorkflowCliIo {
   readonly stdout: (line: string) => void
@@ -89,11 +89,11 @@ async function executeCommand(
     case 'trace': return traceWorkflow(access, args, context, io)
     case 'replay': {
       const result = await access.replay(requiredPositional(args, 0, 'replay requires runId'), replayMode(option(args, '--mode') ?? 'inspect'), context)
-      return { data: result as unknown as JsonValue, exitCode: result.status === 'failed' || result.status === 'cancelled' ? 5 : 0 }
+      return workflowResult(result)
     }
     case 'resume': {
       const result = await access.resume(requiredPositional(args, 0, 'resume requires runId'), context, await readResolutions(option(args, '--resolutions'), io))
-      return { data: result as unknown as JsonValue, exitCode: result.status === 'completed' || result.status === 'paused' ? 0 : 5 }
+      return workflowResult(result)
     }
     case 'nodes': {
       if (positional(args, 0) !== 'search') invalid('nodes requires the search subcommand')
@@ -153,7 +153,15 @@ async function runWorkflow(access: WorkflowAgentAccessApi, args: readonly string
     mode: hasFlag(args, '--detach') ? 'background' : 'foreground',
     ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
   }, context)
-  return { data: result as unknown as JsonValue, exitCode: result.status === 'failed' || result.status === 'cancelled' ? 5 : 0 }
+  return workflowResult(result)
+}
+
+function workflowResult(result: { readonly runId: string; readonly status: string; readonly error?: string }): { readonly data: JsonValue; readonly exitCode: number } {
+  const hints = workflowCliRunHints(result)
+  return {
+    data: snapshotJsonValue({ ...result, ...(hints.length === 0 ? {} : { hints }) }),
+    exitCode: result.status === 'failed' || result.status === 'cancelled' ? 5 : 0,
+  }
 }
 
 async function traceWorkflow(access: WorkflowAgentAccessApi, args: readonly string[], context: AgentAccessContext, io: WorkflowCliIo) {

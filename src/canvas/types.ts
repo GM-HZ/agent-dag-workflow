@@ -241,7 +241,11 @@ export interface CanvasResumeRequest {
   readonly runId: string
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
 }
-export interface CanvasTraceRequest { readonly runId: string }
+export interface CanvasTraceRequest {
+  readonly runId: string
+  readonly afterSeq?: number
+  readonly limit?: number
+}
 
 export interface CanvasRunResult {
   readonly runId: string
@@ -263,5 +267,6 @@ export interface CanvasTrace {
   readonly nodeOutputs: Readonly<Record<string, CanvasJsonObject>>
   readonly nodeProgress: Readonly<Record<string, CanvasJsonValue>>
   readonly events: readonly CanvasJsonObject[]
+  readonly nextAfterSeq?: number
   readonly error?: string
 }

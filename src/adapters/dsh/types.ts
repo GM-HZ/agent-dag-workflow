@@ -2,9 +2,7 @@ import type {
   JsonObject,
   JsonValue,
   WorkflowEvent,
-  WorkflowResumeRequest,
-  WorkflowRun,
-  WorkflowStartRequest,
+  WorkflowRunResult,
   WorkflowTemplate,
 } from '../../core/index.js'
 import type { WorkflowLaunchTarget } from '../../runtime/index.js'
@@ -114,21 +112,34 @@ export interface DshSkillRuntimeLike {
   }): () => void
 }
 
-export type DshDagWorkflowStartRequest = Omit<WorkflowStartRequest, 'execution' | 'template' | 'plan' | 'recordedNodeOutputs'> & {
+export type DshDagWorkflowStartRequest = {
   readonly inputs: JsonObject
   readonly parent: object
+  readonly signal?: AbortSignal
+  readonly onEvent?: (event: WorkflowEvent) => void
 } & (
   | { readonly template: WorkflowTemplate; readonly target?: never }
   | { readonly target: WorkflowLaunchTarget; readonly template?: never }
 )
 
 export interface DshDagWorkflowEngine {
-  start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun>
-  resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun>
+  start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun>
+  resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun>
 }
 
-export interface DshDagWorkflowResumeRequest extends Omit<WorkflowResumeRequest, 'execution'> {
+export interface DshDagWorkflowResumeRequest {
+  readonly runId: string
   readonly parent: object
+  readonly signal?: AbortSignal
+  readonly onEvent?: (event: WorkflowEvent) => void
+  readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
+}
+
+export interface DshWorkflowRun {
+  readonly id: string
+  readonly result: Promise<WorkflowRunResult>
+  cancel(reason?: string): Promise<void>
+  dispose(): Promise<void>
 }
 
 export interface DshWorkflowPluginConfig {

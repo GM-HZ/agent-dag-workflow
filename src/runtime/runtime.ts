@@ -15,7 +15,7 @@ import {
   type WorkflowExecutionPlanEntry,
   type WorkflowExecutionPlanSnapshot,
   type WorkflowNodeRegistry,
-  type WorkflowRun,
+  type WorkflowEngineRun,
   type WorkflowRunRecord,
   type WorkflowRunResult,
   type WorkflowRunStore,
@@ -177,7 +177,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         return this.#persistedHandle(existing)
       }
     }
-    let run: WorkflowRun
+    let run: WorkflowEngineRun
     try {
       const startRequest = {
         ...(runId === undefined ? {} : { runId }),
@@ -388,7 +388,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     return resolved
   }
 
-  #handle(run: WorkflowRun): WorkflowRunHandle {
+  #handle(run: WorkflowEngineRun): WorkflowRunHandle {
     let observedResult: Promise<WorkflowRunResult> | undefined
     const live = this.#live
     return {

@@ -3,6 +3,10 @@ import {
   DshDagWorkflowEngineService,
   InMemoryWorkflowRunsService,
   InMemoryWorkflowTemplatesService,
+  InMemoryWorkflowBindingsService,
+  InMemoryWorkflowIngressRecordsService,
+  InMemoryWorkflowDeliveryRecordsService,
+  WorkflowTriggerRegistryService,
   WorkflowRecoveryCoordinator,
   WorkflowCapabilityRegistryService,
   WorkflowNodeRegistryService,
@@ -18,6 +22,7 @@ export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}):
   if (ctx.get('workflowCapabilities') === undefined) await ctx.plugin(WorkflowCapabilityRegistryService)
   if (ctx.get('workflowScripts') === undefined) await ctx.plugin(WorkflowScriptRuntimeRegistryService)
   if (ctx.get('workflowNodes') === undefined) await ctx.plugin(WorkflowNodeRegistryService)
+  if (ctx.get('workflowTriggers') === undefined) await ctx.plugin(WorkflowTriggerRegistryService)
 
   if ((config.catalog ?? 'memory') === 'memory') {
     if (ctx.get('workflowTemplates') === undefined) await ctx.plugin(InMemoryWorkflowTemplatesService)
@@ -31,6 +36,10 @@ export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}):
     throw new Error("runStore: 'external' requires a workflowRuns service to be installed before agent-dag-workflow")
   }
 
+  if (ctx.get('workflowBindings') === undefined) await ctx.plugin(InMemoryWorkflowBindingsService)
+  if (ctx.get('workflowIngress') === undefined) await ctx.plugin(InMemoryWorkflowIngressRecordsService)
+  if (ctx.get('workflowDelivery') === undefined) await ctx.plugin(InMemoryWorkflowDeliveryRecordsService)
+
   await ctx.plugin(DshDagWorkflowEngineService, config)
   if (config.recovery !== undefined) await ctx.plugin(WorkflowRecoveryCoordinator, config)
   await ctx.plugin(WorkflowAuthoringService)
@@ -41,6 +50,14 @@ export {
   DagWorkflowEngineService,
   InMemoryWorkflowRunsService,
   InMemoryWorkflowTemplatesService,
+  InMemoryWorkflowBindingsService,
+  InMemoryWorkflowIngressRecordsService,
+  InMemoryWorkflowDeliveryRecordsService,
+  WorkflowTriggerRegistryService,
+  WorkflowBindingsService,
+  RepositoryWorkflowBindingsService,
+  WorkflowIngressRecordsService,
+  WorkflowDeliveryRecordsService,
   WorkflowRecoveryCoordinator,
   WorkflowCapabilityRegistryService,
   RepositoryWorkflowTemplatesService,
@@ -54,4 +71,10 @@ export { registerWorkflowAuthoring, WorkflowAuthoringService, workflowToolDefini
 export type * from './types.js'
 export { createDshToolGateway } from './tool-gateway.js'
 export type { DshToolExecute, DshToolExecutionInput, DshToolExecutionResult } from './tool-gateway.js'
-export { SqliteWorkflowRunsService, SqliteWorkflowTemplatesService } from '../../storage/sqlite/cordis.js'
+export {
+  SqliteWorkflowBindingsService,
+  SqliteWorkflowDeliveryRecordsService,
+  SqliteWorkflowIngressRecordsService,
+  SqliteWorkflowRunsService,
+  SqliteWorkflowTemplatesService,
+} from './sqlite-services.js'

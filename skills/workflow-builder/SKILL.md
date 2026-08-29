@@ -31,6 +31,7 @@ agent-workflow trace <run-id>
 With MCP/Host tools, call the equivalent `workflow_search` → `workflow_describe(view=schema)` → `workflow_run` sequence.
 
 - Parse the `agent-workflow.cli/v1` Envelope. Continue only when `ok` is `true`.
+- Follow machine-readable `error.hints` or run-result `hints` in order; they are recovery actions, not permission to broaden dependencies or retry side effects.
 - Select an exact published `id@revision`; never guess an id or silently use latest.
 - Validate the requested inputs against the described schema before running. Runtime validation remains authoritative.
 - Use an idempotency key for a retried side-effecting launch.
@@ -62,6 +63,8 @@ For unknown Tools/Nodes, changed side effects, approval placement, credential sc
 ## Diagnose and recover
 
 - `WORKFLOW_NOT_FOUND`: search again; do not guess.
+- `WORKFLOW_HOST_LOAD_FAILED`: correct the local `--host` module path or dependencies; do not start MCP merely to hide a broken CLI setup.
+- `WORKFLOW_HOST_INVALID`: correct the thin Host Gateway contract; do not create a Provider layer or move Tool logic into the Workflow.
 - `WORKFLOW_REVISION_REQUIRED`: describe and use an exact revision.
 - `WORKFLOW_INPUT_INVALID`: fix the input, not the Workflow.
 - `WORKFLOW_OUTPUT_INVALID`: treat external data as untrusted and inspect the failing node.

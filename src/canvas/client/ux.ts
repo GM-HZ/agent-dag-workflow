@@ -4,6 +4,8 @@ import type {
   CanvasTrace,
   CanvasWorkflowDiagnostic,
   CanvasWorkflowDraft,
+  CanvasWorkflowNode,
+  CanvasWorkflowRequirement,
   CanvasWorkflowTemplate,
 } from '../types.js'
 
@@ -27,6 +29,12 @@ export interface WorkflowTraceEventPresentation {
   readonly tone: 'neutral' | 'active' | 'success' | 'warning' | 'danger'
   readonly nodeId?: string
   readonly infrastructure: boolean
+}
+
+export interface WorkflowNodeRequirementPresentation {
+  readonly kind: string
+  readonly uses: string
+  readonly declared: boolean
 }
 
 export interface WorkflowRecoverySnapshot {
@@ -82,6 +90,13 @@ export function classifyWorkflowError(cause: unknown): WorkflowErrorPresentation
       kind: 'permission', title: '当前会话没有执行权限',
       message: '该操作不在当前顶层 Agent 会话的授权范围内。',
       remedy: '回到有权限的顶层会话，或检查工作流声明的依赖与 DSH 策略。', retryable: false, detail,
+    }
+  }
+  if (/(gateway_missing|requires a workflow(?:tool|agent|approval)gateway|host gateway)/i.test(detail)) {
+    return {
+      kind: 'validation', title: 'Host 未提供节点能力',
+      message: '模板声明了外部节点，但当前 Host/Agent 没有暴露对应 Gateway。',
+      remedy: '为当前入口接入所需 Tool/Agent Gateway；不要在脚本中绕过外部能力边界。', retryable: false, detail,
     }
   }
   if (/(not found|does not exist|unknown node type|unknown tool)/i.test(detail)) {
@@ -144,6 +159,8 @@ export function traceEventPresentation(event: CanvasJsonObject): WorkflowTraceEv
     'node.cancelled': ['节点已取消', 'warning'], 'node.needs-attention': ['节点需要处理', 'warning'],
     'node.failed': ['节点执行失败', 'danger'], 'edge.taken': ['采用连接', 'active'],
     'edge.skipped': ['跳过连接', 'neutral'], 'checkpoint.committed': ['检查点已持久化', 'neutral'],
+    'capability.requested': ['请求外部能力', 'active'], 'capability.completed': ['外部能力已返回', 'success'],
+    'capability.replayed': ['复用已记录结果', 'neutral'], 'capability.failed': ['外部能力调用失败', 'danger'],
   }
   const [title, tone] = labels[type] ?? [type, 'neutral']
   return {
@@ -152,6 +169,28 @@ export function traceEventPresentation(event: CanvasJsonObject): WorkflowTraceEv
     ...(nodeId === undefined ? {} : { nodeId }),
     infrastructure: type === 'checkpoint.committed' || type.startsWith('edge.'),
   }
+}
+
+export function nodeRequirementPresentation(
+  node: CanvasWorkflowNode,
+  definition: CanvasNodeDefinition | undefined,
+  declared: readonly CanvasWorkflowRequirement[],
+): readonly WorkflowNodeRequirementPresentation[] {
+  const requested: CanvasWorkflowRequirement[] = [...(definition?.defaultRequirements ?? [])]
+  for (const capability of definition?.capabilities ?? []) requested.push({ kind: 'capability', uses: capability })
+  const fixedTool = node.uses === 'tool.call@1' && typeof node.with.uses === 'string' ? node.with.uses : undefined
+  if (fixedTool !== undefined) requested.push({ kind: 'tool', uses: fixedTool })
+  if (node.uses === 'agent.run@1') {
+    for (const uses of stringArray(node.with.tools)) requested.push({ kind: 'tool', uses })
+    for (const uses of stringArray(node.with.skills)) requested.push({ kind: 'skill', uses })
+  }
+  const allowlist = new Set(declared.map(item => `${item.kind}:${item.uses}`))
+  const unique = new Map<string, CanvasWorkflowRequirement>()
+  for (const requirement of requested) unique.set(`${requirement.kind}:${requirement.uses}`, requirement)
+  return [...unique.values()].map(requirement => ({
+    ...requirement,
+    declared: allowlist.has(`${requirement.kind}:${requirement.uses}`),
+  }))
 }
 
 export function visibleTraceEvents(trace: CanvasTrace, includeInfrastructure = false): readonly WorkflowTraceEventPresentation[] {
@@ -186,6 +225,10 @@ function isDraft(value: unknown): value is CanvasWorkflowDraft {
   return isRecord(value) && typeof value.id === 'string' && typeof value.revision === 'number'
     && typeof value.contentHash === 'string' && typeof value.semanticHash === 'string'
     && typeof value.createdAt === 'number' && typeof value.updatedAt === 'number' && isTemplate(value.template)
+}
+
+function stringArray(value: CanvasJsonObject[string] | undefined): readonly string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
 }
 
 export function starterTemplate(seed = Date.now()): CanvasWorkflowTemplate {

@@ -16,7 +16,6 @@ import {
   type WorkflowNodeDisposer,
   type WorkflowScriptRuntimeDefinition,
   type WorkflowScriptRuntimeDisposer,
-  type WorkflowRun,
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
   type WorkflowRunMetadata,
@@ -34,6 +33,21 @@ import {
 } from '../../catalog/index.js'
 import type { WorkflowDiagnostic, WorkflowTemplate } from '../../core/index.js'
 import { WorkflowRuntime, type WorkflowRunHandle } from '../../runtime/index.js'
+import {
+  InMemoryWorkflowBindingRepository,
+  InMemoryWorkflowDeliveryStore,
+  InMemoryWorkflowIngressStore,
+  WorkflowBindingCatalog,
+  WorkflowTriggerDefinitionRegistry,
+  type WorkflowBindingRepository,
+  type WorkflowDeliveryRecord,
+  type WorkflowDeliveryStore,
+  type WorkflowIngressRecord,
+  type WorkflowIngressStore,
+  type WorkflowTriggerBinding,
+  type WorkflowTriggerBindingCandidate,
+  type WorkflowTriggerDefinition,
+} from '../../triggers/core/index.js'
 import type {
   DshAgentLike,
   DshDagWorkflowResumeRequest,
@@ -42,6 +56,7 @@ import type {
   DshSubagentRuntimeLike,
   DshApprovalRuntimeLike,
   DshWorkflowPluginConfig,
+  DshWorkflowRun,
 } from './types.js'
 
 declare module '@deepseek-ai/cordis' {
@@ -51,12 +66,80 @@ declare module '@deepseek-ai/cordis' {
     workflowScripts: WorkflowScriptRuntimeRegistryService
     workflowTemplates: WorkflowTemplatesService
     workflowRuns: WorkflowRunsService
+    workflowTriggers: WorkflowTriggerRegistryService
+    workflowBindings: WorkflowBindingsService
+    workflowIngress: WorkflowIngressRecordsService
+    workflowDelivery: WorkflowDeliveryRecordsService
     dagWorkflowEngine: DagWorkflowEngineService
   }
 
   interface Events {
     'dag-workflow/event'(event: WorkflowEvent, parent: DshAgentLike): void
   }
+}
+
+export class WorkflowTriggerRegistryService extends Service {
+  readonly registry = new WorkflowTriggerDefinitionRegistry()
+  constructor(ctx: Context) { super(ctx, 'workflowTriggers') }
+  register(definition: WorkflowTriggerDefinition): () => void { return this.registry.register(definition) }
+  list(): readonly WorkflowTriggerDefinition[] { return this.registry.list() }
+}
+
+export abstract class WorkflowBindingsService extends Service {
+  constructor(ctx: Context) { super(ctx, 'workflowBindings') }
+  abstract publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number): Promise<WorkflowTriggerBinding>
+  abstract get(id: string, revision?: number): Promise<WorkflowTriggerBinding>
+  abstract list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]>
+}
+
+export class RepositoryWorkflowBindingsService extends WorkflowBindingsService {
+  static inject = ['workflowTemplates', 'workflowTriggers']
+  private readonly catalog: WorkflowBindingCatalog
+  constructor(ctx: Context, repository: WorkflowBindingRepository) {
+    super(ctx)
+    this.catalog = new WorkflowBindingCatalog(repository, ctx.workflowTemplates, ctx.workflowTriggers.registry)
+  }
+  publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number): Promise<WorkflowTriggerBinding> { return this.catalog.publish(candidate, expectedRevision) }
+  get(id: string, revision?: number): Promise<WorkflowTriggerBinding> { return this.catalog.get(id, revision) }
+  list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]> { return this.catalog.list(query) }
+}
+
+export class InMemoryWorkflowBindingsService extends RepositoryWorkflowBindingsService {
+  constructor(ctx: Context) { super(ctx, new InMemoryWorkflowBindingRepository()) }
+}
+
+export abstract class WorkflowIngressRecordsService extends Service implements WorkflowIngressStore {
+  constructor(ctx: Context) { super(ctx, 'workflowIngress') }
+  abstract acceptOrGet(record: WorkflowIngressRecord): Promise<{ readonly record: WorkflowIngressRecord; readonly accepted: boolean }>
+  abstract markLaunched(triggerId: string, runId: string): Promise<void>
+  abstract markRejected(triggerId: string, reasonCode: string): Promise<void>
+  abstract get(triggerId: string): Promise<WorkflowIngressRecord | undefined>
+  abstract listPending(): Promise<readonly WorkflowIngressRecord[]>
+  abstract list(query?: { readonly limit?: number }): Promise<readonly WorkflowIngressRecord[]>
+}
+
+export class InMemoryWorkflowIngressRecordsService extends WorkflowIngressRecordsService {
+  private readonly store = new InMemoryWorkflowIngressStore()
+  acceptOrGet(record: WorkflowIngressRecord) { return this.store.acceptOrGet(record) }
+  markLaunched(triggerId: string, runId: string) { return this.store.markLaunched(triggerId, runId) }
+  markRejected(triggerId: string, reasonCode: string) { return this.store.markRejected(triggerId, reasonCode) }
+  get(triggerId: string) { return this.store.get(triggerId) }
+  listPending() { return this.store.listPending() }
+  list(query?: { readonly limit?: number }) { return this.store.list(query) }
+}
+
+export abstract class WorkflowDeliveryRecordsService extends Service implements WorkflowDeliveryStore {
+  constructor(ctx: Context) { super(ctx, 'workflowDelivery') }
+  abstract get(invocationId: string): Promise<WorkflowDeliveryRecord | undefined>
+  abstract save(record: WorkflowDeliveryRecord, expectedAttempts: number): Promise<void>
+  abstract listAttention(query?: { readonly limit?: number }): Promise<readonly WorkflowDeliveryRecord[]>
+}
+
+export class InMemoryWorkflowDeliveryRecordsService extends WorkflowDeliveryRecordsService {
+  private readonly store = new InMemoryWorkflowDeliveryStore()
+  get(invocationId: string) { return this.store.get(invocationId) }
+  save(record: WorkflowDeliveryRecord, expectedAttempts: number) { return this.store.save(record, expectedAttempts) }
+  listAttention(query?: { readonly limit?: number }) { return this.store.listAttention(query) }
 }
 
 export class WorkflowCapabilityRegistryService extends Service {
@@ -136,8 +219,8 @@ export abstract class DagWorkflowEngineService extends Service {
     super(ctx, 'dagWorkflowEngine')
   }
 
-  abstract start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun>
-  abstract resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun>
+  abstract start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun>
+  abstract resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun>
 }
 
 export abstract class WorkflowRunsService extends Service implements WorkflowRunStore {
@@ -215,7 +298,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
   static inject = ['tools', 'subagents', 'approval', 'workflowCapabilities', 'workflowNodes', 'workflowTemplates', 'workflowRuns']
 
   private readonly runtime: WorkflowRuntime
-  private readonly active = new Map<string, WorkflowRun>()
+  private readonly active = new Map<string, DshWorkflowRun>()
   private readonly authorityRefs = new WeakMap<object, string>()
   constructor(ctx: Context, private readonly config: DshWorkflowPluginConfig = {}) {
     super(ctx)
@@ -324,7 +407,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     }, 'agent-dag-workflow: active runs')
   }
 
-  async start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun> {
+  async start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun> {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
@@ -344,7 +427,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     return run
   }
 
-  async resume(request: DshDagWorkflowResumeRequest): Promise<WorkflowRun> {
+  async resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun> {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const record = await this.ctx.workflowRuns.loadRun(request.runId)
@@ -443,7 +526,7 @@ function createRunObserver(
   }
 }
 
-function adaptRunHandle(handle: WorkflowRunHandle): WorkflowRun {
+function adaptRunHandle(handle: WorkflowRunHandle): DshWorkflowRun {
   return {
     id: handle.runId,
     result: handle.result,

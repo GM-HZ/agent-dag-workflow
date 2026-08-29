@@ -24,14 +24,14 @@ import type {
   WorkflowNodeServices,
   WorkflowNodeStatus,
   WorkflowResumeRequest,
-  WorkflowRun,
+  WorkflowEngineRun,
   WorkflowRunCheckpoint,
   WorkflowRunFailure,
   WorkflowRunRecord,
   WorkflowRunResult,
   WorkflowRunStore,
   WorkflowRunSuccess,
-  WorkflowStartRequest,
+  WorkflowEngineStartRequest,
   WorkflowTemplate,
 } from './types.js'
 
@@ -105,7 +105,7 @@ export class DagWorkflowEngine {
     this.#deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
   }
 
-  async start(request: WorkflowStartRequest): Promise<WorkflowRun> {
+  async start(request: WorkflowEngineStartRequest): Promise<WorkflowEngineRun> {
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
@@ -122,7 +122,7 @@ export class DagWorkflowEngine {
     )
   }
 
-  async queue(request: WorkflowStartRequest): Promise<WorkflowRun> {
+  async queue(request: WorkflowEngineStartRequest): Promise<WorkflowEngineRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'background queue requires a WorkflowRunStore')
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
@@ -166,7 +166,7 @@ export class DagWorkflowEngine {
     return this.#queuedRun(id, request.execution)
   }
 
-  async invoke(request: WorkflowInvocationRequest): Promise<WorkflowRun> {
+  async invoke(request: WorkflowInvocationRequest): Promise<WorkflowEngineRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'nested workflow invocation requires a WorkflowRunStore')
     if (!Number.isSafeInteger(request.depth) || request.depth < 1) {
       throw new WorkflowExecutionError('SUBWORKFLOW_DEPTH_INVALID', 'nested workflow depth must be a positive safe integer')
@@ -207,8 +207,8 @@ export class DagWorkflowEngine {
     depth: number,
     subworkflowDepthLimit: number,
     invocationId: string | undefined,
-    request: WorkflowStartRequest,
-  ): Promise<WorkflowRun> {
+    request: WorkflowEngineStartRequest,
+  ): Promise<WorkflowEngineRun> {
     const state = createInitialState(workflow, depth, subworkflowDepthLimit, invocationId)
     const createdAt = this.#now()
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
@@ -256,7 +256,7 @@ export class DagWorkflowEngine {
     })
   }
 
-  async resume(request: WorkflowResumeRequest): Promise<WorkflowRun> {
+  async resume(request: WorkflowResumeRequest): Promise<WorkflowEngineRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'resume requires a WorkflowRunStore')
     const record = await this.#runStore.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
@@ -348,7 +348,7 @@ export class DagWorkflowEngine {
     })
   }
 
-  async cancel(request: WorkflowCancelRequest): Promise<WorkflowRun> {
+  async cancel(request: WorkflowCancelRequest): Promise<WorkflowEngineRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'durable cancellation requires a WorkflowRunStore')
     const record = await this.#runStore.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
@@ -387,7 +387,7 @@ export class DagWorkflowEngine {
     return terminalRun(record.runId, state)
   }
 
-  #queuedRun(runId: string, execution: import('./types.js').WorkflowExecutionContext): WorkflowRun {
+  #queuedRun(runId: string, execution: import('./types.js').WorkflowExecutionContext): WorkflowEngineRun {
     const store = this.#runStore!
     // A background acceptance must not start a polling loop merely because a
     // handle was created. CLI/MCP callers commonly keep only runId and close
@@ -433,7 +433,7 @@ export class DagWorkflowEngine {
     readonly initializeStart: boolean
     readonly checkpointMaxBytes: number
     readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
-  }): WorkflowRun {
+  }): WorkflowEngineRun {
     const controller = new AbortController()
     let cancelReason = 'cancelled'
     const abortFromCaller = () => {
@@ -1114,7 +1114,7 @@ function invocationRunId(invocationId: string): string {
   return `dag-child-${createHash('sha256').update(invocationId).digest('hex').slice(0, 40)}`
 }
 
-function terminalRun(runId: string, state: RuntimeState): WorkflowRun {
+function terminalRun(runId: string, state: RuntimeState): WorkflowEngineRun {
   const result = Promise.resolve(state.status === 'completed' ? successResult(runId, state) : failureResult(runId, state))
   return { id: runId, result, async cancel() {}, async dispose() { await result } }
 }

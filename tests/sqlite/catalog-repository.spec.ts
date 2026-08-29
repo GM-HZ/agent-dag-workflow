@@ -29,9 +29,10 @@ import {
   SqliteWorkflowRunCoordinator,
   SqliteWorkflowDeliveryStore,
   SqliteWorkflowIngressStore,
+  SqliteWorkflowBindingRepository,
 } from '../../src/storage/sqlite/index.js'
 import { WorkflowResultDeliveryService, WorkflowRunWorker } from '../../src/triggers/core/index.js'
-import { SqliteWorkflowRunsService, SqliteWorkflowTemplatesService } from '../../src/storage/sqlite/cordis.js'
+import { SqliteWorkflowRunsService, SqliteWorkflowTemplatesService } from '../../src/adapters/dsh/sqlite-services.js'
 
 const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
 
@@ -140,6 +141,24 @@ function catalog(repository: SqliteWorkflowCatalogRepository): WorkflowTemplateC
 }
 
 describe('SQLite workflow catalog repository', () => {
+  it('persists immutable binding revisions and enforces CAS across SQLite connections', async () => {
+    const path = dbPath()
+    const left = new SqliteWorkflowBindingRepository({ path })
+    const right = new SqliteWorkflowBindingRepository({ path })
+    const candidate = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const, kind: 'WorkflowBinding' as const, metadata: { id: 'sqlite-hook' },
+      spec: { workflow: { id: 'sqlite-test', revision: 1 }, trigger: { uses: 'webhook@1', with: {} }, inputMapping: {}, authorityRef: 'service:sqlite-hook' },
+    }
+    expect(await left.publish(candidate, 0, 100)).toMatchObject({ metadata: { revision: 1 } })
+    await expect(right.publish(candidate, 0, 101)).rejects.toMatchObject({ code: 'BINDING_REVISION_CONFLICT' })
+    expect(await right.publish({ ...candidate, spec: { ...candidate.spec, authorityRef: 'service:v2' } }, 1, 102))
+      .toMatchObject({ metadata: { revision: 2 }, spec: { authorityRef: 'service:v2' } })
+    left.close()
+    expect(await right.get('sqlite-hook', 1)).toMatchObject({ metadata: { revision: 1 }, spec: { authorityRef: 'service:sqlite-hook' } })
+    expect(await right.list()).toHaveLength(2)
+    right.close()
+  })
+
   it('supports the complete catalog contract in memory', async () => {
     const repository = new SqliteWorkflowCatalogRepository({ path: ':memory:' })
     const service = catalog(repository)
@@ -265,7 +284,7 @@ describe('SQLite workflow catalog repository', () => {
     const initialized = new SqliteWorkflowCatalogRepository({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('DROP TABLE workflow_delivery; DROP TABLE workflow_run_queue; DROP TABLE workflow_run_events; DROP TABLE workflow_runs; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; PRAGMA user_version = 1;')
+    old.exec('DROP TABLE workflow_bindings; DROP TABLE workflow_delivery; DROP TABLE workflow_run_queue; DROP TABLE workflow_run_events; DROP TABLE workflow_runs; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; PRAGMA user_version = 1;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })
@@ -278,7 +297,7 @@ describe('SQLite workflow catalog repository', () => {
     const initialized = new SqliteWorkflowRunStore({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; PRAGMA user_version = 2;')
+    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings; PRAGMA user_version = 2;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })
@@ -302,6 +321,7 @@ describe('SQLite workflow catalog repository', () => {
       DROP TABLE workflow_ingress;
       DROP TABLE workflow_run_queue;
       DROP TABLE workflow_delivery;
+      DROP TABLE workflow_bindings;
       PRAGMA user_version = 4;`)
     old.close()
 
@@ -313,13 +333,14 @@ describe('SQLite workflow catalog repository', () => {
   })
 
   for (const fixture of [
-    { version: 3, sql: 'ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 4, sql: 'ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 5, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 6, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 7, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 8, sql: 'DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
-    { version: 9, sql: 'DROP TABLE workflow_delivery;' },
+    { version: 3, sql: 'ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 4, sql: 'ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 5, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 6, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 7, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 8, sql: 'DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 9, sql: 'DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
+    { version: 10, sql: 'DROP TABLE workflow_bindings;' },
   ]) {
     it(`migrates a real v${fixture.version} schema fixture and reopens idempotently`, async () => {
       const path = dbPath()

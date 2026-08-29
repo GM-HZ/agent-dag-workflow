@@ -527,6 +527,8 @@ CLI 和 MCP 共用稳定错误分类：
 | Error code | 含义 | Agent 默认行为 |
 | --- | --- | --- |
 | `WORKFLOW_NOT_FOUND` | ref 不存在 | 重新 search，不猜测 id |
+| `WORKFLOW_HOST_LOAD_FAILED` | Host 模块或依赖无法加载 | 检查 `--host` 路径、ESM 和依赖 |
+| `WORKFLOW_HOST_INVALID` | Host Gateway 结构不合法 | 按最小 Host 契约修正，不新增 Provider |
 | `WORKFLOW_REVISION_REQUIRED` | 未固定 revision | describe 后使用精确 ref |
 | `WORKFLOW_INPUT_INVALID` | 输入 Schema 不匹配 | 修正输入，不修改 Workflow |
 | `WORKFLOW_OUTPUT_INVALID` | 外部动态结果不合法 | 报告数据风险，读取 Trace |

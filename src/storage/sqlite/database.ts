@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 
-export const SQLITE_SCHEMA_VERSION = 10
+export const SQLITE_SCHEMA_VERSION = 11
 export const SQLITE_APPLICATION_ID = 1_146_308_695
 
 export interface SqliteWorkflowOptions {
@@ -48,6 +48,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA application_id = ${SQLITE_APPLICATION_ID}; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 1 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
@@ -57,6 +58,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 2 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
@@ -71,6 +73,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 3 && applicationId === SQLITE_APPLICATION_ID) {
     addExecutionContext(db)
@@ -80,6 +83,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 4 && applicationId === SQLITE_APPLICATION_ID) {
     addExecutionPlan(db)
@@ -88,6 +92,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 5 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
@@ -95,32 +100,52 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 6 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
     createIngressTables(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 7 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 8 && applicationId === SQLITE_APPLICATION_ID) {
     createRunQueueTables(db)
     createDeliveryTables(db)
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 9 && applicationId === SQLITE_APPLICATION_ID) {
     createDeliveryTables(db)
+    createBindingTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 10 && applicationId === SQLITE_APPLICATION_ID) {
+    createBindingTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
   const names = tableNames(db)
-  if (names.join(',') !== 'workflow_artifacts,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
+  if (names.join(',') !== 'workflow_artifacts,workflow_bindings,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
     throw new Error('workflow database required schema objects do not match this build')
   }
+}
+
+function createBindingTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE workflow_bindings (
+      id TEXT NOT NULL,
+      revision INTEGER NOT NULL CHECK (revision >= 1),
+      binding_json TEXT NOT NULL,
+      published_at INTEGER NOT NULL,
+      PRIMARY KEY (id, revision)
+    ) STRICT;
+  `)
 }
 
 function createDeliveryTables(db: DatabaseSync): void {

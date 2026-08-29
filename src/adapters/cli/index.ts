@@ -1,6 +1,6 @@
 export { runWorkflowCli } from './run.js'
 export type { WorkflowCliIo } from './run.js'
-export { createWorkflowCliApplication, loadWorkflowCliHost } from './application.js'
+export { createWorkflowCliApplication, defineWorkflowCliHost, loadWorkflowCliHost, validateWorkflowCliHost } from './application.js'
 export type { WorkflowCliApplication, WorkflowCliHost } from './application.js'
 export { WORKFLOW_CLI_PROTOCOL_VERSION, workflowCliExitCode, workflowCliFailure, workflowCliSuccess } from './protocol.js'
 export type { WorkflowCliEnvelope, WorkflowCliFailure, WorkflowCliSuccess } from './protocol.js'

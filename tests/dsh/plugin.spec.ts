@@ -406,6 +406,24 @@ describe('DSH Cordis plugin', () => {
     const draft = await ctx.workflowTemplates.createDraft(template())
     const published = await ctx.workflowTemplates.publish(draft.id, draft.revision)
     expect((await ctx.workflowTemplates.getPublished(draft.id)).revision).toBe(published.revision)
+    const disposeTrigger = ctx.workflowTriggers.register({
+      uses: 'webhook@1',
+      configSchema: { type: 'object', additionalProperties: false },
+    })
+    const binding = await ctx.workflowBindings.publish({
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+      kind: 'WorkflowBinding',
+      metadata: { id: 'dsh-webhook' },
+      spec: {
+        workflow: { id: draft.id, revision: published.revision },
+        trigger: { uses: 'webhook@1', with: {} },
+        inputMapping: { message: { payload: { path: ['text'] } } },
+        authorityRef: 'service:dsh-webhook',
+      },
+    }, 0)
+    expect(await ctx.workflowBindings.get(binding.metadata.id)).toEqual(binding)
+    expect(await ctx.workflowIngress.list()).toEqual([])
+    expect(await ctx.workflowDelivery.listAttention()).toEqual([])
     expect(observed).toContain('run.completed')
     // Downstream Session event types cannot currently be registered with DSH.
     // Persist the complete trace in workflowRuns and keep the owning Session clean.
@@ -432,6 +450,7 @@ describe('DSH Cordis plugin', () => {
     expect(tools.requests).toHaveLength(1)
 
     await run.dispose()
+    disposeTrigger()
     await plugin.dispose()
     expect(ctx.get('dagWorkflowEngine')).toBeUndefined()
     expect(ctx.get('workflowNodes')).toBeUndefined()
@@ -439,6 +458,10 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.get('workflowScripts')).toBeUndefined()
     expect(ctx.get('workflowTemplates')).toBeUndefined()
     expect(ctx.get('workflowRuns')).toBeUndefined()
+    expect(ctx.get('workflowTriggers')).toBeUndefined()
+    expect(ctx.get('workflowBindings')).toBeUndefined()
+    expect(ctx.get('workflowIngress')).toBeUndefined()
+    expect(ctx.get('workflowDelivery')).toBeUndefined()
     expect(tools.definitions).toEqual(new Map())
     expect(ctx.skills.definitions).toEqual(new Map())
   })

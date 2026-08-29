@@ -113,11 +113,14 @@ describe('workflow canvas Host gateway', () => {
     const result = await ctx.workflowCanvas.runDraft(agent.id, {
       template, inputs: { message: 'first success' },
     }, new AbortController().signal)
-    const trace = await ctx.workflowCanvas.trace(agent.id, { runId: result.runId })
+    const firstPage = await ctx.workflowCanvas.trace(agent.id, { runId: result.runId, limit: 2 })
+    const trace = await ctx.workflowCanvas.trace(agent.id, { runId: result.runId, afterSeq: firstPage.nextAfterSeq!, limit: 100 })
 
     expect(result).toMatchObject({ status: 'completed', outputs: { message: 'first success' } })
     expect(trace.nodeStates).toEqual({ start: 'succeeded', end: 'succeeded' })
-    expect(trace.events.map(event => event.type)).toEqual(expect.arrayContaining(['run.started', 'node.completed', 'run.completed']))
+    expect(firstPage.events).toHaveLength(2)
+    expect(firstPage.nextAfterSeq).toBe(2)
+    expect([...firstPage.events, ...trace.events].map(event => event.type)).toEqual(expect.arrayContaining(['run.started', 'node.completed', 'run.completed']))
   })
 
   it('uses the local-profile authorization boundary when the gateway receives no config', async () => {

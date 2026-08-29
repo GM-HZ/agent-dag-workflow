@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { InMemoryWorkflowDeliveryStore, InMemoryWorkflowIngressStore, InMemoryWorkflowRunCoordinator, WorkflowResultDeliveryService, WorkflowRunWorker, WorkflowTriggerIngress, workflowDeliveryInvocationId, workflowIngressDedupeKey, type WorkflowTriggerBinding } from '../../src/triggers/core/index.js'
+import { InMemoryWorkflowBindingRepository, InMemoryWorkflowDeliveryStore, InMemoryWorkflowIngressStore, InMemoryWorkflowRunCoordinator, WorkflowBindingCatalog, WorkflowResultDeliveryService, WorkflowRunWorker, WorkflowTriggerDefinitionRegistry, WorkflowTriggerIngress, workflowDeliveryInvocationId, workflowIngressDedupeKey, type WorkflowTriggerBinding } from '../../src/triggers/core/index.js'
 import { createCronTrigger } from '../../src/triggers/cron/index.js'
 import { WebhookTriggerAdapter } from '../../src/triggers/webhook/index.js'
 import { DingTalkTriggerAdapter, DingTalkWorkflowChannel, DingTalkWorkflowRouter } from '../../src/triggers/dingtalk/index.js'
@@ -15,6 +15,60 @@ const binding: WorkflowTriggerBinding = {
     inputMapping: { message: { payload: { path: ['text'] } } }, authorityRef: 'service:hook',
   },
 }
+
+describe('workflow binding catalog', () => {
+  const target = {
+    async getPublished(id: string, revision?: number) {
+      if (id !== 'target' || revision !== 3) throw new Error('not found')
+      return { template: { spec: { inputSchema: {
+        type: 'object', additionalProperties: false, required: ['message', 'count'],
+        properties: { message: { type: 'string' }, count: { type: 'integer' } },
+      } } } }
+    },
+  }
+  function catalog() {
+    const triggers = new WorkflowTriggerDefinitionRegistry()
+    triggers.register({ uses: 'webhook@1', configSchema: {
+      type: 'object', additionalProperties: false, required: ['credentialRef'],
+      properties: { credentialRef: { type: 'string' } },
+    } })
+    return new WorkflowBindingCatalog(new InMemoryWorkflowBindingRepository(), target, triggers, { now: () => 123 })
+  }
+  const candidate = {
+    apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const,
+    kind: 'WorkflowBinding' as const,
+    metadata: { id: 'hook' },
+    spec: {
+      workflow: { id: 'target', revision: 3 }, trigger: { uses: 'webhook@1', with: { credentialRef: 'secret:webhook' } },
+      inputMapping: { message: { payload: { path: ['text'] } }, count: { literal: 2 } }, authorityRef: 'service:hook',
+    },
+  }
+
+  it('publishes immutable revisions only after target, trigger config, and input mapping validation', async () => {
+    const bindings = catalog()
+    const first = await bindings.publish(candidate, 0)
+    const second = await bindings.publish({ ...candidate, spec: { ...candidate.spec, authorityRef: 'service:hook-v2' } }, 1)
+    expect(first.metadata).toEqual({ id: 'hook', revision: 1 })
+    expect(second).toMatchObject({ metadata: { revision: 2 }, spec: { authorityRef: 'service:hook-v2' } })
+    expect(await bindings.get('hook', 1)).toEqual(first)
+    expect(() => { (first.metadata as { revision: number }).revision = 999 }).toThrow(TypeError)
+    expect((await bindings.get('hook', 1)).metadata.revision).toBe(1)
+    await expect(bindings.publish(candidate, 0)).rejects.toMatchObject({ code: 'BINDING_REVISION_CONFLICT' })
+  })
+
+  it('fails closed for unknown triggers, missing required mappings, invalid literals, and missing targets', async () => {
+    const bindings = catalog()
+    await expect(bindings.publish({ ...candidate, spec: { ...candidate.spec, trigger: { uses: 'custom@1', with: {} } } }, 0))
+      .rejects.toMatchObject({ code: 'BINDING_TRIGGER_UNKNOWN' })
+    await expect(bindings.publish({ ...candidate, spec: { ...candidate.spec, inputMapping: { message: candidate.spec.inputMapping.message } } }, 0))
+      .rejects.toMatchObject({ code: 'BINDING_INVALID', diagnostics: expect.arrayContaining([expect.stringContaining('count')]) })
+    await expect(bindings.publish({ ...candidate, spec: { ...candidate.spec, inputMapping: { ...candidate.spec.inputMapping, count: { literal: 'two' } } } }, 0))
+      .rejects.toMatchObject({ code: 'BINDING_INVALID' })
+    await expect(bindings.publish({ ...candidate, spec: { ...candidate.spec, workflow: { id: 'missing', revision: 1 } } }, 0))
+      .rejects.toMatchObject({ code: 'BINDING_TARGET_NOT_FOUND' })
+    await expect(bindings.publish(null as never, 0)).rejects.toMatchObject({ code: 'BINDING_INVALID' })
+  })
+})
 
 describe('trigger ingress', () => {
   it('derives server-side dedupe keys and never trusts payload authority', async () => {
