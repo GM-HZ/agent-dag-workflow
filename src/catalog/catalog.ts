@@ -1,9 +1,11 @@
 import {
   compileWorkflow,
   materializeWorkflowTemplate,
+  normalizeWorkflowDeploymentLimits,
   stableJsonStringify,
   type JsonValue,
   type WorkflowDiagnostic,
+  type WorkflowDeploymentLimits,
   type WorkflowNodeRegistry,
   type WorkflowTemplate,
 } from '../core/index.js'
@@ -20,10 +22,12 @@ import {
 
 export interface WorkflowTemplateCatalogOptions {
   readonly now?: () => number
+  readonly deploymentLimits?: Partial<WorkflowDeploymentLimits>
 }
 
 export class WorkflowTemplateCatalog {
   private readonly now: () => number
+  private readonly deploymentLimits: WorkflowDeploymentLimits
 
   constructor(
     private readonly repository: WorkflowCatalogRepository,
@@ -31,6 +35,7 @@ export class WorkflowTemplateCatalog {
     options: WorkflowTemplateCatalogOptions = {},
   ) {
     this.now = options.now ?? Date.now
+    this.deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
   }
 
   async createDraft(template: WorkflowTemplate): Promise<WorkflowDraft> {
@@ -53,7 +58,7 @@ export class WorkflowTemplateCatalog {
   }
 
   async validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]> {
-    const diagnostics = [...compileWorkflow(template, this.nodes).diagnostics]
+    const diagnostics = [...compileWorkflow(template, this.nodes, { deploymentLimits: this.deploymentLimits }).diagnostics]
     if (!this.nodes.definitionSet(template.spec.nodes.map(node => node.uses)).replayable) {
       diagnostics.push({
         code: 'NODE_IMPLEMENTATION_DIGEST_MISSING', severity: 'warning',

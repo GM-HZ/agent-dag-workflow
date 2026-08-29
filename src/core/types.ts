@@ -49,6 +49,15 @@ export interface WorkflowPolicies {
   readonly subworkflowMaxDepth?: number
 }
 
+/** Host-owned ceilings. A WorkflowTemplate may only reduce these values. */
+export interface WorkflowDeploymentLimits {
+  readonly maxConcurrentNodes: number
+  readonly maxNodeRuns: number
+  readonly maxDurationMs: number
+  readonly maxOutputBytes: number
+  readonly subworkflowMaxDepth: number
+}
+
 export interface WorkflowTemplate {
   readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
   readonly kind: 'WorkflowTemplate'
@@ -449,6 +458,13 @@ export interface WorkflowResumeRequest {
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
+}
+
+export interface WorkflowCancelRequest {
+  readonly runId: string
+  readonly execution: WorkflowExecutionContext
+  readonly reason?: string
+  readonly onEvent?: (event: WorkflowEvent) => void
 }
 
 export interface WorkflowInvocationRequest extends WorkflowStartRequest {

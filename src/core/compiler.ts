@@ -13,6 +13,8 @@ import type {
   JsonSchema,
 } from './types.js'
 import { WorkflowCompileError } from './errors.js'
+import { normalizeWorkflowDeploymentLimits } from './limits.js'
+import type { WorkflowDeploymentLimits } from './types.js'
 
 export interface CompiledWorkflowNode {
   readonly template: WorkflowNodeTemplate
@@ -42,7 +44,11 @@ export interface WorkflowCompileResult {
   readonly diagnostics: readonly WorkflowDiagnostic[]
 }
 
-export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowNodeRegistry): WorkflowCompileResult {
+export interface WorkflowCompileOptions {
+  readonly deploymentLimits?: Partial<WorkflowDeploymentLimits>
+}
+
+export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowNodeRegistry, options: WorkflowCompileOptions = {}): WorkflowCompileResult {
   let template: WorkflowTemplate
   try {
     template = snapshotJsonValue(candidate) as unknown as WorkflowTemplate
@@ -51,6 +57,18 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
   }
   const diagnostics = structuralDiagnostics(template)
   if (diagnostics.length > 0) return { diagnostics }
+  const deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
+  for (const [name, value] of Object.entries(template.spec.policies ?? {})) {
+    const ceiling = deploymentLimits[name as keyof WorkflowDeploymentLimits]
+    if (value !== undefined && value > ceiling) {
+      diagnostics.push(diagnostic(
+        'WORKFLOW_POLICY_LIMIT_EXCEEDED',
+        `workflow policy ${name} is ${value}, deployment ceiling is ${ceiling}`,
+        undefined,
+        ['spec', 'policies', name],
+      ))
+    }
+  }
 
   const declaredRequirements = new Map<string, WorkflowRequirement>()
   for (const [index, requirement] of (template.spec.requires ?? []).entries()) {
@@ -181,6 +199,10 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
 
   if (order.length === nodesById.size) {
     const ancestors = computeAncestors(order, incoming)
+    const dominators = startNodeId === undefined ? new Map<string, ReadonlySet<string>>() : computeDominators(order, incoming, startNodeId)
+    const guaranteedNodes = startNodeId === undefined
+      ? new Set<string>()
+      : computeGuaranteedNodes(order, outgoing, definitions, startNodeId)
     for (const [nodeId, node] of nodesById) {
       validateBindings(
         node.inputs,
@@ -188,6 +210,8 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
         nodesById,
         outputSchemas,
         ancestors,
+        dominators,
+        guaranteedNodes,
         template.spec.inputSchema,
         definitions.get(nodeId)?.inputSchema,
         diagnostics,
@@ -200,6 +224,8 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       nodesById,
       outputSchemas,
       undefined,
+      undefined,
+      guaranteedNodes,
       template.spec.inputSchema,
       template.spec.outputSchema,
       diagnostics,
@@ -210,6 +236,13 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
         diagnostics.push(diagnostic('WORKFLOW_OUTPUT_BINDING_INVALID', 'workflow output must reference an end node output', undefined, ['spec', 'outputs', name]))
       } else if (definitions.get(binding.output.nodeId)?.role !== 'end') {
         diagnostics.push(diagnostic('WORKFLOW_OUTPUT_SOURCE_NOT_END', `workflow output must reference an end node: ${binding.output.nodeId}`, undefined, ['spec', 'outputs', name]))
+      } else if (!guaranteedNodes.has(binding.output.nodeId)) {
+        diagnostics.push(diagnostic(
+          'WORKFLOW_OUTPUT_SOURCE_NOT_GUARANTEED',
+          `workflow output source ${binding.output.nodeId} is not executed on every successful path`,
+          undefined,
+          ['spec', 'outputs', name],
+        ))
       }
     }
   }
@@ -264,8 +297,8 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
   }
 }
 
-export function compileWorkflowOrThrow(template: WorkflowTemplate, registry: WorkflowNodeRegistry): CompiledWorkflow {
-  const result = compileWorkflow(template, registry)
+export function compileWorkflowOrThrow(template: WorkflowTemplate, registry: WorkflowNodeRegistry, options: WorkflowCompileOptions = {}): CompiledWorkflow {
+  const result = compileWorkflow(template, registry, options)
   if (result.workflow === undefined) throw new WorkflowCompileError(result.diagnostics)
   return result.workflow
 }
@@ -301,6 +334,8 @@ function validateBindings(
   nodes: ReadonlyMap<string, WorkflowNodeTemplate>,
   outputSchemas: ReadonlyMap<string, JsonSchema>,
   ancestors: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  dominators: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+  guaranteedNodes: ReadonlySet<string>,
   workflowInputSchema: JsonSchema,
   targetSchema: JsonSchema | undefined,
   diagnostics: WorkflowDiagnostic[],
@@ -347,6 +382,13 @@ function validateBindings(
       }
       if (consumerNodeId !== undefined && !ancestors?.get(consumerNodeId)?.has(sourceId)) {
         diagnostics.push(diagnostic('BINDING_NOT_UPSTREAM', `binding source ${sourceId} is not a strict upstream node`, consumerNodeId, [...basePath, name]))
+      } else if (consumerNodeId !== undefined && !dominators?.get(consumerNodeId)?.has(sourceId) && !guaranteedNodes.has(sourceId)) {
+        diagnostics.push(diagnostic(
+          'BINDING_SOURCE_NOT_GUARANTEED',
+          `binding source ${sourceId} is skipped on at least one path that activates ${consumerNodeId}`,
+          consumerNodeId,
+          [...basePath, name],
+        ))
       }
       const resolved = schemaAtPath(outputSchemas.get(sourceId), binding.output.path)
       if (resolved.error !== undefined) {
@@ -500,6 +542,55 @@ function computeAncestors(
     result.set(nodeId, ancestors)
   }
   return result
+}
+
+function computeDominators(
+  order: readonly string[],
+  incoming: ReadonlyMap<string, readonly WorkflowEdgeTemplate[]>,
+  startNodeId: string,
+): Map<string, ReadonlySet<string>> {
+  const all = new Set(order)
+  const result = new Map<string, ReadonlySet<string>>()
+  for (const nodeId of order) {
+    if (nodeId === startNodeId) {
+      result.set(nodeId, new Set([nodeId]))
+      continue
+    }
+    const predecessors = (incoming.get(nodeId) ?? []).map(edge => edge.source)
+    const intersection = new Set(predecessors.length === 0 ? [] : result.get(predecessors[0]!) ?? all)
+    for (const predecessor of predecessors.slice(1)) {
+      const candidate = result.get(predecessor) ?? all
+      for (const value of intersection) if (!candidate.has(value)) intersection.delete(value)
+    }
+    intersection.add(nodeId)
+    result.set(nodeId, intersection)
+  }
+  return result
+}
+
+function computeGuaranteedNodes(
+  order: readonly string[],
+  outgoing: ReadonlyMap<string, readonly WorkflowEdgeTemplate[]>,
+  definitions: ReadonlyMap<string, WorkflowNodeDefinition>,
+  startNodeId: string,
+): Set<string> {
+  const guaranteed = new Set<string>()
+  const reverseOrder = [...order].reverse()
+  for (const targetId of order) {
+    const mustReach = new Set([targetId])
+    for (const nodeId of reverseOrder) {
+      if (nodeId === targetId) continue
+      const outputPorts = definitions.get(nodeId)?.outputPorts ?? []
+      if (outputPorts.length === 0) continue
+      const edges = outgoing.get(nodeId) ?? []
+      const everyPortReachesTarget = outputPorts.every(port =>
+        edges.some(edge => (edge.sourcePort ?? 'success') === port && mustReach.has(edge.target)),
+      )
+      if (everyPortReachesTarget) mustReach.add(nodeId)
+    }
+    if (mustReach.has(startNodeId)) guaranteed.add(targetId)
+  }
+  return guaranteed
 }
 
 function diagnostic(code: string, message: string, nodeId?: string, path?: readonly (string | number)[]): WorkflowDiagnostic {

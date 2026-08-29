@@ -9,7 +9,7 @@ import {
   type WorkflowNodeDefinition,
   type WorkflowTemplate,
 } from '../../src/core/index.js'
-import { toolWorkflowTemplate } from './fixtures.js'
+import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
 
 describe('workflow compiler', () => {
   it('parses and compiles the checked-in YAML example', () => {
@@ -56,6 +56,65 @@ describe('workflow compiler', () => {
       code: 'BINDING_NOT_UPSTREAM',
       nodeId: 'call',
     }))
+  })
+
+  it('rejects branch-local data that is unavailable on another path activating the consumer', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = branchingWorkflowTemplate()
+    const unsafe: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        outputSchema: {
+          type: 'object', additionalProperties: false, required: ['answer'], properties: { answer: {} },
+        },
+        nodes: base.spec.nodes.map(node => node.id === 'end'
+          ? { ...node, inputs: { answer: { output: { nodeId: 'enabled', path: ['result'] } } } }
+          : node),
+      },
+    }
+
+    expect(compileWorkflow(unsafe, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'BINDING_SOURCE_NOT_GUARANTEED', nodeId: 'end',
+    }))
+  })
+
+  it('requires every Workflow output source to execute on every successful path', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = branchingWorkflowTemplate()
+    const exclusiveEnds: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: [
+          ...base.spec.nodes.filter(node => node.id !== 'end'),
+          { id: 'yes-end', uses: 'core.end@1', with: {}, inputs: { answer: { literal: true } } },
+          { id: 'no-end', uses: 'core.end@1', with: {}, inputs: { answer: { literal: false } } },
+        ],
+        edges: [
+          ...base.spec.edges.filter(edge => !edge.id.endsWith('-end')),
+          { id: 'enabled-yes-end', source: 'enabled', target: 'yes-end' },
+          { id: 'disabled-no-end', source: 'disabled', target: 'no-end' },
+        ],
+        outputs: { answer: { output: { nodeId: 'yes-end', path: ['answer'] } } },
+      },
+    }
+
+    expect(compileWorkflow(exclusiveEnds, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'WORKFLOW_OUTPUT_SOURCE_NOT_GUARANTEED',
+    }))
+  })
+
+  it('rejects template policies above Host-owned deployment ceilings', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    const oversized = { ...base, spec: { ...base.spec, policies: { ...base.spec.policies, maxOutputBytes: 10_001 } } }
+
+    expect(compileWorkflow(oversized, registry, { deploymentLimits: { maxOutputBytes: 10_000 } }).diagnostics)
+      .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_POLICY_LIMIT_EXCEEDED', path: ['spec', 'policies', 'maxOutputBytes'] }))
   })
 
   it('rejects ordinary cycles', () => {

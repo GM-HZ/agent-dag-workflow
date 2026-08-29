@@ -69,7 +69,7 @@ export function branchingWorkflowTemplate(): WorkflowTemplate {
         type: 'object',
         additionalProperties: false,
         required: ['answer'],
-        properties: { answer: { type: 'string' } },
+        properties: { answer: { type: 'boolean' } },
       },
       nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
@@ -95,7 +95,7 @@ export function branchingWorkflowTemplate(): WorkflowTemplate {
           id: 'end',
           uses: 'core.end@1',
           with: {},
-          inputs: { answer: { output: { nodeId: 'enabled', path: ['result'] } } },
+          inputs: { answer: { output: { nodeId: 'choose', path: ['result'] } } },
         },
       ],
       edges: [

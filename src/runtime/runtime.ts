@@ -3,12 +3,14 @@ import {
   DagWorkflowEngine,
   WORKFLOW_ENGINE_VERSION,
   compileWorkflowOrThrow,
+  normalizeWorkflowDeploymentLimits,
   snapshotJsonObject,
   snapshotJsonValue,
   type JsonObject,
   type JsonValue,
   type WorkflowAuthorityResolver,
   type WorkflowEngineServices,
+  type WorkflowDeploymentLimits,
   type WorkflowEvent,
   type WorkflowExecutionPlanEntry,
   type WorkflowExecutionPlanSnapshot,
@@ -46,6 +48,7 @@ export interface WorkflowRuntimeOptions {
   readonly artifactStore?: WorkflowArtifactStore
   readonly capturePolicy?: WorkflowCapturePolicy
   readonly queue?: WorkflowRunQueue
+  readonly deploymentLimits?: Partial<WorkflowDeploymentLimits>
 }
 
 export class WorkflowRuntime implements WorkflowRuntimeApi {
@@ -60,6 +63,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   readonly #capturePolicy: WorkflowCapturePolicy
   readonly #artifactStore: WorkflowArtifactStore | undefined
   readonly #queue: WorkflowRunQueue | undefined
+  readonly #deploymentLimits: WorkflowDeploymentLimits
   readonly #idempotent = new Map<string, { readonly fingerprint: string; readonly handle: Promise<WorkflowRunHandle> }>()
 
   constructor(options: WorkflowRuntimeOptions) {
@@ -71,6 +75,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     this.#live = options.liveEvents ?? new WorkflowLiveEventBus()
     this.#allowInline = options.allowInline ?? true
     this.#queue = options.queue
+    this.#deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
     const policy = options.capturePolicy ?? { mode: 'metadata', maxArtifactBytes: 1024 * 1024 }
     if (!Number.isSafeInteger(policy.maxArtifactBytes) || policy.maxArtifactBytes < 0) throw new Error('capturePolicy.maxArtifactBytes must be a non-negative safe integer')
     if (policy.mode === 'replayable' && options.artifactStore === undefined) throw new Error('replayable capture policy requires an artifact store')
@@ -266,7 +271,11 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         .map(node => node.id)
       if (missing.length > 0) throw new Error(`recorded replay is missing committed external outputs: ${missing.join(', ')}`)
       if (this.#capturePolicy.mode === 'replayable') await verifyReplayArtifacts(record, this.#artifactStore)
-      const engine = new DagWorkflowEngine(this.#nodes, this.#services, { runStore: this.#runStore, capture: this.#capture })
+      const engine = new DagWorkflowEngine(this.#nodes, this.#services, {
+        runStore: this.#runStore,
+        capture: this.#capture,
+        deploymentLimits: this.#deploymentLimits,
+      })
       const run = await engine.start({
         template: record.plan.root.template,
         plan: record.plan,
@@ -351,19 +360,23 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         },
       },
     }
-    engine = new DagWorkflowEngine(this.#nodes, services, { runStore: this.#runStore, capture: this.#capture })
+    engine = new DagWorkflowEngine(this.#nodes, services, {
+      runStore: this.#runStore,
+      capture: this.#capture,
+      deploymentLimits: this.#deploymentLimits,
+    })
     return engine
   }
 
   async #publishedEntry(id: string, revision: number): Promise<WorkflowExecutionPlanEntry & { readonly revision: number }> {
     const published = await this.#catalog.getPublished(id, revision)
     if (published.revision !== revision) throw new Error(`published revision mismatch: ${id}@${revision}`)
-    compileWorkflowOrThrow(published.template, this.#nodes)
+    compileWorkflowOrThrow(published.template, this.#nodes, { deploymentLimits: this.#deploymentLimits })
     return { id, revision, semanticHash: published.semanticHash, template: published.template }
   }
 
   #inlineEntry(template: WorkflowTemplate): WorkflowExecutionPlanEntry {
-    const compiled = compileWorkflowOrThrow(template, this.#nodes)
+    const compiled = compileWorkflowOrThrow(template, this.#nodes, { deploymentLimits: this.#deploymentLimits })
     return { id: compiled.template.metadata.id, semanticHash: compiled.semanticHash, template: compiled.template }
   }
 
@@ -393,6 +406,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     if (isTerminal(record.checkpoint.status)) return historicalHandle(record)
     const runId = record.runId
     const store = this.#runStore
+    const cancel = (reason?: string) => this.#cancelPersisted(runId, record.execution.authorityRef, reason)
     let observedResult: Promise<WorkflowRunResult> | undefined
     return {
       runId,
@@ -401,7 +415,28 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         return observedResult
       },
       live: options => this.#live.subscribe(runId, options?.signal),
-      async cancel() {},
+      cancel,
+    }
+  }
+
+  async #cancelPersisted(runId: string, authorityRef: string, reason?: string): Promise<void> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const record = await this.#runStore.loadRun(runId)
+      if (record === undefined) throw new Error(`workflow run not found: ${runId}`)
+      if (isTerminal(record.checkpoint.status)) return
+      const emit = (event: WorkflowEvent) => this.#projectLive(event)
+      const engine = this.#createEngine(record.plan, authorityRef, undefined, emit)
+      try {
+        await (await engine.cancel({
+          runId,
+          execution: { authorityRef, authority: undefined, origin: { type: 'sdk', source: 'cancel' } },
+          ...(reason === undefined ? {} : { reason }),
+          onEvent: emit,
+        })).result
+        return
+      } catch (error: unknown) {
+        if (!isRunSequenceConflict(error) || attempt === 2) throw error
+      }
     }
   }
 
@@ -507,6 +542,10 @@ function assertIdempotentLaunch(
 
 function isRunAlreadyExists(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'RUN_ALREADY_EXISTS'
+}
+
+function isRunSequenceConflict(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'RUN_SEQUENCE_CONFLICT'
 }
 
 function isTerminal(status: WorkflowRunRecord['checkpoint']['status']): boolean {

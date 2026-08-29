@@ -29,12 +29,15 @@ flowchart LR
 - 没有 Provider 层：MCP Tool、本地受控命令、DMS、HTTP、数据库和消息能力都由 Host Gateway 适配。
 - 权限只会收窄：模板先声明 `requires`，节点再声明固定依赖；最终能力是模板声明、节点声明、Authority 和 Host policy 的交集。
 - Agent Access 默认只允许同一 `authorityRef` 读取、追踪、重放或恢复持久化 Run；多租户管理员访问必须通过显式 `authorize` policy 授权。
+- Host 通过 `WorkflowDeploymentLimits` 持有不可提升的并发、时长、节点次数、输出大小和子流程深度 ceiling。
+- 编译器执行分支路径支配检查，拒绝发布在某条激活路径上必然缺少数据的 Workflow。
+- 外部动态结果只有通过 lossless JSON、schema、`expects`、端口和大小检查后，才会进入 Artifact、Journal 和 Checkpoint。
 - Script 只做纯 JSON：`core.script@1` 没有网络、文件、环境变量、密钥或 `eval`。含外部副作用的循环必须使用 `core.foreach@1`。
 - 运行可复现：run 固化模板、发布修订、依赖闭包、Engine 版本和 NodeDefinition set hash；Journal 与 Checkpoint 原子提交。
 - Trigger 不进入 DAG：Cron、Webhook、钉钉等只产生可信 Envelope，再通过固定 Binding 启动发布修订。
 - 外部入口不执行 DAG：Trigger 只持久化 run 并入队，Worker 再 claim/lease/resume；接收进程崩溃可从 Ingress 与 Journal 恢复。
 
-完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
+完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md) 与 [Core hardening 不变量](docs/core-hardening.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
 ## 安装
 

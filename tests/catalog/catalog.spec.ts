@@ -121,6 +121,21 @@ describe('workflow template catalog', () => {
     }))
   })
 
+  it('enforces deployment ceilings again at publication', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes, {
+      deploymentLimits: { maxDurationMs: 1_000 },
+    })
+    const authored = { ...template(), spec: { ...template().spec, policies: { maxDurationMs: 1_001 } } }
+    const draft = await catalog.createDraft(authored)
+
+    await expect(catalog.publish(draft.id, draft.revision)).rejects.toMatchObject({
+      code: 'CATALOG_PUBLISH_INVALID',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'WORKFLOW_POLICY_LIMIT_EXCEEDED' })]),
+    })
+  })
+
   it('allows digest-less definitions only for inline development and blocks publication', async () => {
     const nodes = new WorkflowNodeRegistry()
     const { implementationDigest: _start, ...start } = startNodeDefinition

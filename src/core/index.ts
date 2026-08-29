@@ -1,5 +1,5 @@
 export { compileWorkflow, compileWorkflowOrThrow } from './compiler.js'
-export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileResult } from './compiler.js'
+export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileOptions, WorkflowCompileResult } from './compiler.js'
 export { createScopedWorkflowCapabilityResolver, WorkflowCapabilityRegistry } from './capabilities.js'
 export { validateStructuredObjectSchema } from './structured-output-schema.js'
 export { DagWorkflowEngine, WORKFLOW_ENGINE_VERSION } from './engine.js'
@@ -13,6 +13,12 @@ export {
 } from './expression.js'
 export { materializeWorkflowTemplate } from './hash.js'
 export type { MaterializedWorkflowTemplate } from './hash.js'
+export {
+  DEFAULT_WORKFLOW_DEPLOYMENT_LIMITS,
+  DEFAULT_WORKFLOW_POLICIES,
+  effectiveWorkflowPolicies,
+  normalizeWorkflowDeploymentLimits,
+} from './limits.js'
 export { isJsonObject, LosslessJsonError, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 export {
   agentNodeDefinition,

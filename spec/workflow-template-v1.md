@@ -115,7 +115,7 @@ output:
   path: [field, nestedField, 0]
 ```
 
-`output.nodeId` 必须是当前节点的严格上游。`path` 是 string/integer 数组，不解析点号字符串。
+`output.nodeId` 不仅必须是当前节点的严格上游，还必须支配 consumer 或被证明为全局必达。这样既允许无条件并行 fan-out 的结果汇合，也拒绝分支局部数据直接跨 OR-join；后者必须先由显式、确定性的汇合语义标准化。`path` 是 string/integer 数组，不解析点号字符串。
 
 Secret 不属于 JSON 数据面，因此 Binding 不支持 `secret`。需要凭据的可信外部节点只能在静态 `with` 中保存 `credentialRef`/`connectionRef` 等不透明引用，由 Host Gateway 在调用最后一刻解析；明文值不能进入普通节点输入、Event、Checkpoint 或 Artifact。
 
@@ -147,7 +147,7 @@ Binding 自身不提供表达式：它只负责把 workflow input、上游 outpu
 
 ## 动态结果的两级校验
 
-1. Core 确定性边界：lossless JSON、NodeDefinition output schema、节点 `expects`、字节上限。
+1. Core 确定性边界：lossless JSON、NodeDefinition output schema、节点 `expects`、端口和字节上限。全部通过后才允许 Artifact capture，并把 capability 完成事件与节点输出原子提交。
 2. 可选 Agent 语义复核：作为显式 `agent.run@1` 节点，并为其结构化判断声明 `outputSchema/expects`。
 
 Agent 复核是业务判断，不是权限授予，也不能替代第一层。外部数据即使被 Agent 判断为合法，后续动态调用仍需重新满足 `requires + Authority + Host policy`。
@@ -173,7 +173,7 @@ outputs:
       path: [report]
 ```
 
-输出 binding 必须来自可到达的终态节点，并满足 `outputSchema`。多个 end 节点可支持分支终止，但每条成功路径必须能物化合法输出。
+输出 binding 必须来自全路径必达的终态节点，并满足 `outputSchema`。多个 end 节点仍可存在，但被 Workflow 输出引用的 End 必须被编译器证明在每条成功路径上执行；无法证明时拒绝发布。
 
 ## Policies
 
@@ -186,7 +186,7 @@ policies:
   subworkflowMaxDepth: 8
 ```
 
-模板值只能低于等于 deployment ceiling。执行器在完整结果可知的位置应用 size/time/count 上限。
+模板值只能低于等于 Host 注入的 `WorkflowDeploymentLimits`。Catalog 发布时校验，执行器和恢复路径再次取 `min(template/default, deployment)`，防止 inline 或历史模板提升资源额度。
 
 ## Layout
 

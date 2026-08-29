@@ -390,4 +390,60 @@ describe('workflow run store and recovery', () => {
     const result = await (await engine.resume({ execution: testExecution, runId: run.id, unknownNodeResolutions: { child: 'retry' } })).result
     expect(result).toMatchObject({ status: 'completed', outputs: { value: 'resolved' } })
   })
+
+  it('persists a terminal failure when the assembled Workflow result exceeds its limit', async () => {
+    const value = 'x'.repeat(35)
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      metadata: { id: 'terminal-size', name: 'Terminal size' },
+      spec: {
+        inputSchema: { type: 'object', additionalProperties: false },
+        outputSchema: {
+          type: 'object', additionalProperties: false, required: ['a', 'b'],
+          properties: { a: { type: 'string' }, b: { type: 'string' } },
+        },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'end-a', uses: 'core.end@1', with: {}, inputs: { a: { literal: value } } },
+          { id: 'end-b', uses: 'core.end@1', with: {}, inputs: { b: { literal: value } } },
+        ],
+        edges: [
+          { id: 'start-a', source: 'start', target: 'end-a' },
+          { id: 'start-b', source: 'start', target: 'end-b' },
+        ],
+        outputs: {
+          a: { output: { nodeId: 'end-a', path: ['a'] } },
+          b: { output: { nodeId: 'end-b', path: ['b'] } },
+        },
+        policies: { maxOutputBytes: 60 },
+      },
+    }
+    const store = new InMemoryWorkflowRunStore()
+    const run = await new DagWorkflowEngine(registry(), {}, { runStore: store }).start({ execution: testExecution, template, inputs: {} })
+
+    await expect(run.result).resolves.toMatchObject({ status: 'failed', error: expect.stringContaining('workflow result is') })
+    expect((await store.loadRun(run.id))?.checkpoint).toMatchObject({ status: 'failed', error: expect.stringContaining('workflow result is') })
+    expect((await store.loadRun(run.id))?.events).toContainEqual(expect.objectContaining({ type: 'run.failed' }))
+  })
+
+  it('keeps durable cancellation available after deployment ceilings are tightened', async () => {
+    const store = new InMemoryWorkflowRunStore()
+    const template = toolWorkflowTemplate()
+    const queued = await new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store }).queue({
+      execution: testExecution,
+      template,
+      inputs: { message: 'cancel me' },
+    })
+    const strict = new DagWorkflowEngine(registry(), { tools: tools() }, {
+      runStore: store,
+      deploymentLimits: { maxDurationMs: 1_000 },
+    })
+
+    const cancelled = await strict.cancel({ runId: queued.id, execution: testExecution, reason: 'policy changed' })
+
+    await expect(cancelled.result).resolves.toMatchObject({ status: 'cancelled', error: 'policy changed' })
+    expect((await store.loadRun(queued.id))?.checkpoint.status).toBe('cancelled')
+    await expect(strict.cancel({ runId: queued.id, execution: testExecution, reason: 'x'.repeat(4_097) }))
+      .rejects.toMatchObject({ code: 'CANCEL_REASON_INVALID' })
+  })
 })

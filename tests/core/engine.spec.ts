@@ -21,8 +21,8 @@ describe('DAG workflow engine', () => {
 
     const result = await (await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } })).result
 
-    expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
+    expect(result.status).toBe('completed')
     expect(result.outputs).toEqual({ answer: 'hello' })
     expect(execute).toHaveBeenCalledOnce()
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ uses: 'echo', nodeId: 'call', inputs: { message: 'hello' }, authority: testExecution.authority }))
@@ -46,7 +46,7 @@ describe('DAG workflow engine', () => {
 
     expect(result.status).toBe('completed')
     if (result.status !== 'completed') throw new Error(result.error)
-    expect(result.outputs).toEqual({ answer: 'selected' })
+    expect(result.outputs).toEqual({ answer: true })
     expect(calls).toEqual(['enabled-tool'])
     expect(result.nodeStates.disabled).toBe('skipped')
     expect(result.edgeStates['choose-enabled']).toBe('taken')
@@ -289,5 +289,42 @@ describe('DAG workflow engine', () => {
 
     expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('limit is 16') })
     expect(result.nodeStates.call).toBe('failed')
+  })
+
+  it('does not capture or journal an external result before deterministic validation', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    const template: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: base.spec.nodes.map(node => node.id === 'call'
+          ? {
+              ...node,
+              expects: {
+                schema: {
+                  type: 'object', additionalProperties: false, required: ['result'],
+                  properties: { result: { type: 'string' } },
+                },
+              },
+            }
+          : node),
+      },
+    }
+    const captures: { readonly phase: string; readonly nodeId?: string }[] = []
+    const engine = new DagWorkflowEngine(
+      registry,
+      { tools: { async execute() { return { private: 'invalid dynamic data' } } } },
+      { capture: { async capture(request) { captures.push({ phase: request.phase, ...(request.nodeId === undefined ? {} : { nodeId: request.nodeId }) }); return { dataHash: 'capture' } } } },
+    )
+
+    const result = await (await engine.start({ execution: testExecution, template, inputs: { message: 'hello' } })).result
+
+    expect(result).toMatchObject({ status: 'failed', error: expect.stringContaining('must be string') })
+    expect(captures).not.toContainEqual({ phase: 'capability.output', nodeId: 'call' })
+    expect(captures).not.toContainEqual({ phase: 'node.output', nodeId: 'call' })
+    expect(result.events).toContainEqual(expect.objectContaining({ type: 'capability.failed', nodeId: 'call' }))
+    expect(result.events).not.toContainEqual(expect.objectContaining({ type: 'capability.completed', nodeId: 'call' }))
   })
 })

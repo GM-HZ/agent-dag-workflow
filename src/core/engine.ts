@@ -4,13 +4,16 @@ import { compileWorkflowOrThrow } from './compiler.js'
 import { createScopedWorkflowCapabilityResolver } from './capabilities.js'
 import { WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
+import { DEFAULT_WORKFLOW_POLICIES, effectiveWorkflowPolicies, normalizeWorkflowDeploymentLimits } from './limits.js'
 import type { WorkflowNodeRegistry } from './registry.js'
 import type {
   JsonObject,
   JsonValue,
   PersistedWorkflowRunStatus,
   WorkflowBinding,
+  WorkflowCancelRequest,
   WorkflowDataCapture,
+  WorkflowDeploymentLimits,
   WorkflowEdgeStatus,
   WorkflowEvent,
   WorkflowEventInput,
@@ -29,6 +32,7 @@ import type {
   WorkflowRunStore,
   WorkflowRunSuccess,
   WorkflowStartRequest,
+  WorkflowTemplate,
 } from './types.js'
 
 export const WORKFLOW_ENGINE_VERSION = '1.0.0'
@@ -38,6 +42,11 @@ interface NodeCompletionSuccess {
   readonly ok: true
   readonly result: WorkflowNodeExecutionResult
   readonly capture?: WorkflowDataCapture
+  readonly capability?: {
+    readonly type: 'capability.completed' | 'capability.replayed'
+    readonly invocationId: string
+    readonly capture?: WorkflowDataCapture
+  }
 }
 
 interface NodeCompletionFailure {
@@ -77,14 +86,8 @@ export interface DagWorkflowEngineOptions {
   readonly runStore?: WorkflowRunStore
   readonly now?: () => number
   readonly capture?: import('./types.js').WorkflowDataCaptureGateway
+  readonly deploymentLimits?: Partial<WorkflowDeploymentLimits>
 }
-
-const DEFAULT_POLICIES = {
-  maxConcurrentNodes: 4,
-  maxNodeRuns: 100,
-  maxDurationMs: 10 * 60_000,
-  maxOutputBytes: 1024 * 1024,
-} as const
 
 export class DagWorkflowEngine {
   readonly #registry: WorkflowNodeRegistry
@@ -92,6 +95,7 @@ export class DagWorkflowEngine {
   readonly #runStore: WorkflowRunStore | undefined
   readonly #now: () => number
   readonly #capture: import('./types.js').WorkflowDataCaptureGateway | undefined
+  readonly #deploymentLimits: WorkflowDeploymentLimits
 
   constructor(registry: WorkflowNodeRegistry, services: WorkflowEngineServices = {}, options: DagWorkflowEngineOptions = {}) {
     this.#registry = registry
@@ -99,10 +103,11 @@ export class DagWorkflowEngine {
     this.#runStore = options.runStore
     this.#now = options.now ?? Date.now
     this.#capture = options.capture
+    this.#deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
   }
 
   async start(request: WorkflowStartRequest): Promise<WorkflowRun> {
-    const workflow = compileWorkflowOrThrow(request.template, this.#registry)
+    const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
@@ -112,7 +117,7 @@ export class DagWorkflowEngine {
       workflow,
       inputs,
       0,
-      workflow.template.spec.policies?.subworkflowMaxDepth ?? 8,
+      effectiveWorkflowPolicies(workflow.template.spec.policies, this.#deploymentLimits).subworkflowMaxDepth,
       undefined,
       request,
     )
@@ -120,12 +125,12 @@ export class DagWorkflowEngine {
 
   async queue(request: WorkflowStartRequest): Promise<WorkflowRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'background queue requires a WorkflowRunStore')
-    const workflow = compileWorkflowOrThrow(request.template, this.#registry)
+    const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
     const id = request.runId ?? `dag-${randomUUID()}`
-    const state = createInitialState(workflow, 0, workflow.template.spec.policies?.subworkflowMaxDepth ?? 8, undefined)
+    const state = createInitialState(workflow, 0, effectiveWorkflowPolicies(workflow.template.spec.policies, this.#deploymentLimits).subworkflowMaxDepth, undefined)
     const createdAt = this.#now()
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
     assertExecutionPlan(plan, workflow, this.#registry)
@@ -171,13 +176,13 @@ export class DagWorkflowEngine {
     if (typeof request.invocationId !== 'string' || request.invocationId.length === 0 || request.invocationId.length > 1024) {
       throw new WorkflowExecutionError('INVOCATION_ID_INVALID', 'invocationId must be a non-empty string no longer than 1024 characters')
     }
-    const workflow = compileWorkflowOrThrow(request.template, this.#registry)
+    const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
     const id = invocationRunId(request.invocationId)
     const existing = await this.#runStore.loadRun(id)
-    const effectiveDepthLimit = Math.min(request.subworkflowDepthLimit, workflow.template.spec.policies?.subworkflowMaxDepth ?? 8)
+    const effectiveDepthLimit = Math.min(request.subworkflowDepthLimit, effectiveWorkflowPolicies(workflow.template.spec.policies, this.#deploymentLimits).subworkflowMaxDepth)
     if (existing === undefined) return this.#startNew(id, workflow, inputs, request.depth, effectiveDepthLimit, request.invocationId, request)
     if (existing.semanticHash !== workflow.semanticHash
       || stableJsonStringify(existing.inputs) !== stableJsonStringify(inputs)
@@ -254,7 +259,7 @@ export class DagWorkflowEngine {
     if (request.execution.authorityRef !== record.execution.authorityRef) {
       throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'resume authorityRef does not match the persisted run authority')
     }
-    const workflow = compileWorkflowOrThrow(record.template, this.#registry)
+    const workflow = compileWorkflowOrThrow(record.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     if (workflow.semanticHash !== record.semanticHash || workflow.semanticHash !== record.checkpoint.semanticHash) {
       throw new WorkflowExecutionError('CHECKPOINT_TEMPLATE_MISMATCH', 'checkpoint semantic hash does not match the stored template')
     }
@@ -333,6 +338,45 @@ export class DagWorkflowEngine {
       initialEvents: [...recoveredInitialEvents, ...attentionEvents],
       initializeStart: false,
     })
+  }
+
+  async cancel(request: WorkflowCancelRequest): Promise<WorkflowRun> {
+    if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'durable cancellation requires a WorkflowRunStore')
+    const record = await this.#runStore.loadRun(request.runId)
+    if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
+    if (request.execution.authorityRef !== record.execution.authorityRef) {
+      throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'cancel authorityRef does not match the persisted run authority')
+    }
+    const reason = normalizeCancellationReason(request.reason)
+    // Administrative cancellation must remain available after a deployment
+    // lowers its execution ceilings. The stored template still receives full
+    // structural/semantic validation; only its historical authored policy is
+    // admitted for this non-executing transition.
+    const workflow = compileWorkflowOrThrow(record.template, this.#registry, {
+      deploymentLimits: administrativeDeploymentLimits(record.template, this.#deploymentLimits),
+    })
+    if (workflow.semanticHash !== record.semanticHash || workflow.semanticHash !== record.checkpoint.semanticHash) {
+      throw new WorkflowExecutionError('CHECKPOINT_TEMPLATE_MISMATCH', 'checkpoint semantic hash does not match the stored template')
+    }
+    assertExecutionPlan(record.plan, workflow, this.#registry)
+    const state = restoreState(record, workflow)
+    if (state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled') return terminalRun(record.runId, state)
+
+    const cancelled: string[] = []
+    for (const [nodeId, status] of state.nodeStates) {
+      if (status === 'pending' || status === 'ready' || status === 'running' || status === 'waiting' || status === 'needs_attention') {
+        state.nodeStates.set(nodeId, 'cancelled')
+        cancelled.push(nodeId)
+      }
+    }
+    state.ready.splice(0)
+    state.status = 'cancelled'
+    state.error = reason
+    await this.#commit(record.runId, workflow, state, [
+      ...cancelled.map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
+      { type: 'run.cancelled', reason },
+    ], record.plan, record.execution, request.onEvent)
+    return terminalRun(record.runId, state)
   }
 
   #queuedRun(runId: string, execution: import('./types.js').WorkflowExecutionContext): WorkflowRun {
@@ -438,11 +482,17 @@ export class DagWorkflowEngine {
     const services = this.#services
     let commitTail = Promise.resolve()
     const commit = async (events: readonly WorkflowEventInput[]): Promise<void> => {
-      const operation = commitTail.then(() => this.#commit(runId, workflow, state, events, plan, execution, onEvent))
+      const operation = commitTail.then(async () => {
+        try {
+          await this.#commit(runId, workflow, state, events, plan, execution, onEvent)
+        } catch (error: unknown) {
+          throw new WorkflowCommitFailure(error)
+        }
+      })
       commitTail = operation.catch(() => {})
       await operation
     }
-    const policies = { ...DEFAULT_POLICIES, ...workflow.template.spec.policies }
+    const policies = effectiveWorkflowPolicies(workflow.template.spec.policies, this.#deploymentLimits)
     let deadlineExceeded = false
     const active = new Map<string, Promise<NodeCompletion>>()
     if (options.initializeStart) {
@@ -503,11 +553,7 @@ export class DagWorkflowEngine {
                 const value = snapshotJsonValue(progress)
                 assertOutputSize(value, policies.maxOutputBytes, `node ${item.nodeId} progress`)
                 state.nodeProgress.set(item.nodeId, value)
-                try {
-                  await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }])
-                } catch (error: unknown) {
-                  throw new WorkflowCommitFailure(error)
-                }
+                await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }])
               },
               item.attempt,
               commit,
@@ -538,6 +584,12 @@ export class DagWorkflowEngine {
         state.nodeStates.set(completion.nodeId, 'succeeded')
         state.nodeOutputs.set(completion.nodeId, completion.result.outputs)
         const events: WorkflowEventInput[] = [
+          ...(completion.capability === undefined ? [] : [{
+            type: completion.capability.type,
+            nodeId: completion.nodeId,
+            invocationId: completion.capability.invocationId,
+            ...completion.capability.capture,
+          } as WorkflowEventInput]),
           { type: 'node.output-validated', nodeId: completion.nodeId },
           { type: 'node.output-committed', nodeId: completion.nodeId, ...completion.capture },
           { type: 'node.completed', nodeId: completion.nodeId },
@@ -559,12 +611,14 @@ export class DagWorkflowEngine {
       await commit([{ type: 'run.completed' }])
       return successResult(runId, state)
     } catch (error: unknown) {
+      if (error instanceof WorkflowCommitFailure) {
+        state.error = renderError(error.original)
+        return failureResult(runId, state)
+      }
       if (controller.signal.aborted) {
         return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded)
       }
-      state.status = 'failed'
-      state.error = renderError(error)
-      return failureResult(runId, state)
+      return finishFailure(renderError(error))
     } finally {
       if (deadline !== undefined) clearTimeout(deadline)
     }
@@ -783,7 +837,6 @@ export class DagWorkflowEngine {
       const external = isExternalNode(node.template.uses)
       const recorded = external ? recordedNodeOutputs?.[node.template.id] : undefined
       if (recorded !== undefined) {
-        await commit([{ type: 'capability.replayed', nodeId: node.template.id, invocationId }])
         const outputs = snapshotJsonObject(recorded)
         const outputErrors = node.validateOutputs(outputs)
         if (outputErrors.length > 0) throw new WorkflowExecutionError('RECORDED_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
@@ -799,61 +852,72 @@ export class DagWorkflowEngine {
           ok: true,
           result: { outputs, ...(selectedPorts === undefined ? {} : { selectedPorts }) },
           ...(capture === undefined ? {} : { capture }),
+          capability: { type: 'capability.replayed', invocationId },
         }
       }
       if (external) await commit([{ type: 'capability.requested', nodeId: node.template.id, invocationId }])
-      let rawResult: WorkflowNodeExecutionResult
       try {
-        rawResult = await node.definition.execute({
-        runId,
-        nodeId: node.template.id,
-        invocationId,
-        workflowInputs,
-        inputs,
-        config: node.template.with,
-        signal: timeoutSignal,
-        capabilities: createScopedWorkflowCapabilityResolver(
-          this.#services.capabilities,
-          node.definition.capabilities,
-          node.template.id,
-        ),
-        services: scopeNodeServices(this.#services, node.definition.capabilities),
-        requirements: node.requirements,
-        depth: state.depth,
-        subworkflowMaxDepth,
-        ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
-        checkpointProgress,
-        authority,
+        const rawResult = await node.definition.execute({
+          runId,
+          nodeId: node.template.id,
+          invocationId,
+          workflowInputs,
+          inputs,
+          config: node.template.with,
+          signal: timeoutSignal,
+          capabilities: createScopedWorkflowCapabilityResolver(
+            this.#services.capabilities,
+            node.definition.capabilities,
+            node.template.id,
+          ),
+          services: scopeNodeServices(this.#services, node.definition.capabilities),
+          requirements: node.requirements,
+          depth: state.depth,
+          subworkflowMaxDepth,
+          ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
+          checkpointProgress,
+          authority,
         })
+        const outputs = snapshotJsonObject(rawResult.outputs)
+        const result: WorkflowNodeExecutionResult = {
+          outputs,
+          ...(rawResult.selectedPorts === undefined ? {} : { selectedPorts: Object.freeze([...rawResult.selectedPorts]) }),
+        }
+        const outputErrors = node.validateOutputs(outputs)
+        if (outputErrors.length > 0) throw new WorkflowExecutionError('NODE_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
+        const expectationErrors = node.validateExpectation?.(outputs) ?? []
+        if (expectationErrors.length > 0) {
+          throw new WorkflowExecutionError('NODE_OUTPUT_EXPECTATION_FAILED', expectationErrors.join('; '), { nodeId: node.template.id })
+        }
+        const selected = result.selectedPorts ?? ['success']
+        if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
+          throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
+        }
+        assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `node ${node.template.id} output`)
+        const capabilityCapture = external
+          ? await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'capability.output', value: outputs })
+          : undefined
+        const capture = await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'node.output', value: outputs })
+        return {
+          nodeId: node.template.id,
+          ok: true,
+          result,
+          ...(capture === undefined ? {} : { capture }),
+          ...(external ? {
+            capability: {
+              type: 'capability.completed' as const,
+              invocationId,
+              ...(capabilityCapture === undefined ? {} : { capture: capabilityCapture }),
+            },
+          } : {}),
+        }
       } catch (error: unknown) {
         if (error instanceof WorkflowCommitFailure) throw error
         if (external) await commit([{ type: 'capability.failed', nodeId: node.template.id, invocationId, error: renderError(error) }])
         throw error
       }
-      const outputs = snapshotJsonObject(rawResult.outputs)
-      const capabilityCapture = external
-        ? await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'capability.output', value: outputs })
-        : undefined
-      if (external) await commit([{ type: 'capability.completed', nodeId: node.template.id, invocationId, ...capabilityCapture }])
-      const result: WorkflowNodeExecutionResult = {
-        outputs,
-        ...(rawResult.selectedPorts === undefined ? {} : { selectedPorts: Object.freeze([...rawResult.selectedPorts]) }),
-      }
-      const outputErrors = node.validateOutputs(outputs)
-      if (outputErrors.length > 0) throw new WorkflowExecutionError('NODE_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
-      const expectationErrors = node.validateExpectation?.(outputs) ?? []
-      if (expectationErrors.length > 0) {
-        throw new WorkflowExecutionError('NODE_OUTPUT_EXPECTATION_FAILED', expectationErrors.join('; '), { nodeId: node.template.id })
-      }
-      const selected = result.selectedPorts ?? ['success']
-      if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
-        throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
-      }
-      assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `node ${node.template.id} output`)
-      const capture = await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'node.output', value: outputs })
-      return { nodeId: node.template.id, ok: true, result, ...(capture === undefined ? {} : { capture }) }
     } catch (error: unknown) {
-      if (error instanceof WorkflowCommitFailure) throw error.original
+      if (error instanceof WorkflowCommitFailure) throw error
       return { nodeId: node.template.id, ok: false, error }
     }
   }
@@ -961,7 +1025,7 @@ function restoreState(record: WorkflowRunRecord, workflow: CompiledWorkflow): Ru
     seq: checkpoint.seq,
     status: checkpoint.status,
     depth: checkpoint.depth ?? 0,
-    subworkflowDepthLimit: checkpoint.subworkflowDepthLimit ?? workflow.template.spec.policies?.subworkflowMaxDepth ?? 8,
+    subworkflowDepthLimit: checkpoint.subworkflowDepthLimit ?? workflow.template.spec.policies?.subworkflowMaxDepth ?? DEFAULT_WORKFLOW_POLICIES.subworkflowMaxDepth,
     ...(checkpoint.invocationId === undefined ? {} : { invocationId: checkpoint.invocationId }),
     ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
     ...(checkpoint.resultOutputs === undefined ? {} : { resultOutputs: checkpoint.resultOutputs }),
@@ -1085,6 +1149,28 @@ function executionError(code: string, message: string, nodeId: string | undefine
 function assertOutputSize(value: JsonValue, maxBytes: number, label: string): void {
   const bytes = Buffer.byteLength(JSON.stringify(value), 'utf8')
   if (bytes > maxBytes) throw new WorkflowExecutionError('OUTPUT_TOO_LARGE', `${label} is ${bytes} bytes, limit is ${maxBytes}`)
+}
+
+function normalizeCancellationReason(reason: unknown): string {
+  if (reason === undefined) return 'cancelled'
+  if (typeof reason !== 'string' || reason.length === 0 || Buffer.byteLength(reason, 'utf8') > 4_096) {
+    throw new WorkflowExecutionError('CANCEL_REASON_INVALID', 'cancellation reason must be a non-empty string no larger than 4096 bytes')
+  }
+  return reason
+}
+
+function administrativeDeploymentLimits(
+  template: WorkflowTemplate,
+  configured: WorkflowDeploymentLimits,
+): WorkflowDeploymentLimits {
+  const authored = template.spec.policies
+  return normalizeWorkflowDeploymentLimits({
+    maxConcurrentNodes: Math.max(configured.maxConcurrentNodes, authored?.maxConcurrentNodes ?? 1),
+    maxNodeRuns: Math.max(configured.maxNodeRuns, authored?.maxNodeRuns ?? 1),
+    maxDurationMs: Math.max(configured.maxDurationMs, authored?.maxDurationMs ?? 1),
+    maxOutputBytes: Math.max(configured.maxOutputBytes, authored?.maxOutputBytes ?? 1),
+    subworkflowMaxDepth: Math.max(configured.subworkflowMaxDepth, authored?.subworkflowMaxDepth ?? 1),
+  })
 }
 
 function renderAbortReason(reason: unknown, fallback: string): string {

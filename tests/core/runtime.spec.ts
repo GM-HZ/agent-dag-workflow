@@ -227,6 +227,35 @@ describe('host-neutral WorkflowRuntime', () => {
     expect(await queue.claim({ workerId: 'worker-2', leaseMs: 1_000 })).toBeUndefined()
   })
 
+  it('durably cancels an active run obtained through an idempotent persisted handle', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const runs = new InMemoryWorkflowRunStore()
+    const queue = new InMemoryWorkflowRunCoordinator()
+    const execute = vi.fn(async () => ({ echo: 'must-not-run' }))
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: runs, queue, services: { tools: { execute } },
+      authorityResolver: { async resolve(ref) { return { ref } } },
+    })
+    const draft = await catalog.createDraft(toolWorkflowTemplate())
+    await catalog.publish(draft.id, draft.revision)
+    const request = {
+      target: { type: 'published' as const, id: draft.id, revision: 1 }, inputs: { message: 'cancel' },
+      authorityRef: 'worker:cancel', origin: { type: 'trigger', source: 'cancel-test' },
+      idempotencyKey: 'cancel-event', executionMode: 'background' as const,
+    }
+    const accepted = await runtime.launch(request)
+    const recovered = await runtime.launch(request)
+
+    await recovered.cancel('operator cancelled')
+
+    expect(await runtime.getRun(accepted.runId)).toMatchObject({ status: 'cancelled', error: 'operator cancelled' })
+    await expect(recovered.result).resolves.toMatchObject({ status: 'cancelled', error: 'operator cancelled' })
+    await expect(accepted.result).resolves.toMatchObject({ status: 'cancelled', error: 'operator cancelled' })
+    expect(execute).not.toHaveBeenCalled()
+  })
+
   it('recreates the locked subworkflow gateway when resuming a crashed parent', async () => {
     class OneShotFailingStore extends InMemoryWorkflowRunStore {
       armed = true
