@@ -102,7 +102,10 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     }) as unknown as import('./types.js').WorkflowNodeDescriptor)
   }
   async listTemplates() { return this.#catalog.list() }
+  async searchTemplates(request: import('../catalog/index.js').WorkflowCatalogSearchRequest = {}) { return this.#catalog.search(request) }
+  async readDraft(id: string) { return this.#catalog.readDraft(id) }
   async getPublished(id: string, revision?: number) { return this.#catalog.getPublished(id, revision) }
+  async diffDraft(id: string, candidate: WorkflowTemplate) { return this.#catalog.diff(id, candidate) }
   async createDraft(template: WorkflowTemplate) { return this.#catalog.createDraft(template) }
   async updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate) { return this.#catalog.updateDraft(id, expectedRevision, template) }
   async publish(id: string, expectedDraftRevision: number) { return this.#catalog.publish(id, expectedDraftRevision) }
@@ -122,9 +125,16 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     this.#idempotent.set(scoped, { fingerprint, handle: launched })
     try {
       const handle = await launched
-      void handle.result.finally(() => {
+      if ((request.executionMode ?? 'foreground') === 'background') {
+        // Persistence and queue insertion are complete. Do not observe the
+        // lazy terminal result in an ingress/CLI process that only needs the
+        // acceptance receipt.
         if (this.#idempotent.get(scoped)?.handle === launched) this.#idempotent.delete(scoped)
-      })
+      } else {
+        void handle.result.finally(() => {
+          if (this.#idempotent.get(scoped)?.handle === launched) this.#idempotent.delete(scoped)
+        })
+      }
       return handle
     } catch (error: unknown) {
       this.#idempotent.delete(scoped)
@@ -212,6 +222,10 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       this.#runStore.getCheckpoint(runId),
     ])
     if (metadata === undefined || checkpoint === undefined) return undefined
+    const needsAttention = Object.entries(checkpoint.nodeStates)
+      .filter(([, status]) => status === 'needs_attention')
+      .map(([nodeId]) => nodeId)
+      .sort()
     return {
       runId: metadata.runId,
       templateId: metadata.templateId,
@@ -223,6 +237,11 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       createdAt: metadata.createdAt,
       updatedAt: checkpoint.updatedAt,
       checkpointSeq: checkpoint.seq,
+      nodeStates: checkpoint.nodeStates,
+      edgeStates: checkpoint.edgeStates,
+      ...(checkpoint.resultOutputs === undefined ? {} : { outputs: checkpoint.resultOutputs }),
+      ...(checkpoint.error === undefined ? {} : { error: checkpoint.error }),
+      ...(needsAttention.length === 0 ? {} : { needsAttention }),
     }
   }
 
@@ -357,10 +376,14 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   }
 
   #handle(run: WorkflowRun): WorkflowRunHandle {
-    void run.result.finally(() => this.#live.close(run.id))
+    let observedResult: Promise<WorkflowRunResult> | undefined
+    const live = this.#live
     return {
       runId: run.id,
-      result: run.result,
+      get result() {
+        observedResult ??= run.result.finally(() => live.close(run.id))
+        return observedResult
+      },
       live: options => this.#live.subscribe(run.id, options?.signal),
       cancel: reason => run.cancel(reason),
     }

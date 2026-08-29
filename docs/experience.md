@@ -46,6 +46,7 @@ pnpm check
 - Core：编译、表达式、脚本沙箱、能力裁剪、调度、恢复与结果契约。
 - Catalog/SQLite：CAS、diff、发布修订、持久化运行与恢复。
 - DSH Host：Tool/Agent/approval 适配、Skill、紧凑 Agent 交接输出。
+- Agent Access：CLI v1 Envelope、Skill 按需加载、固定 MCP Gateway 和上下文预算。
 - Canvas：授权 RPC、幂等重试、错误分类、本地恢复、首次示例、轨迹投影和生产 bundle。
 - 根包：安装 manifest、bundle 装配、Showcase 模板和真实运行 smoke。
 

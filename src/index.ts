@@ -1,6 +1,7 @@
 export * from './core/index.js'
 export * from './catalog/index.js'
 export * from './runtime/index.js'
+export * from './access/index.js'
 export * from './journal/index.js'
 export * from './triggers/core/index.js'
 export * from './migrations/index.js'

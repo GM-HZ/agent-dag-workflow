@@ -337,7 +337,11 @@ export class DagWorkflowEngine {
 
   #queuedRun(runId: string, execution: import('./types.js').WorkflowExecutionContext): WorkflowRun {
     const store = this.#runStore!
-    const result = (async (): Promise<WorkflowRunResult> => {
+    // A background acceptance must not start a polling loop merely because a
+    // handle was created. CLI/MCP callers commonly keep only runId and close
+    // their local database connection immediately; polling starts on demand
+    // when an SDK consumer actually awaits `result`.
+    const result = lazyPromise(async (): Promise<WorkflowRunResult> => {
       for (;;) {
         const record = await store.loadRun(runId)
         if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
@@ -348,7 +352,7 @@ export class DagWorkflowEngine {
         }
         await new Promise(resolve => setTimeout(resolve, 20))
       }
-    })()
+    })
     return {
       id: runId,
       result,
@@ -853,6 +857,17 @@ export class DagWorkflowEngine {
       return { nodeId: node.template.id, ok: false, error }
     }
   }
+}
+
+function lazyPromise<Value>(factory: () => Promise<Value>): Promise<Value> {
+  let active: Promise<Value> | undefined
+  const get = () => active ??= factory()
+  return {
+    then(onFulfilled, onRejected) { return get().then(onFulfilled, onRejected) },
+    catch(onRejected) { return get().catch(onRejected) },
+    finally(onFinally) { return get().finally(onFinally) },
+    [Symbol.toStringTag]: 'Promise',
+  } as Promise<Value>
 }
 
 function createInlineExecutionPlan(workflow: CompiledWorkflow, registry: WorkflowNodeRegistry): WorkflowExecutionPlanSnapshot {

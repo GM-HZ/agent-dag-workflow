@@ -2,7 +2,7 @@ import { readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { WorkflowMcpServer } from '../../src/adapters/mcp/index.js'
+import { createMcpGateway } from '../../src/adapters/mcp/index.js'
 import { runWorkflowCli } from '../../src/adapters/cli/index.js'
 import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import {
@@ -46,10 +46,9 @@ describe('weekly AI model workflow Host conformance', () => {
     const mcpFixture = fixtureRuntime()
     const draft = await mcpFixture.runtime.createDraft(template)
     await mcpFixture.runtime.publish(draft.id, draft.revision)
-    const mcp = new WorkflowMcpServer(mcpFixture.runtime)
+    const mcp = createMcpGateway(mcpFixture.runtime)
     const mcpResult = await mcp.callTool('workflow_run', {
-      id: draft.id,
-      revision: 1,
+      ref: `${draft.id}@1`,
       inputs,
     }, { authorityRef: 'mcp:test', authority: {} }) as JsonObject
     expect(mcpResult.status).toBe('completed')
@@ -60,29 +59,40 @@ describe('weekly AI model workflow Host conformance', () => {
     const database = join(root, 'workflow.db')
     writeFileSync(inputPath, JSON.stringify(inputs))
     const cliLines: string[] = []
+    expect(await runWorkflowCli(['draft', 'put', templatePath, '--host', hostPath, '--db', database], line => cliLines.push(line))).toBe(0)
+    const cliDraft = envelopeData(cliLines.pop()!) as { readonly revision: number }
+    expect(await runWorkflowCli(['publish', template.metadata.id, '--expected', String(cliDraft.revision), '--host', hostPath, '--db', database], line => cliLines.push(line))).toBe(0)
+    cliLines.pop()
     expect(await runWorkflowCli([
-      'run', templatePath, '--input', inputPath, '--host', hostPath, '--db', database,
+      'run', `${template.metadata.id}@1`, '--input', inputPath, '--host', hostPath, '--db', database,
     ], line => cliLines.push(line))).toBe(0)
-    const cliResult = JSON.parse(cliLines.pop()!) as { readonly runId: string; readonly status: string; readonly outputs: JsonObject }
+    const cliResult = envelopeData(cliLines.pop()!) as { readonly runId: string; readonly status: string; readonly outputs: JsonObject }
 
     expect(mcpResult.outputs).toEqual(sdkResult.outputs)
     expect(cliResult.outputs).toEqual(sdkResult.outputs)
     expectWeeklyOutput(sdkResult.outputs)
 
     const sdkEvents = (await sdk.runtime.readEvents(sdkHandle.runId, { limit: 1000 })).events
-    const mcpTrace = await mcp.callTool('workflow_trace', { runId: mcpResult.runId!, limit: 1000 }, { authorityRef: 'mcp:test', authority: {} }) as JsonObject
+    const mcpTrace = await mcp.callTool('workflow_trace', { runId: mcpResult.runId!, view: 'events', limit: 1000 }, { authorityRef: 'mcp:test', authority: {} }) as JsonObject
     const cliTrace: string[] = []
-    expect(await runWorkflowCli(['trace', cliResult.runId, '--limit', '1000', '--db', database], line => cliTrace.push(line))).toBe(0)
+    expect(await runWorkflowCli(['trace', cliResult.runId, '--events', '--limit', '1000', '--db', database], line => cliTrace.push(line))).toBe(0)
+    const cliTraceData = envelopeData(cliTrace.pop()!) as { readonly events: readonly JsonObject[] }
     const signatures = [
       sdkEvents.map(event => `${event.type}:${event.node?.id ?? ''}`),
       (mcpTrace.events as readonly JsonObject[]).map(event => `${event.type}:${(event.node as JsonObject | undefined)?.id ?? ''}`),
-      cliTrace.map(line => { const event = JSON.parse(line) as { type: string; node?: { id: string } }; return `${event.type}:${event.node?.id ?? ''}` }),
+      cliTraceData.events.map(event => `${event.type}:${(event.node as JsonObject | undefined)?.id ?? ''}`),
     ]
     expect([...signatures[1]!].sort()).toEqual([...signatures[0]!].sort())
     expect([...signatures[2]!].sort()).toEqual([...signatures[0]!].sort())
     expect(signatures[0]!.filter(value => value.startsWith('capability.completed:'))).toHaveLength(17)
   })
 })
+
+function envelopeData(source: string): unknown {
+  const envelope = JSON.parse(source) as { readonly ok: boolean; readonly data?: unknown; readonly error?: unknown }
+  if (!envelope.ok) throw new Error(`CLI failed: ${JSON.stringify(envelope.error)}`)
+  return envelope.data
+}
 
 function fixtureRuntime() {
   const nodes = new WorkflowNodeRegistry()

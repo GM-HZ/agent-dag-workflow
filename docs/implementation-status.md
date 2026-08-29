@@ -19,8 +19,10 @@
 | Cron/Webhook/钉钉 reference adapter | 完成（reference） | 时区与 misfire、HMAC、钉钉签名/身份、命令/受限自然语言路由、回执关联 | 不宣称覆盖所有平台协议/回调形态 |
 | Worker claim/lease | 完成（reference） | Memory/SQLite coordinator、租约过期、heartbeat、两个 SQLite Worker 竞态与单次执行 | 分布式 Store 仍需服务端 lease fencing；不宣称 exactly-once |
 | Result Delivery | 完成（reference） | SQLite durable record、稳定 invocationId、immutable binding、并发合并、unknown attempt、幂等 retry | 生产 Channel 自行实现加密凭据与告警 |
-| CLI | 完成 | validate/draft/publish/run/trace/replay/resume/migrate、SQLite 跨进程测试、显式 Host module | 交互式体验不属于 Core |
-| MCP 控制面与 Workflow Tool 投影 | 完成 | discovery/draft/publish/run/trace/replay/resume；每个 published revision 可作为普通 MCP Tool 调用 | 具体 MCP transport 由 Host 挂载 |
+| Agent Access Plane | 完成 | `WorkflowAgentAccess`、有界 search/describe/run/trace projection、稳定错误码；Adapter 不直接访问 Store | 无 Provider 层 |
+| CLI-native | 完成 | v1 JSON/JSONL Envelope、stdin、search/describe/draft/diff/publish/run/run-get/trace/replay/resume、background worker、SQLite 跨进程与显式 Host module | 交互式 UI 不属于 CLI |
+| Skill / Codex Plugin | 完成 | CLI-first/MCP-fallback Skill、同步门禁、官方 Skill/Plugin validator、仓库内 Codex manifest | 个人 marketplace 安装不是源码门禁 |
+| 固定 MCP Gateway | 完成 | 5 个 invoke / 11 个 author Tool、1000 Workflow 上下文预算测试、官方 SDK 内存与真实 stdio 进程测试 | 不提供逐 Workflow Tool 投影 |
 | DSH Adapter 与 Canvas | 完成 | DSH `dagWorkflowEngine` 使用统一 Runtime；Canvas 编辑同一模板并提供 Trigger/Ingress/Delivery/Trace 运维面 | UI 产品体验可继续独立迭代 |
 | Migration | 完成 | Store schema v1-v10 fixture、重复重开、旧 Template 离线转换；不支持的 in-flight run 显式隔离为 paused/operator attention | 不静默猜测旧 checkpoint 语义 |
 | 复杂纵向 Case | 完成 | 同一 21 节点 AI 模型周报经 SDK/MCP/CLI/DSH 执行；比较输出与 Journal 契约 | 真实联网结果不作为确定性 CI fixture |

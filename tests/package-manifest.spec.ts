@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 interface PackageManifest {
+  version?: string
   name?: string
   repository?: { url?: string; directory?: string }
   dependencies?: Record<string, string>
@@ -27,7 +28,14 @@ describe('published root package manifest', () => {
     expect(Object.keys(manifest.exports ?? {})).toEqual(expect.arrayContaining([
       '.', './core', './catalog', './sqlite', './dsh', './canvas', './client', './package.json',
     ]))
-    expect(manifest.files).toEqual(expect.arrayContaining(['docs', 'examples', 'spec', 'skills']))
+    expect(manifest.files).toEqual(expect.arrayContaining(['docs', 'examples', 'spec', 'skills', 'integrations/codex/agent-dag-workflow']))
+    expect(Object.keys(manifest.exports ?? {})).toContain('./access')
+    expect(manifest.dependencies?.['@modelcontextprotocol/sdk']).toBe('1.30.0')
+    const plugin = JSON.parse(readFileSync(new URL('../integrations/codex/agent-dag-workflow/.codex-plugin/plugin.json', import.meta.url), 'utf8')) as { version?: string; name?: string }
+    expect(plugin).toMatchObject({ name: 'agent-dag-workflow', version: manifest.version })
+    expect(readFileSync(new URL('../integrations/codex/agent-dag-workflow/skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')).toBe(
+      readFileSync(new URL('../skills/workflow-builder/SKILL.md', import.meta.url), 'utf8'),
+    )
   })
 
   it('does not publish workspace-only runtime dependency ranges', () => {

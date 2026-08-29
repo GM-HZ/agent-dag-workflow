@@ -1,6 +1,6 @@
 # Agent DAG Workflow 总体架构
 
-本文描述 `1.0.0` 的 Host-neutral 架构。完整决策、阶段门禁和完成定义见 [核心通用化重构方案](core-generalization-refactor.md)。
+本文描述 `1.0.0` 的 Host-neutral 架构。完整决策、阶段门禁和完成定义见 [核心通用化重构方案](core-generalization-refactor.md)。Agent 如何通过 CLI、MCP、Skill 和 Plugin 按需访问 Runtime，见 [Agent Workflow 访问架构技术方案](agent-access-architecture.md)。
 
 ## 1. 产品边界
 
@@ -9,11 +9,15 @@ Agent DAG Workflow 是可嵌入任意 Agent Host 的持久化 DAG 内核，不�
 ```mermaid
 flowchart TB
   subgraph Entrances["入口"]
+    Skill["On-demand Skill"]
     SDK["SDK"]
     CLI["CLI"]
     MCP["MCP"]
     DSH["DSH / Canvas"]
     Trigger["Cron / Webhook / Channel"]
+  end
+  subgraph Access["Agent Access Plane"]
+    AgentAccess["WorkflowAgentAccess"]
   end
   subgraph Stable["稳定内核"]
     Runtime["WorkflowRuntime"]
@@ -30,8 +34,9 @@ flowchart TB
     Approval["Approval Gateway"]
   end
   SDK --> Runtime
-  CLI --> Runtime
-  MCP --> Runtime
+  Skill --> CLI
+  CLI --> AgentAccess --> Runtime
+  MCP --> AgentAccess
   DSH --> Runtime
   Trigger --> Ingress --> Runtime
   Runtime --> Catalog --> Engine
@@ -173,6 +178,7 @@ Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unkn
 ```text
 ./core                协议、编译器、Engine
 ./runtime             Host-neutral Runtime
+./access              Agent 请求/响应投影与稳定错误模型
 ./journal             Artifact 与 Journal 辅助类型
 ./sqlite              无 DSH 依赖的本地持久化
 ./mcp                 MCP 控制面

@@ -25,8 +25,9 @@ describe('user experience contract', () => {
   })
 
   it('instructs the Agent to hand off a compact reference to the same template', () => {
-    expect(skill).toContain('report the workflow name, draft id, current draft revision, validation counts')
-    expect(skill).toContain('Do not paste the complete WorkflowTemplate into chat')
+    expect(skill).toContain('report only the Workflow name/id, current draft revision')
+    expect(skill).toContain('Never print complete templates, execution plans, event histories')
     expect(skill).toContain('Do not create a second DSL')
+    expect(skill).toContain('Do not start or require MCP when the CLI is available')
   })
 })

@@ -1,116 +1,201 @@
-import { snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonSchema, type JsonValue, type WorkflowTemplate } from '../../core/index.js'
+import {
+  WorkflowAgentAccess,
+  WorkflowAccessError,
+  type AgentAccessContext,
+  type WorkflowAgentAccessApi,
+} from '../../access/index.js'
+import { isJsonObject, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonSchema, type JsonValue, type WorkflowTemplate } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
 
-export interface WorkflowMcpCallContext { readonly authorityRef: string; readonly authority?: unknown; readonly signal?: AbortSignal }
+export type WorkflowMcpProfile = 'invoke' | 'author'
+
+export interface WorkflowMcpCallContext {
+  readonly authorityRef: string
+  readonly authority?: unknown
+  readonly signal?: AbortSignal
+}
+
 export interface WorkflowMcpToolDescriptor {
   readonly name: string
   readonly description: string
-  readonly kind: 'control' | 'workflow'
+  readonly kind: 'invoke' | 'author'
   readonly inputSchema: JsonSchema
-  readonly outputSchema?: JsonSchema
-  readonly workflow?: { readonly id: string; readonly revision: number }
+  readonly outputSchema: JsonSchema
 }
 
-export class WorkflowMcpServer {
-  constructor(private readonly runtime: WorkflowRuntimeApi) {}
+export interface WorkflowMcpGatewayOptions { readonly profile?: WorkflowMcpProfile }
 
-  async listTools(): Promise<readonly WorkflowMcpToolDescriptor[]> {
-    const control = [
-      ['workflow_nodes_list', 'List registered workflow node definitions and schemas.'],
-      ['workflow_templates_list', 'List workflow drafts and published revisions.'],
-      ['workflow_validate', 'Validate one host-neutral WorkflowTemplate.'],
-      ['workflow_draft_create', 'Create a workflow draft.'],
-      ['workflow_draft_update', 'CAS-update a workflow draft.'],
-      ['workflow_publish', 'Publish an immutable workflow revision.'],
-      ['workflow_run', 'Launch a fixed published revision or explicit inline development template.'],
-      ['workflow_trace', 'Read one page of authoritative workflow events.'],
-      ['workflow_replay', 'Inspect, recorded-replay, or live-rerun a workflow.'],
-      ['workflow_resume', 'Resume a paused or recoverable workflow.'],
-    ].map(([name, description]) => ({ name: name!, description: description!, kind: 'control' as const, inputSchema: { type: 'object' as const } }))
-    const published = (await this.runtime.listTemplates()).filter(template => template.publishedRevision !== undefined)
-    const projected = await Promise.all(published.map(async summary => {
-      const revision = await this.runtime.getPublished(summary.id, summary.publishedRevision!)
-      return {
-        name: workflowToolName(summary.id, summary.publishedRevision!),
-        description: `Run published workflow ${summary.name} (${summary.id}@${summary.publishedRevision}).`,
-        kind: 'workflow' as const,
-        workflow: { id: summary.id, revision: summary.publishedRevision! },
-        inputSchema: revision.template.spec.inputSchema,
-        outputSchema: revision.template.spec.outputSchema,
-      }
-    }))
-    return [...control, ...projected]
+export class WorkflowMcpGateway {
+  readonly #profile: WorkflowMcpProfile
+
+  constructor(private readonly access: WorkflowAgentAccessApi, options: WorkflowMcpGatewayOptions = {}) {
+    this.#profile = options.profile ?? 'invoke'
   }
 
-  async callTool(name: string, args: JsonObject, context: WorkflowMcpCallContext): Promise<JsonValue> {
-    const projected = (await this.listTools()).find(tool => tool.kind === 'workflow' && tool.name === name)
-    if (projected?.workflow !== undefined) {
-      const handle = await this.runtime.launch({
-        target: { type: 'published', ...projected.workflow }, inputs: snapshotJsonObject(args),
-        authorityRef: context.authorityRef,
-        ...(context.authority === undefined ? {} : { authority: context.authority }),
-        origin: { type: 'mcp', source: name },
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
-      })
-      const result = await handle.result
-      if (result.status !== 'completed') {
-        throw new Error(`projected workflow ${projected.workflow.id}@${projected.workflow.revision} ${result.status}: ${result.error} (run ${result.runId})`)
-      }
-      return snapshotJsonValue(result.outputs)
+  listTools(): readonly WorkflowMcpToolDescriptor[] {
+    return this.#profile === 'author' ? [...INVOKE_TOOLS, ...AUTHOR_TOOLS] : INVOKE_TOOLS
+  }
+
+  async callTool(name: string, rawArgs: JsonObject, context: WorkflowMcpCallContext): Promise<JsonValue> {
+    const descriptor = this.listTools().find(tool => tool.name === name)
+    if (descriptor === undefined) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `unknown or unavailable workflow MCP tool: ${name}`)
+    const args = snapshotJsonObject(rawArgs)
+    const accessContext: AgentAccessContext = {
+      authorityRef: context.authorityRef,
+      ...(context.authority === undefined ? {} : { authority: context.authority }),
+      origin: { type: 'mcp', source: name },
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
     }
     switch (name) {
-      case 'workflow_nodes_list': return snapshotJsonValue(await this.runtime.listNodes() as unknown as JsonValue)
-      case 'workflow_templates_list': return snapshotJsonValue(await this.runtime.listTemplates() as unknown as JsonValue)
-      case 'workflow_validate': return snapshotJsonValue({ diagnostics: await this.runtime.validate(template(args.template)) })
-      case 'workflow_draft_create': return snapshotJsonValue(await this.runtime.createDraft(template(args.template)) as unknown as JsonValue)
-      case 'workflow_draft_update': return snapshotJsonValue(await this.runtime.updateDraft(text(args.id), integer(args.expectedRevision), template(args.template)) as unknown as JsonValue)
-      case 'workflow_publish': return snapshotJsonValue(await this.runtime.publish(text(args.id), integer(args.expectedRevision)) as unknown as JsonValue)
-      case 'workflow_run': {
-        const target = args.template === undefined
-          ? { type: 'published' as const, id: text(args.id), revision: integer(args.revision) }
-          : { type: 'inline' as const, template: template(args.template) }
-        const handle = await this.runtime.launch({
-          target,
-          inputs: snapshotJsonObject(args.inputs as JsonObject),
-          authorityRef: context.authorityRef,
-          ...(context.authority === undefined ? {} : { authority: context.authority }),
-          origin: { type: 'mcp' },
-          ...(context.signal === undefined ? {} : { signal: context.signal }),
-        })
-        return snapshotJsonValue(await handle.result as unknown as JsonValue)
-      }
-      case 'workflow_trace': return snapshotJsonValue(await this.runtime.readEvents(text(args.runId), {
-        ...(args.afterSeq === undefined ? {} : { afterSeq: integer(args.afterSeq) }),
-        ...(args.limit === undefined ? {} : { limit: integer(args.limit) }),
-      }) as unknown as JsonValue)
-      case 'workflow_replay': {
-        const handle = await this.runtime.replay({
-          runId: text(args.runId), mode: replayMode(args.mode), authorityRef: context.authorityRef,
-          ...(context.authority === undefined ? {} : { authority: context.authority }),
-          ...(context.signal === undefined ? {} : { signal: context.signal }),
-        })
-        return snapshotJsonValue(await handle.result as unknown as JsonValue)
-      }
-      case 'workflow_resume': {
-        const handle = await this.runtime.resume({
-          runId: text(args.runId), authorityRef: context.authorityRef,
-          ...(context.authority === undefined ? {} : { authority: context.authority }),
-          ...(context.signal === undefined ? {} : { signal: context.signal }),
-        })
-        return snapshotJsonValue(await handle.result as unknown as JsonValue)
-      }
-      default: throw new Error(`unknown workflow MCP tool: ${name}`)
+      case 'workflow_search': return snapshotJsonValue(await this.access.search({
+        ...(args.query === undefined ? {} : { query: text(args.query, 'query') }),
+        ...(args.limit === undefined ? {} : { limit: integer(args.limit, 'limit', 1) }),
+        ...(args.after === undefined ? {} : { after: text(args.after, 'after') }),
+      }, accessContext) as unknown as JsonValue)
+      case 'workflow_describe': return snapshotJsonValue(await this.access.describe({
+        ref: text(args.ref, 'ref'),
+        ...(args.view === undefined ? {} : { view: describeView(args.view) }),
+      }, accessContext) as unknown as JsonValue)
+      case 'workflow_run': return snapshotJsonValue(await this.access.run({
+        ref: text(args.ref, 'ref'),
+        inputs: object(args.inputs, 'inputs'),
+        ...(args.mode === undefined ? {} : { mode: runMode(args.mode) }),
+        ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: text(args.idempotencyKey, 'idempotencyKey') }),
+      }, accessContext) as unknown as JsonValue)
+      case 'workflow_run_get': return snapshotJsonValue(await this.access.getRun(text(args.runId, 'runId'), accessContext) as unknown as JsonValue)
+      case 'workflow_trace': return snapshotJsonValue(await this.access.trace({
+        runId: text(args.runId, 'runId'),
+        ...(args.view === undefined ? {} : { view: traceView(args.view) }),
+        ...(args.afterSeq === undefined ? {} : { afterSeq: integer(args.afterSeq, 'afterSeq', 0) }),
+        ...(args.limit === undefined ? {} : { limit: integer(args.limit, 'limit', 1) }),
+      }, accessContext) as unknown as JsonValue)
+      case 'workflow_nodes_list': return snapshotJsonValue(await this.access.listNodes({
+        ...(args.query === undefined ? {} : { query: text(args.query, 'query') }),
+        ...(args.limit === undefined ? {} : { limit: integer(args.limit, 'limit', 1) }),
+      }, accessContext) as unknown as JsonValue)
+      case 'workflow_validate': return snapshotJsonValue(await this.access.validate(template(args.template, 'template'), accessContext) as unknown as JsonValue)
+      case 'workflow_draft_get': return snapshotJsonValue(await this.access.getDraft(
+        text(args.id, 'id'), accessContext, args.includeTemplate === undefined ? true : boolean(args.includeTemplate, 'includeTemplate'),
+      ) as unknown as JsonValue)
+      case 'workflow_draft_put': return snapshotJsonValue(await this.access.putDraft(
+        template(args.template, 'template'), accessContext,
+        args.expectedRevision === undefined ? undefined : integer(args.expectedRevision, 'expectedRevision', 1),
+      ) as unknown as JsonValue)
+      case 'workflow_diff': return snapshotJsonValue(await this.access.diff(
+        text(args.id, 'id'), template(args.candidate, 'candidate'), accessContext,
+      ) as unknown as JsonValue)
+      case 'workflow_publish': return snapshotJsonValue(await this.access.publish(
+        text(args.id, 'id'), integer(args.expectedDraftRevision, 'expectedDraftRevision', 1), accessContext,
+      ) as unknown as JsonValue)
+      default: throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `unimplemented workflow MCP tool: ${name}`)
     }
   }
 }
 
-export function createMcpServer(runtime: WorkflowRuntimeApi): WorkflowMcpServer { return new WorkflowMcpServer(runtime) }
-
-export function workflowToolName(id: string, revision: number): string {
-  return `workflow_${id.replaceAll('-', '_')}_r${revision}`
+export function createMcpGateway(runtime: WorkflowRuntimeApi, options: WorkflowMcpGatewayOptions = {}): WorkflowMcpGateway {
+  return new WorkflowMcpGateway(new WorkflowAgentAccess(runtime), options)
 }
 
-function text(value: JsonValue | undefined): string { if (typeof value !== 'string' || value.length === 0) throw new Error('expected non-empty string'); return value }
-function integer(value: JsonValue | undefined): number { if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new Error('expected integer'); return value }
-function template(value: JsonValue | undefined): WorkflowTemplate { return snapshotJsonObject(value as JsonObject) as unknown as WorkflowTemplate }
-function replayMode(value: JsonValue | undefined): 'inspect' | 'recorded' | 'live' { if (value === 'inspect' || value === 'recorded' || value === 'live') return value; throw new Error('invalid replay mode') }
+const objectOutput: JsonSchema = Object.freeze({ type: 'object' })
+const exactRef = Object.freeze({ type: 'string', pattern: '^[a-z][a-z0-9-]*@[1-9][0-9]*$', description: 'Exact published workflow id@revision.' })
+const workflowId = Object.freeze({ type: 'string', pattern: '^[a-z][a-z0-9-]*$' })
+const positiveInteger = Object.freeze({ type: 'integer', minimum: 1 })
+
+const INVOKE_TOOLS: readonly WorkflowMcpToolDescriptor[] = Object.freeze([
+  descriptor('workflow_search', 'Find published workflows. Returns compact metadata only; call workflow_describe for one selected schema.', 'invoke', {
+    query: { type: 'string', maxLength: 256 }, limit: { type: 'integer', minimum: 1, maximum: 50 }, after: { type: 'string', maxLength: 256 },
+  }),
+  descriptor('workflow_describe', 'Describe one exact published workflow. Request schema or template only when needed.', 'invoke', {
+    ref: exactRef, view: { type: 'string', enum: ['summary', 'schema', 'template'], default: 'summary' },
+  }, ['ref']),
+  descriptor('workflow_run', 'Run one exact published workflow revision. Runtime validates inputs against its authoritative schema.', 'invoke', {
+    ref: exactRef,
+    inputs: { type: 'object' },
+    mode: { type: 'string', enum: ['foreground', 'background'], default: 'foreground' },
+    idempotencyKey: { type: 'string', minLength: 1, maxLength: 512 },
+  }, ['ref', 'inputs']),
+  descriptor('workflow_run_get', 'Read a compact persisted workflow run projection without returning its template or execution plan.', 'invoke', {
+    runId: { type: 'string', minLength: 1, maxLength: 1024 },
+  }, ['runId']),
+  descriptor('workflow_trace', 'Read a compact run summary or one bounded page of authoritative Journal events.', 'invoke', {
+    runId: { type: 'string', minLength: 1, maxLength: 1024 },
+    view: { type: 'string', enum: ['summary', 'events'], default: 'summary' },
+    afterSeq: { type: 'integer', minimum: 0 },
+    limit: { type: 'integer', minimum: 1, maximum: 1000 },
+  }, ['runId']),
+])
+
+const AUTHOR_TOOLS: readonly WorkflowMcpToolDescriptor[] = Object.freeze([
+  descriptor('workflow_nodes_list', 'Search registered workflow NodeDefinitions and their exact schemas.', 'author', {
+    query: { type: 'string', maxLength: 256 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
+  }),
+  descriptor('workflow_validate', 'Validate one complete host-neutral WorkflowTemplate.', 'author', {
+    template: { type: 'object' },
+  }, ['template']),
+  descriptor('workflow_draft_get', 'Read one draft and its CAS revision.', 'author', {
+    id: workflowId, includeTemplate: { type: 'boolean', default: true },
+  }, ['id']),
+  descriptor('workflow_draft_put', 'Create a draft, or CAS-update it when expectedRevision is supplied.', 'author', {
+    template: { type: 'object' }, expectedRevision: positiveInteger,
+  }, ['template']),
+  descriptor('workflow_diff', 'Compare a candidate template with the current draft.', 'author', {
+    id: workflowId, candidate: { type: 'object' },
+  }, ['id', 'candidate']),
+  descriptor('workflow_publish', 'Publish an immutable revision using the exact current draft revision.', 'author', {
+    id: workflowId, expectedDraftRevision: positiveInteger,
+  }, ['id', 'expectedDraftRevision']),
+])
+
+function descriptor(
+  name: string,
+  description: string,
+  kind: 'invoke' | 'author',
+  properties: Readonly<Record<string, unknown>>,
+  required: readonly string[] = [],
+): WorkflowMcpToolDescriptor {
+  return Object.freeze({
+    name,
+    description,
+    kind,
+    inputSchema: Object.freeze({
+      type: 'object',
+      additionalProperties: false,
+      properties,
+      ...(required.length === 0 ? {} : { required }),
+    }),
+    outputSchema: objectOutput,
+  })
+}
+
+function text(value: JsonValue | undefined, field: string): string {
+  if (typeof value !== 'string' || value.length === 0) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `${field} must be a non-empty string`)
+  return value
+}
+function integer(value: JsonValue | undefined, field: string, minimum: number): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `${field} must be a safe integer >= ${minimum}`)
+  return value
+}
+function boolean(value: JsonValue | undefined, field: string): boolean {
+  if (typeof value !== 'boolean') throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `${field} must be a boolean`)
+  return value
+}
+function object(value: JsonValue | undefined, field: string): JsonObject {
+  if (!isJsonObject(value)) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `${field} must be an object`)
+  return snapshotJsonObject(value)
+}
+function template(value: JsonValue | undefined, field: string): WorkflowTemplate { return object(value, field) as unknown as WorkflowTemplate }
+function describeView(value: JsonValue | undefined): 'summary' | 'schema' | 'template' {
+  if (value === 'summary' || value === 'schema' || value === 'template') return value
+  throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', 'view must be summary, schema, or template')
+}
+function traceView(value: JsonValue | undefined): 'summary' | 'events' {
+  if (value === 'summary' || value === 'events') return value
+  throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', 'view must be summary or events')
+}
+function runMode(value: JsonValue | undefined): 'foreground' | 'background' {
+  if (value === 'foreground' || value === 'background') return value
+  throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', 'mode must be foreground or background')
+}
+
+export { createWorkflowMcpSdkServer, serveWorkflowMcpStdio } from './stdio.js'
+export type { WorkflowMcpSdkServerOptions } from './stdio.js'

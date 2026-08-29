@@ -8,11 +8,16 @@
 
 ```mermaid
 flowchart LR
-  A["SDK / CLI / MCP / DSH"] --> R["WorkflowRuntime"]
+  A["Codex / Terminal Agent"] --> S["On-demand Skill"] --> C0["CLI"]
+  M["MCP-only Agent"] --> G["Fixed MCP Gateway"]
+  D["DSH / Embedded Host"] --> H["Native Adapter / SDK"]
+  C0 --> X["WorkflowAgentAccess"] --> R["WorkflowRuntime"]
+  G --> X
+  H --> R
   T["Cron / Webhook / Channel"] --> I["Trigger Ingress"] --> R
   R --> C["Catalog + Compiler"]
   R --> E["DAG Engine"]
-  E --> G["Host Tool / Agent Gateway"]
+  E --> HG["Host Tool / Agent Gateway"]
   E --> J["Journal + Checkpoint"]
   J --> V["Trace / Canvas / Replay"]
 ```
@@ -28,7 +33,7 @@ flowchart LR
 - Trigger 不进入 DAG：Cron、Webhook、钉钉等只产生可信 Envelope，再通过固定 Binding 启动发布修订。
 - 外部入口不执行 DAG：Trigger 只持久化 run 并入队，Worker 再 claim/lease/resume；接收进程崩溃可从 Ingress 与 Journal 恢复。
 
-完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
+完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
 ## 安装
 
@@ -43,7 +48,7 @@ npm install @gm-hz/agent-dag-workflow
 ```ts
 import { WorkflowRuntime } from '@gm-hz/agent-dag-workflow'
 import { SqliteWorkflowRunStore } from '@gm-hz/agent-dag-workflow/sqlite'
-import { createMcpServer } from '@gm-hz/agent-dag-workflow/mcp'
+import { createMcpGateway } from '@gm-hz/agent-dag-workflow/mcp'
 import * as DshWorkflow from '@gm-hz/agent-dag-workflow/dsh'
 ```
 
@@ -204,16 +209,35 @@ CLI 默认使用当前目录的 `.agent-dag-workflow.db`，也可以用 `--db` �
 
 ```bash
 agent-workflow validate examples/script-transform.workflow.json
-agent-workflow draft-create examples/script-transform.workflow.json --db workflows.db
-agent-workflow publish script-transform --expected 1 --db workflows.db
-agent-workflow run --published script-transform@1 --input input.json --db workflows.db
-agent-workflow trace <runId> --follow --db workflows.db
+agent-workflow draft put examples/script-transform.workflow.json --db workflows.db
+agent-workflow publish script-transform-demo --expected 1 --db workflows.db
+agent-workflow search "transform" --db workflows.db
+agent-workflow describe script-transform-demo@1 --view schema --db workflows.db
+agent-workflow run script-transform-demo@1 --input input.json --db workflows.db
+agent-workflow run-get <runId> --db workflows.db
+agent-workflow trace <runId> --events --db workflows.db
+agent-workflow trace <runId> --follow --format jsonl --db workflows.db
 agent-workflow replay <runId> --mode recorded --db workflows.db
 agent-workflow resume <runId> --db workflows.db
 agent-workflow migrate-template old.json --output workflow-v1.json
 ```
 
-包含 Tool/Agent 节点时，必须显式传入 `--host ./host.mjs`。该模块导出 Gateway、Authority 和可选自定义 Node；CLI 不会隐式读取环境变量来猜测能力或凭据。
+所有非流式命令都返回单个 `agent-workflow.cli/v1` JSON Envelope；`--input -` 从 stdin 读取 JSON，不需要把大型输入塞进 shell 参数。包含 Tool/Agent 节点时，必须显式传入 `--host ./host.mjs`。该模块导出 Gateway、Authority 和可选自定义 Node；CLI 不会隐式读取环境变量来猜测能力或凭据。
+
+后台调用使用 `run ... --detach`，并由 `agent-workflow worker --once` claim/resume。Host 必须提供可恢复的 Authority Resolver，否则 Runtime 会拒绝后台启动。
+
+## Codex、Skill 与 MCP
+
+具备终端能力的 Codex 类 Agent 默认使用仓库内的 `workflow-builder` Skill 和 CLI。Skill 只在 Workflow 任务命中时加载，不包含执行逻辑。Codex Plugin 位于 `integrations/codex/agent-dag-workflow`，已按官方 manifest 结构打包同一 Skill。
+
+没有本地命令能力的 Agent 可以启动一个固定 Tool 数量的 MCP Gateway：
+
+```bash
+agent-workflow-mcp --db workflows.db --profile invoke
+agent-workflow-mcp --db workflows.db --profile author
+```
+
+`invoke` profile 永远只有 `workflow_search`、`workflow_describe`、`workflow_run`、`workflow_run_get` 和 `workflow_trace` 五个 Tool。`author` 额外提供有界的节点、校验、草稿、diff 和发布 Tool。Catalog 中有多少 Workflow 都不会改变 Tool 数量；Agent 只按需读取被选中 Workflow 的 Schema。
 
 ## DSH 与 Canvas
 
@@ -246,7 +270,7 @@ Trigger 通过不可变 Binding 把可信入口映射到固定发布修订：
 
 外部 payload 不能指定最终 Authority、幂等键或 Workflow revision。Cron、Webhook 和钉钉只提供 reference adapter；生产部署仍需按平台协议实现可靠 HTTP/消息接收、加密凭据、持久队列和运维告警。
 
-MCP 除控制面 `workflow_*` Tool 外，还会把目录中每个工作流的当前已发布 revision 投影成普通 Tool（例如 `workflow_weekly_ai_r3`）。普通 Agent 直接传入该 Workflow 的输入 JSON，并收到严格符合模板 `outputSchema` 的业务输出；相同 Runtime、Authority 和 Journal 仍负责完整审计，历史 revision 与运行元数据可通过 `workflow_run`/`workflow_trace` 明确访问。
+CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个 Runtime。入口不会改变固定 revision、输入输出 Schema、Authority、Journal、Checkpoint 或 Replay 语义。
 
 ## 示例与验证
 

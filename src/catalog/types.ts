@@ -28,6 +28,28 @@ export interface WorkflowCatalogSummary {
   readonly updatedAt: number
 }
 
+export interface WorkflowCatalogSearchRequest {
+  readonly query?: string
+  readonly limit?: number
+  /** Return entries whose id sorts after this cursor. */
+  readonly after?: string
+}
+
+export interface WorkflowCatalogSearchItem {
+  readonly id: string
+  readonly revision: number
+  readonly ref: string
+  readonly name: string
+  readonly description?: string
+  readonly semanticHash: string
+  readonly publishedAt: number
+}
+
+export interface WorkflowCatalogSearchResult {
+  readonly items: readonly WorkflowCatalogSearchItem[]
+  readonly nextAfter?: string
+}
+
 export interface WorkflowTemplateDiff {
   readonly contentChanged: boolean
   readonly semanticChanged: boolean

@@ -1,0 +1,28 @@
+{
+  "name": "agent-dag-workflow",
+  "version": "1.0.0",
+  "description": "Discover, run, diagnose, and author durable Agent DAG workflows from Codex without loading every workflow into context.",
+  "author": {
+    "name": "GM-HZ",
+    "url": "https://github.com/GM-HZ"
+  },
+  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow",
+  "repository": "https://github.com/GM-HZ/dsh-dag-workflow",
+  "license": "MIT",
+  "keywords": ["agent", "dag", "workflow", "cli", "mcp"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent DAG Workflow",
+    "shortDescription": "Run durable DAG workflows with low context overhead.",
+    "longDescription": "Uses an on-demand Skill and the agent-workflow CLI to discover, execute, diagnose, and author durable Agent DAG workflows. A fixed MCP Gateway remains optional for hosts without local command execution.",
+    "developerName": "GM-HZ",
+    "category": "Productivity",
+    "capabilities": ["Workflow discovery", "Durable execution", "Trace and replay"],
+    "websiteURL": "https://github.com/GM-HZ/dsh-dag-workflow",
+    "defaultPrompt": [
+      "Find and run the best workflow for this task.",
+      "Build and validate a reusable DAG workflow.",
+      "Diagnose this workflow run from its trace."
+    ]
+  }
+}

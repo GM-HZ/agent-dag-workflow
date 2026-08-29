@@ -6,7 +6,7 @@ import type {
   WorkflowRunResult,
   WorkflowTemplate,
 } from '../core/index.js'
-import type { PublishedWorkflowRevision, WorkflowDraft } from '../catalog/index.js'
+import type { PublishedWorkflowRevision, WorkflowCatalogSearchRequest, WorkflowCatalogSearchResult, WorkflowDraft, WorkflowTemplateDiff } from '../catalog/index.js'
 
 export interface WorkflowNodeDescriptor {
   readonly uses: string
@@ -80,6 +80,11 @@ export interface WorkflowRunSummary {
   readonly createdAt: number
   readonly updatedAt: number
   readonly checkpointSeq: number
+  readonly nodeStates: Readonly<Record<string, import('../core/index.js').WorkflowNodeStatus>>
+  readonly edgeStates: Readonly<Record<string, import('../core/index.js').WorkflowEdgeStatus>>
+  readonly outputs?: JsonObject
+  readonly error?: string
+  readonly needsAttention?: readonly string[]
 }
 
 export interface WorkflowEventPage {
@@ -100,7 +105,10 @@ export interface WorkflowReplayRequest {
 export interface WorkflowRuntimeApi {
   listNodes(): Promise<readonly WorkflowNodeDescriptor[]>
   listTemplates(): Promise<readonly import('../catalog/index.js').WorkflowCatalogSummary[]>
+  searchTemplates(request?: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult>
+  readDraft(id: string): Promise<WorkflowDraft>
   getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
+  diffDraft(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff>
   validate(template: WorkflowTemplate): Promise<readonly import('../core/index.js').WorkflowDiagnostic[]>
   createDraft(template: WorkflowTemplate): Promise<WorkflowDraft>
   updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft>

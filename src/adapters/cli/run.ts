@@ -1,147 +1,334 @@
 import { readFile, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { WorkflowTemplateCatalog } from '../../catalog/index.js'
-import { WorkflowNodeRegistry, parseWorkflowTemplate, registerCoreNodes, snapshotJsonObject, type WorkflowEngineServices } from '../../core/index.js'
+import { dirname, resolve } from 'node:path'
+import {
+  WorkflowAccessError,
+  normalizeWorkflowAccessError,
+  type AgentAccessContext,
+  type WorkflowAgentAccessApi,
+} from '../../access/index.js'
+import { parseWorkflowTemplate, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonValue } from '../../core/index.js'
 import { migrateLegacyWorkflowTemplate } from '../../migrations/index.js'
-import { WorkflowRuntime, type WorkflowRuntimeOptions } from '../../runtime/index.js'
-import { SqliteWorkflowArtifactStore, SqliteWorkflowCatalogRepository, SqliteWorkflowRunStore } from '../../storage/sqlite/index.js'
+import { WorkflowRunWorker } from '../../triggers/core/index.js'
+import { createWorkflowCliApplication, type WorkflowCliApplication } from './application.js'
+import { workflowCliExitCode, workflowCliFailure, workflowCliSuccess } from './protocol.js'
 
-export interface WorkflowCliHost {
-  readonly authorityRef?: string
-  readonly authority?: unknown
-  readonly services?: WorkflowEngineServices
-  readonly authorityResolver?: WorkflowRuntimeOptions['authorityResolver']
-  registerNodes?(registry: WorkflowNodeRegistry): void | Promise<void>
+export interface WorkflowCliIo {
+  readonly stdout: (line: string) => void
+  readonly stderr: (line: string) => void
+  readonly readStdin: () => Promise<string>
+  readonly signal?: AbortSignal
 }
 
-export async function runWorkflowCli(argv = process.argv.slice(2), output: (line: string) => void = console.log): Promise<number> {
-  const command = argv[0]
-  const args = argv.slice(1)
-  const databasePath = option(args, '--db') ?? resolve('.agent-dag-workflow.db')
-  const host = await loadHost(option(args, '--host'))
-  const nodes = new WorkflowNodeRegistry()
-  registerCoreNodes(nodes)
-  await host.registerNodes?.(nodes)
-  const catalogRepository = new SqliteWorkflowCatalogRepository({ path: databasePath })
-  const runStore = new SqliteWorkflowRunStore({ path: databasePath })
-  const artifactStore = new SqliteWorkflowArtifactStore({ path: databasePath })
-  const catalog = new WorkflowTemplateCatalog(catalogRepository, nodes)
-  const runtime = new WorkflowRuntime({
-    nodes,
-    catalog,
-    runStore,
-    artifactStore,
-    capturePolicy: { mode: 'standard', maxArtifactBytes: 1024 * 1024 },
-    ...(host.services === undefined ? {} : { services: host.services }),
-    ...(host.authorityResolver === undefined ? {} : { authorityResolver: host.authorityResolver }),
-  })
+interface WorkflowCliConfig {
+  readonly schemaVersion: 1
+  readonly database?: string
+  readonly hostModule?: string
+  readonly authorityRef?: string
+}
+
+export async function runWorkflowCli(
+  argv = process.argv.slice(2),
+  ioOrOutput: WorkflowCliIo | ((line: string) => void) = defaultIo(),
+): Promise<number> {
+  const io = normalizeIo(ioOrOutput)
+  const startedAt = Date.now()
+  const command = commandLabel(argv)
+  let application: WorkflowCliApplication | undefined
   try {
-    if (command === 'validate' && positional(args, 0) !== undefined) {
-      output(JSON.stringify({ diagnostics: await runtime.validate(await readTemplate(positional(args, 0)!)) }, null, 2))
-      return 0
+    const args = argv.slice(1)
+    const resolved = await resolveOptions(args)
+    application = await createWorkflowCliApplication({
+      databasePath: resolved.databasePath,
+      ...(resolved.hostModulePath === undefined ? {} : { hostModulePath: resolved.hostModulePath }),
+    })
+    const context: AgentAccessContext = {
+      authorityRef: option(args, '--authority') ?? resolved.authorityRef ?? application.host.authorityRef ?? 'cli:local',
+      ...(application.host.authority === undefined ? { authority: { type: 'cli-local' } } : { authority: application.host.authority }),
+      origin: { type: 'cli', source: command },
+      ...(io.signal === undefined ? {} : { signal: io.signal }),
     }
-    if (command === 'draft-create' && positional(args, 0) !== undefined) {
-      output(JSON.stringify(await runtime.createDraft(await readTemplate(positional(args, 0)!)), null, 2))
-      return 0
-    }
-    if (command === 'publish' && positional(args, 0) !== undefined) {
-      output(JSON.stringify(await runtime.publish(positional(args, 0)!, integerOption(args, '--expected')), null, 2))
-      return 0
-    }
-    if (command === 'run') {
-      const published = option(args, '--published')
-      const file = positional(args, 0)
-      if (published === undefined && file === undefined) return usage(output)
-      const inputPath = option(args, '--input')
-      const inputs = inputPath === undefined ? {} : snapshotJsonObject(JSON.parse(await readFile(resolve(inputPath), 'utf8')))
-      const idempotencyKey = option(args, '--idempotency-key')
-      const handle = await runtime.launch({
-        target: published === undefined ? { type: 'inline', template: await readTemplate(file!) } : publishedTarget(published),
-        inputs,
-        authorityRef: option(args, '--authority') ?? host.authorityRef ?? 'cli:local',
-        ...(host.authority === undefined ? { authority: { type: 'cli-local' } } : { authority: host.authority }),
-        origin: { type: 'cli' },
-        ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-      })
-      const result = await handle.result
-      output(JSON.stringify(result, null, 2))
-      return result.status === 'completed' ? 0 : 1
-    }
-    if (command === 'trace' && positional(args, 0) !== undefined) {
-      const runId = positional(args, 0)!
-      let afterSeq = optionalInteger(args, '--after') ?? 0
-      const limit = optionalInteger(args, '--limit') ?? 100
-      const follow = args.includes('--follow')
-      for (;;) {
-        const page = await runtime.readEvents(runId, { afterSeq, limit })
-        for (const event of page.events) { output(JSON.stringify(event)); afterSeq = event.seq }
-        const run = await runtime.getRun(runId)
-        if (!follow || run === undefined || terminal(run.status)) return run === undefined ? 1 : 0
-        await new Promise(resolveWait => setTimeout(resolveWait, 250))
-      }
-    }
-    if (command === 'replay' && positional(args, 0) !== undefined) {
-      const handle = await runtime.replay({
-        runId: positional(args, 0)!,
-        mode: replayMode(option(args, '--mode') ?? 'inspect'),
-        authorityRef: option(args, '--authority') ?? host.authorityRef ?? 'cli:local',
-        ...(host.authority === undefined ? { authority: { type: 'cli-local' } } : { authority: host.authority }),
-      })
-      const result = await handle.result
-      output(JSON.stringify(result, null, 2))
-      return result.status === 'completed' ? 0 : 1
-    }
-    if (command === 'resume' && positional(args, 0) !== undefined) {
-      const handle = await runtime.resume({
-        runId: positional(args, 0)!,
-        authorityRef: option(args, '--authority') ?? host.authorityRef ?? 'cli:local',
-        ...(host.authority === undefined ? { authority: { type: 'cli-local' } } : { authority: host.authority }),
-      })
-      const result = await handle.result
-      output(JSON.stringify(result, null, 2))
-      return result.status === 'completed' ? 0 : 1
-    }
-    if (command === 'migrate-template' && positional(args, 0) !== undefined) {
-      const target = option(args, '--output')
-      if (target === undefined) throw new Error('migrate-template requires --output')
-      const legacy = snapshotJsonObject(JSON.parse(await readFile(resolve(positional(args, 0)!), 'utf8')))
-      const migrated = migrateLegacyWorkflowTemplate(legacy)
-      await writeFile(resolve(target), `${JSON.stringify(migrated, null, 2)}\n`, 'utf8')
-      output(JSON.stringify({ output: resolve(target), apiVersion: migrated.apiVersion }))
-      return 0
-    }
-    return usage(output)
+    const result = await executeCommand(argv[0], args, application, context, io)
+    if (result.streamed) return result.exitCode
+    io.stdout(JSON.stringify(workflowCliSuccess(command, Date.now() - startedAt, snapshotJsonValue(result.data))))
+    return result.exitCode
   } catch (error: unknown) {
-    output(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }))
-    return 1
+    io.stdout(JSON.stringify(workflowCliFailure(command, Date.now() - startedAt, error)))
+    if (normalizeWorkflowAccessError(error).code === 'WORKFLOW_REQUEST_INVALID') io.stderr(usage())
+    return workflowCliExitCode(error)
   } finally {
-    artifactStore.close()
-    runStore.close()
-    catalogRepository.close()
+    await application?.close()
   }
 }
 
-async function readTemplate(path: string) { return parseWorkflowTemplate(await readFile(resolve(path), 'utf8')) }
-function option(args: readonly string[], name: string): string | undefined { const index = args.indexOf(name); return index < 0 ? undefined : args[index + 1] }
+async function executeCommand(
+  command: string | undefined,
+  args: readonly string[],
+  application: WorkflowCliApplication,
+  context: AgentAccessContext,
+  io: WorkflowCliIo,
+): Promise<{ readonly data: JsonValue; readonly exitCode: number; readonly streamed?: boolean }> {
+  const access = application.access
+  switch (command) {
+    case 'search': {
+      const query = positional(args, 0)
+      const limit = optionalInteger(args, '--limit')
+      const after = option(args, '--after')
+      return success(await access.search({
+        ...(query === undefined ? {} : { query }),
+        ...(limit === undefined ? {} : { limit }),
+        ...(after === undefined ? {} : { after }),
+      }, context))
+    }
+    case 'describe': return success(await access.describe({
+      ref: requiredPositional(args, 0, 'describe requires workflow id@revision'),
+      view: describeView(option(args, '--view') ?? 'summary'),
+    }, context))
+    case 'run': return runWorkflow(access, args, context, io)
+    case 'run-get': return success(await access.getRun(requiredPositional(args, 0, 'run-get requires runId'), context))
+    case 'trace': return traceWorkflow(access, args, context, io)
+    case 'replay': {
+      const result = await access.replay(requiredPositional(args, 0, 'replay requires runId'), replayMode(option(args, '--mode') ?? 'inspect'), context)
+      return { data: result as unknown as JsonValue, exitCode: result.status === 'failed' || result.status === 'cancelled' ? 5 : 0 }
+    }
+    case 'resume': {
+      const result = await access.resume(requiredPositional(args, 0, 'resume requires runId'), context, await readResolutions(option(args, '--resolutions'), io))
+      return { data: result as unknown as JsonValue, exitCode: result.status === 'completed' || result.status === 'paused' ? 0 : 5 }
+    }
+    case 'nodes': {
+      if (positional(args, 0) !== 'search') invalid('nodes requires the search subcommand')
+      const query = positional(args, 1)
+      const limit = optionalInteger(args, '--limit')
+      return success(await access.listNodes({
+        ...(query === undefined ? {} : { query }),
+        ...(limit === undefined ? {} : { limit }),
+      }, context))
+    }
+    case 'validate': return success(await access.validate(await readTemplateSource(requiredPositional(args, 0, 'validate requires template file or -'), io), context))
+    case 'draft': return draftCommand(access, args, context, io)
+    case 'diff': return success(await access.diff(
+      requiredPositional(args, 0, 'diff requires workflow id'),
+      await readTemplateSource(requiredPositional(args, 1, 'diff requires candidate file or -'), io),
+      context,
+    ) as unknown as JsonValue)
+    case 'publish': return success(await access.publish(
+      requiredPositional(args, 0, 'publish requires workflow id'),
+      requiredInteger(args, '--expected'),
+      context,
+    ))
+    case 'worker': {
+      if (!hasFlag(args, '--once')) invalid('worker currently requires --once')
+      const workerId = option(args, '--worker-id') ?? `cli-worker:${process.pid}`
+      const result = await new WorkflowRunWorker(application.runtime, application.coordinator).runOnce({
+        workerId,
+        leaseMs: optionalInteger(args, '--lease-ms') ?? 30_000,
+        ...(io.signal === undefined ? {} : { signal: io.signal }),
+      })
+      return success(result === undefined ? { status: 'idle' } : result)
+    }
+    case 'migrate-template': {
+      const source = requiredPositional(args, 0, 'migrate-template requires input file')
+      const target = option(args, '--output')
+      if (target === undefined) invalid('migrate-template requires --output')
+      const legacy = snapshotJsonObject(JSON.parse(await readFile(resolve(source), 'utf8')))
+      const migrated = migrateLegacyWorkflowTemplate(legacy)
+      await writeFile(resolve(target), `${JSON.stringify(migrated, null, 2)}\n`, 'utf8')
+      return success({ output: resolve(target), apiVersion: migrated.apiVersion })
+    }
+    default: invalid('unknown or missing command')
+  }
+}
+
+async function runWorkflow(access: WorkflowAgentAccessApi, args: readonly string[], context: AgentAccessContext, io: WorkflowCliIo) {
+  const inputFile = option(args, '--input')
+  const inputJson = option(args, '--input-json')
+  if (inputFile !== undefined && inputJson !== undefined) invalid('run accepts only one of --input or --input-json')
+  const inputs = inputJson === undefined
+    ? inputFile === undefined ? {} : await readJsonObjectSource(inputFile, io)
+    : parseJsonObject(inputJson, '--input-json')
+  const idempotencyKey = option(args, '--idempotency-key')
+  const result = await access.run({
+    ref: requiredPositional(args, 0, 'run requires exact workflow id@revision'),
+    inputs,
+    mode: hasFlag(args, '--detach') ? 'background' : 'foreground',
+    ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+  }, context)
+  return { data: result as unknown as JsonValue, exitCode: result.status === 'failed' || result.status === 'cancelled' ? 5 : 0 }
+}
+
+async function traceWorkflow(access: WorkflowAgentAccessApi, args: readonly string[], context: AgentAccessContext, io: WorkflowCliIo) {
+  const runId = requiredPositional(args, 0, 'trace requires runId')
+  const follow = hasFlag(args, '--follow')
+  const events = hasFlag(args, '--events') || follow || option(args, '--view') === 'events'
+  const format = option(args, '--format') ?? (follow ? 'jsonl' : 'json')
+  if (format !== 'json' && format !== 'jsonl') invalid('--format must be json or jsonl')
+  if (follow && format !== 'jsonl') invalid('trace --follow requires --format jsonl')
+  if (!follow) {
+    const afterSeq = optionalInteger(args, '--after')
+    const limit = optionalInteger(args, '--limit')
+    return success(await access.trace({
+      runId,
+      view: events ? 'events' : 'summary',
+      ...(afterSeq === undefined ? {} : { afterSeq }),
+      ...(limit === undefined ? {} : { limit }),
+    }, context))
+  }
+  let afterSeq = optionalInteger(args, '--after') ?? 0
+  const limit = optionalInteger(args, '--limit') ?? 100
+  for (;;) {
+    context.signal?.throwIfAborted()
+    const page = await access.trace({ runId, view: 'events', afterSeq, limit }, context)
+    for (const event of page.events ?? []) {
+      io.stdout(JSON.stringify(workflowCliSuccess('trace', 0, event)))
+      afterSeq = event.seq
+    }
+    if (page.run.status !== 'running') return { data: {}, exitCode: page.run.status === 'failed' || page.run.status === 'cancelled' ? 5 : 0, streamed: true }
+    await wait(250, context.signal)
+  }
+}
+
+async function draftCommand(access: WorkflowAgentAccessApi, args: readonly string[], context: AgentAccessContext, io: WorkflowCliIo) {
+  const subcommand = positional(args, 0)
+  if (subcommand === 'get') {
+    const view = option(args, '--view') ?? 'template'
+    if (view !== 'summary' && view !== 'template') invalid('draft get --view must be summary or template')
+    return success(await access.getDraft(requiredPositional(args, 1, 'draft get requires workflow id'), context, view === 'template'))
+  }
+  if (subcommand === 'put') {
+    const template = await readTemplateSource(requiredPositional(args, 1, 'draft put requires template file or -'), io)
+    return success(await access.putDraft(template, context, optionalInteger(args, '--expected')))
+  }
+  invalid('draft requires get or put subcommand')
+}
+
+async function resolveOptions(args: readonly string[]): Promise<{ readonly databasePath: string; readonly hostModulePath?: string; readonly authorityRef?: string }> {
+  const configPath = option(args, '--config')
+  const config = configPath === undefined ? undefined : await readConfig(resolve(configPath))
+  const base = configPath === undefined ? process.cwd() : dirname(resolve(configPath))
+  const database = option(args, '--db') ?? config?.database ?? '.agent-dag-workflow.db'
+  const hostModule = option(args, '--host') ?? config?.hostModule
+  return {
+    databasePath: resolve(base, database),
+    ...(hostModule === undefined ? {} : { hostModulePath: resolve(base, hostModule) }),
+    ...(config?.authorityRef === undefined ? {} : { authorityRef: config.authorityRef }),
+  }
+}
+
+async function readConfig(path: string): Promise<WorkflowCliConfig> {
+  let value: unknown
+  try { value = JSON.parse(await readFile(path, 'utf8')) } catch (error: unknown) { invalid(`CLI config must be valid JSON: ${renderError(error)}`) }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) invalid('CLI config must be a JSON object')
+  const config = value as Record<string, unknown>
+  if (config.schemaVersion !== 1) invalid('CLI config schemaVersion must be 1')
+  for (const key of Object.keys(config)) if (!['schemaVersion', 'database', 'hostModule', 'authorityRef'].includes(key)) invalid(`unsupported CLI config field: ${key}`)
+  for (const key of ['database', 'hostModule', 'authorityRef']) if (config[key] !== undefined && (typeof config[key] !== 'string' || config[key].length === 0)) invalid(`CLI config ${key} must be a non-empty string`)
+  return config as unknown as WorkflowCliConfig
+}
+
+async function readTemplateSource(path: string, io: WorkflowCliIo) {
+  try { return parseWorkflowTemplate(path === '-' ? await io.readStdin() : await readFile(resolve(path), 'utf8')) }
+  catch (error: unknown) { invalid(`template must be valid WorkflowTemplate JSON/YAML: ${renderError(error)}`) }
+}
+
+async function readJsonObjectSource(path: string, io: WorkflowCliIo): Promise<JsonObject> {
+  return parseJsonObject(path === '-' ? await io.readStdin() : await readFile(resolve(path), 'utf8'), path)
+}
+
+async function readResolutions(path: string | undefined, io: WorkflowCliIo): Promise<Readonly<Record<string, 'retry' | 'fail'>> | undefined> {
+  if (path === undefined) return undefined
+  const value = await readJsonObjectSource(path, io)
+  for (const [nodeId, resolution] of Object.entries(value)) if (resolution !== 'retry' && resolution !== 'fail') invalid(`resolution for ${nodeId} must be retry or fail`)
+  return value as unknown as Readonly<Record<string, 'retry' | 'fail'>>
+}
+
+function parseJsonObject(source: string, label: string): JsonObject {
+  try { return snapshotJsonObject(JSON.parse(source)) } catch (error: unknown) { invalid(`${label} must contain a lossless JSON object: ${renderError(error)}`) }
+}
+
+function describeView(value: string): 'summary' | 'schema' | 'template' {
+  if (value === 'summary' || value === 'schema' || value === 'template') return value
+  invalid('--view must be summary, schema, or template')
+}
+
+function replayMode(value: string): 'inspect' | 'recorded' | 'live' {
+  if (value === 'inspect' || value === 'recorded' || value === 'live') return value
+  invalid('--mode must be inspect, recorded, or live')
+}
+
+function success(value: unknown): { readonly data: JsonValue; readonly exitCode: 0 } {
+  return { data: snapshotJsonValue(value), exitCode: 0 }
+}
+
+function option(args: readonly string[], name: string): string | undefined {
+  const index = args.indexOf(name)
+  if (index < 0) return undefined
+  const value = args[index + 1]
+  if (value === undefined || value.startsWith('--')) invalid(`${name} requires a value`)
+  return value
+}
+
+function hasFlag(args: readonly string[], name: string): boolean { return args.includes(name) }
+
 function positional(args: readonly string[], index: number): string | undefined {
   const values: string[] = []
+  const flags = new Set(['--detach', '--follow', '--events', '--once'])
   for (let offset = 0; offset < args.length; offset++) {
-    if (args[offset]!.startsWith('--')) { if (args[offset] !== '--follow') offset++; continue }
-    values.push(args[offset]!)
+    const value = args[offset]!
+    if (value.startsWith('--')) { if (!flags.has(value)) offset++; continue }
+    values.push(value)
   }
   return values[index]
 }
-function optionalInteger(args: readonly string[], name: string): number | undefined { const value = option(args, name); if (value === undefined) return undefined; const parsed = Number(value); if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be an integer`); return parsed }
-function integerOption(args: readonly string[], name: string): number { const value = optionalInteger(args, name); if (value === undefined) throw new Error(`${name} is required`); return value }
-function publishedTarget(value: string): { readonly type: 'published'; readonly id: string; readonly revision: number } { const match = /^(?<id>[a-z][a-z0-9-]*)@(?<revision>[1-9][0-9]*)$/.exec(value); if (match?.groups === undefined) throw new Error('--published must be id@revision'); return { type: 'published', id: match.groups.id!, revision: Number(match.groups.revision) } }
-function replayMode(value: string): 'inspect' | 'recorded' | 'live' { if (value === 'inspect' || value === 'recorded' || value === 'live') return value; throw new Error('--mode must be inspect, recorded, or live') }
-function terminal(status: string): boolean { return status === 'completed' || status === 'failed' || status === 'cancelled' }
-function usage(output: (line: string) => void): 2 { output('Usage: agent-workflow validate|draft-create|publish|run|trace|replay|resume|migrate-template ... [--db path] [--host module.mjs]'); return 2 }
-async function loadHost(path: string | undefined): Promise<WorkflowCliHost> {
-  if (path === undefined) return {}
-  const loaded = await import(pathToFileURL(resolve(path)).href)
-  const host = (loaded.default ?? loaded.host) as WorkflowCliHost | undefined
-  if (host === undefined || host === null || typeof host !== 'object') throw new Error('CLI host module must export default or host object')
-  return host
+
+function requiredPositional(args: readonly string[], index: number, message: string): string {
+  const value = positional(args, index)
+  if (value === undefined) invalid(message)
+  return value
+}
+
+function optionalInteger(args: readonly string[], name: string): number | undefined {
+  const value = option(args, name)
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || parsed < 0) invalid(`${name} must be a non-negative safe integer`)
+  return parsed
+}
+
+function requiredInteger(args: readonly string[], name: string): number {
+  const value = optionalInteger(args, name)
+  if (value === undefined || value < 1) invalid(`${name} must be a positive safe integer`)
+  return value
+}
+
+function commandLabel(argv: readonly string[]): string {
+  if (argv[0] === 'draft' || argv[0] === 'nodes') return `${argv[0] ?? 'unknown'} ${argv[1] ?? ''}`.trim()
+  return argv[0] ?? 'unknown'
+}
+
+function normalizeIo(value: WorkflowCliIo | ((line: string) => void)): WorkflowCliIo {
+  return typeof value === 'function'
+    ? { stdout: value, stderr: () => {}, readStdin: readProcessStdin }
+    : value
+}
+
+function defaultIo(): WorkflowCliIo {
+  return { stdout: line => console.log(line), stderr: line => console.error(line), readStdin: readProcessStdin }
+}
+
+async function readProcessStdin(): Promise<string> {
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+function invalid(message: string): never { throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', message) }
+function renderError(error: unknown): string { return error instanceof Error ? error.message : String(error) }
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolveWait, reject) => {
+    const timer = setTimeout(resolveWait, ms)
+    signal?.addEventListener('abort', () => { clearTimeout(timer); reject(signal.reason) }, { once: true })
+  })
+}
+
+function usage(): string {
+  return 'Usage: agent-workflow search|describe|run|run-get|trace|replay|resume|nodes search|validate|draft get|draft put|diff|publish|worker --once|migrate-template ... [--db path] [--host module.mjs] [--config file]'
 }

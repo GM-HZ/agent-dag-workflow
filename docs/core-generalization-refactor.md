@@ -31,7 +31,7 @@ npm install @gm-hz/agent-dag-workflow
 ```ts
 import { WorkflowRuntime } from '@gm-hz/agent-dag-workflow'
 import * as DshWorkflow from '@gm-hz/agent-dag-workflow/dsh'
-import { createMcpServer } from '@gm-hz/agent-dag-workflow/mcp'
+import { createMcpGateway } from '@gm-hz/agent-dag-workflow/mcp'
 import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 ```
 
@@ -771,7 +771,7 @@ Trigger 类似 Channel 的统一入站协议，但不等于完整 Channel：
 
 钉钉、飞书、微信属于双向 Channel Adapter，可以同时实现 Trigger ingress 和 Result Delivery。简单回复使用不透明 `deliveryRef` 关联，回复凭据保存在 Channel Adapter 自己的加密 Store 中，不能进入模板或 Journal；复杂主动发送仍调用显式声明的消息 Tool，不能让 Trigger 获得额外发送权限。
 
-MCP 有两个角色：它既可以提供 workflow 控制面，也可以将已发布 workflow 投影成普通 MCP Tool。Skill 不是传输协议或 Trigger；它负责指导 Agent 创作模板或执行任务，Agent 最终仍通过 SDK、MCP、CLI 等入口发起明确调用。来源信息可以记录 `skillRef`，但不能因此绕过 `requires`、Authority 或 Host policy。
+MCP 只提供固定、有界的 Gateway Tool 集：运行面负责搜索、描述、启动、查询与 Trace，作者面再显式增加校验、Draft 和发布能力。已发布 Workflow 是运行时数据，不投影为新 MCP Tool，因此 Workflow 数量不会扩大 MCP 初始上下文。Skill 不是传输协议或 Trigger；它负责指导 Agent 创作模板或执行任务，Agent 最终仍通过 SDK、MCP、CLI 等入口发起明确调用。来源信息可以记录 `skillRef`，但不能因此绕过 `requires`、Authority 或 Host policy。
 
 Result Delivery 本身也是外部副作用，使用 `runId + deliveryRef + phase` 作为 invocationId，记录投递 attempt 和最终状态。重复终态通知不得重复发送；无法确认的投递进入 Adapter operator attention，不改变 Workflow 已完成的事实。
 
@@ -832,35 +832,33 @@ DSH Market 安装的是同一个公开包的 DSH 入口，而不是另一套 Cor
 
 ```bash
 agent-workflow validate workflow.json
-agent-workflow run workflow.json --input input.json
-agent-workflow run weekly-ai --revision 3 --input input.json
-agent-workflow trace <run-id> --follow
+agent-workflow draft put workflow.json
+agent-workflow publish weekly-ai --expected 1
+agent-workflow search "weekly AI"
+agent-workflow describe weekly-ai@3 --view schema
+agent-workflow run weekly-ai@3 --input input.json
+agent-workflow trace <run-id> --follow --format jsonl
 agent-workflow replay <run-id> --mode recorded
 agent-workflow resume <run-id>
 ```
 
-CLI 是最短开发反馈链路，也用于 CI。默认只能使用明确配置的本地 Adapter；不会自动继承用户 shell 的全部环境权限。
+CLI 是具备命令能力的 Agent、开发和 CI 的默认访问协议。它使用版本化 JSON/JSONL Envelope、精确发布修订、stdin JSON 和紧凑 Trace；默认只能使用明确配置的本地 Adapter，不会自动继承用户 shell 的全部环境权限。
 
 ### 10.3 MCP Server
 
-MCP 暴露控制面 Tool：
+MCP 使用一个固定 Gateway。Invoke profile 暴露：
 
 ```text
-workflow_nodes_list
-workflow_templates_list
-workflow_draft_create
-workflow_draft_update
-workflow_validate
-workflow_publish
+workflow_search
+workflow_describe
 workflow_run
+workflow_run_get
 workflow_trace
-workflow_replay
-workflow_resume
 ```
 
-MCP Agent 和 DSH Agent 调用同一个 Runtime 门面。Tool 的完整结构化结果由协议返回，用户可见文本保持紧凑，不在对话中回显大型模板和 Trace。
+Author profile 额外暴露 `workflow_nodes_list`、`workflow_validate`、`workflow_draft_get/put`、`workflow_diff` 和 `workflow_publish`。Profile 在 Gateway 启动时固定，调用参数不能升级权限。
 
-除此之外，MCP Server 将目录中每个工作流的当前已发布修订投影为普通 Tool，名称固定为 `workflow_<id>_r<revision>`（`-` 转 `_`）；历史修订仍由 `workflow_run` 显式引用。投影 Tool 的 arguments 直接作为 Workflow Input，仍经过固定 revision、Input Schema、Authority、Host policy 和 Journal；它不是另一条执行路径。
+MCP 不再把每个 Workflow 投影成独立 Tool。Agent 通过 search → describe(schema) → run(ref, inputs) 按需调用；Tool 数量和 Schema 大小与 Catalog 数量无关。MCP Agent、CLI Agent 和 DSH Agent 最终调用同一个 Runtime，完整结构化结果由协议返回，用户可见文本保持紧凑。
 
 ### 10.4 Canvas
 

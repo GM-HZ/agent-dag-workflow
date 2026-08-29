@@ -9,11 +9,12 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
+    "build": "pnpm sync:codex-plugin && pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
     "check": "pnpm typecheck && pnpm test",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
     "generate:typert": "node scripts/canvas/generate-typert.mjs",
     "showcase:install": "pnpm build && node examples/install-showcases.mjs",
+    "sync:codex-plugin": "node scripts/sync-codex-plugin.mjs",
     "prepare": "pnpm build",
     "test": "pnpm build && vitest run",
     "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test-core.json --noEmit && tsc -p tsconfig.test-catalog.json --noEmit && tsc -p tsconfig.test-dsh.json --noEmit && tsc -p tsconfig.test-sqlite.json --noEmit && tsc -p tsconfig.test-canvas.json --noEmit"
@@ -36,6 +37,10 @@
     "./runtime": {
       "types": "./lib/runtime/index.d.ts",
       "default": "./lib/runtime/index.js"
+    },
+    "./access": {
+      "types": "./lib/access/index.d.ts",
+      "default": "./lib/access/index.js"
     },
     "./journal": {
       "types": "./lib/journal/index.d.ts",
@@ -105,7 +110,8 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agent-workflow": "lib/cli.js"
+    "agent-workflow": "lib/cli.js",
+    "agent-workflow-mcp": "lib/mcp-cli.js"
   },
   "files": [
     "lib",
@@ -117,6 +123,7 @@
     "examples",
     "spec",
     "skills",
+    "integrations/codex/agent-dag-workflow",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
@@ -139,6 +146,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@xyflow/react": "^12.11.3",
     "ajv": "^8.20.0",
     "yaml": "^2.9.0",
