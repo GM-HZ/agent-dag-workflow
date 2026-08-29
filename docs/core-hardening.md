@@ -72,6 +72,6 @@ Every Core change must retain tests for:
 - invalid external output never being captured or marked completed;
 - terminal assembly failures becoming durable failures;
 - persisted idempotent handle cancellation;
-- crash recovery at commit boundaries and multi-worker lease exclusion.
+- crash recovery at commit boundaries and RunStore CAS conflict rejection.
 
-The next robustness layer should add generated DAG/path property tests, a systematic commit failpoint matrix, and cross-process lease-loss stress tests. Retries and compensation are separate features and must not be added by weakening the unknown-side-effect recovery rules.
+The generated DAG/path tests and systematic commit failpoint matrix are defined in [Core Verification Harness](core-verification-harness.md). Distributed Worker/lease testing is intentionally not part of Core: it belongs to an optional Host runner if deployment needs it. Retries and compensation are separate features and must not be added by weakening the unknown-side-effect recovery rules.

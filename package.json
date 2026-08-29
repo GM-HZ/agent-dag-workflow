@@ -17,7 +17,8 @@
     "sync:codex-plugin": "node scripts/sync-codex-plugin.mjs",
     "prepare": "pnpm build",
     "test": "pnpm build && vitest run",
-    "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test-core.json --noEmit && tsc -p tsconfig.test-catalog.json --noEmit && tsc -p tsconfig.test-dsh.json --noEmit && tsc -p tsconfig.test-sqlite.json --noEmit && tsc -p tsconfig.test-canvas.json --noEmit"
+    "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test-core.json --noEmit && tsc -p tsconfig.test-catalog.json --noEmit && tsc -p tsconfig.test-dsh.json --noEmit && tsc -p tsconfig.test-sqlite.json --noEmit && tsc -p tsconfig.test-canvas.json --noEmit && tsc -p tsconfig.test-verification.json --noEmit",
+    "verify:core": "pnpm generate:typert && tsc -p tsconfig.test-verification.json --noEmit && vitest run tests/verification"
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",

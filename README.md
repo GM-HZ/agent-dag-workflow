@@ -35,9 +35,9 @@ flowchart LR
 - Script 只做纯 JSON：`core.script@1` 没有网络、文件、环境变量、密钥或 `eval`。含外部副作用的循环必须使用 `core.foreach@1`。
 - 运行可复现：run 固化模板、发布修订、依赖闭包、Engine 版本和 NodeDefinition set hash；Journal 与 Checkpoint 原子提交。
 - Trigger 不进入 DAG：Cron、Webhook、钉钉等只产生可信 Envelope，再通过固定 Binding 启动发布修订。
-- 外部入口不执行 DAG：Trigger 只持久化 run 并入队，Worker 再 claim/lease/resume；接收进程崩溃可从 Ingress 与 Journal 恢复。
+- 默认由当前 Agent、CLI 或 Host 直接调用 Runtime；Queue/Runner 只是不可靠进程或分布式部署需要时才启用的可选适配器。
 
-完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md) 与 [Core hardening 不变量](docs/core-hardening.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
+完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)、[Core hardening 不变量](docs/core-hardening.md) 与 [Core Verification Harness](docs/core-verification-harness.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
 ## 安装
 
