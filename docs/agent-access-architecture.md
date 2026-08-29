@@ -151,6 +151,8 @@ interface WorkflowAgentAccess {
 3. `trace()` 最终只能读取权威 Journal；
 4. Catalog 的 CAS、发布不可变性和 Runtime 校验不能在 Access Plane 中重新实现；
 5. 每个请求都携带 Host 解析的 `authorityRef`，不能信任调用参数自报最终 Authority；
+6. 持久化 Run 默认只允许同 `authorityRef` 读取、Trace、Replay 和 Resume；Host 需要管理员或跨租户访问时，通过 `WorkflowAgentAccessOptions.authorize` 显式提供 policy；
+7. Catalog 操作也经过同一 policy hook，便于 Host 将 author profile 限制给受信主体。
 6. 所有错误转换成稳定 `code`，同时保留 `runId`、diagnostics 和 operator action。
 
 这个门面解决的是跨入口一致性，不是第三套能力总线。
@@ -245,7 +247,7 @@ Agent 模式必须满足：
 
 ### 5.4 按需读取
 
-`search` 默认最多返回 10 条摘要：
+`search` 默认最多返回 10 条摘要。查询、排序与游标下推到 Catalog Repository，并且只使用不可变的 published revision 元数据：
 
 ```json
 {

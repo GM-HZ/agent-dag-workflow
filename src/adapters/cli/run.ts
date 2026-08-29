@@ -36,6 +36,7 @@ export async function runWorkflowCli(
   let application: WorkflowCliApplication | undefined
   try {
     const args = argv.slice(1)
+    validateCommandArguments(argv[0], args)
     const resolved = await resolveOptions(args)
     application = await createWorkflowCliApplication({
       databasePath: resolved.databasePath,
@@ -158,7 +159,9 @@ async function runWorkflow(access: WorkflowAgentAccessApi, args: readonly string
 async function traceWorkflow(access: WorkflowAgentAccessApi, args: readonly string[], context: AgentAccessContext, io: WorkflowCliIo) {
   const runId = requiredPositional(args, 0, 'trace requires runId')
   const follow = hasFlag(args, '--follow')
-  const events = hasFlag(args, '--events') || follow || option(args, '--view') === 'events'
+  const requestedView = option(args, '--view')
+  if (requestedView !== undefined && requestedView !== 'summary' && requestedView !== 'events') invalid('trace --view must be summary or events')
+  const events = hasFlag(args, '--events') || follow || requestedView === 'events'
   const format = option(args, '--format') ?? (follow ? 'jsonl' : 'json')
   if (format !== 'json' && format !== 'jsonl') invalid('--format must be json or jsonl')
   if (follow && format !== 'jsonl') invalid('trace --follow requires --format jsonl')
@@ -252,6 +255,69 @@ function describeView(value: string): 'summary' | 'schema' | 'template' {
 function replayMode(value: string): 'inspect' | 'recorded' | 'live' {
   if (value === 'inspect' || value === 'recorded' || value === 'live') return value
   invalid('--mode must be inspect, recorded, or live')
+}
+
+const GLOBAL_VALUE_OPTIONS = ['--db', '--host', '--config', '--authority'] as const
+
+function validateCommandArguments(command: string | undefined, args: readonly string[]): void {
+  switch (command) {
+    case 'search': assertArguments(args, ['--limit', '--after'], [], 0, 1); return
+    case 'describe': assertArguments(args, ['--view'], [], 1, 1); return
+    case 'run': assertArguments(args, ['--input', '--input-json', '--idempotency-key'], ['--detach'], 1, 1); return
+    case 'run-get': assertArguments(args, [], [], 1, 1); return
+    case 'trace': assertArguments(args, ['--view', '--format', '--after', '--limit'], ['--follow', '--events'], 1, 1); return
+    case 'replay': assertArguments(args, ['--mode'], [], 1, 1); return
+    case 'resume': assertArguments(args, ['--resolutions'], [], 1, 1); return
+    case 'nodes': {
+      const positionals = assertArguments(args, ['--limit'], [], 1, 2)
+      if (positionals[0] !== 'search') invalid('nodes requires the search subcommand')
+      return
+    }
+    case 'validate': assertArguments(args, [], [], 1, 1); return
+    case 'draft': {
+      const positionals = assertArguments(args, ['--view', '--expected'], [], 2, 2)
+      if (positionals[0] === 'get') assertArguments(args, ['--view'], [], 2, 2)
+      else if (positionals[0] === 'put') assertArguments(args, ['--expected'], [], 2, 2)
+      else invalid('draft requires get or put subcommand')
+      return
+    }
+    case 'diff': assertArguments(args, [], [], 2, 2); return
+    case 'publish': assertArguments(args, ['--expected'], [], 1, 1); return
+    case 'worker': assertArguments(args, ['--worker-id', '--lease-ms'], ['--once'], 0, 0); return
+    case 'migrate-template': assertArguments(args, ['--output'], [], 1, 1); return
+    default: invalid('unknown or missing command')
+  }
+}
+
+function assertArguments(
+  args: readonly string[],
+  commandValueOptions: readonly string[],
+  commandFlags: readonly string[],
+  minimumPositionals: number,
+  maximumPositionals: number,
+): readonly string[] {
+  const valueOptions = new Set<string>([...GLOBAL_VALUE_OPTIONS, ...commandValueOptions])
+  const flags = new Set(commandFlags)
+  const seen = new Set<string>()
+  const positionals: string[] = []
+  for (let offset = 0; offset < args.length; offset++) {
+    const value = args[offset]!
+    if (!value.startsWith('--')) {
+      positionals.push(value)
+      continue
+    }
+    if (!valueOptions.has(value) && !flags.has(value)) invalid(`unknown option: ${value}`)
+    if (seen.has(value)) invalid(`option may only be supplied once: ${value}`)
+    seen.add(value)
+    if (flags.has(value)) continue
+    const optionValue = args[++offset]
+    if (optionValue === undefined || optionValue.length === 0 || optionValue.startsWith('--')) invalid(`${value} requires a value`)
+  }
+  if (positionals.length < minimumPositionals || positionals.length > maximumPositionals) {
+    const expected = minimumPositionals === maximumPositionals ? String(minimumPositionals) : `${minimumPositionals}-${maximumPositionals}`
+    invalid(`command expects ${expected} positional argument(s), received ${positionals.length}`)
+  }
+  return positionals
 }
 
 function success(value: unknown): { readonly data: JsonValue; readonly exitCode: 0 } {

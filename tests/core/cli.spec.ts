@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -82,6 +82,24 @@ describe('agent-workflow CLI protocol', () => {
     expect(envelope).toMatchObject({ protocolVersion: 'agent-workflow.cli/v1', ok: false, error: { code: 'WORKFLOW_REVISION_REQUIRED' } })
   })
 
+  it('fails closed on unknown, duplicate, or trailing command arguments', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-workflow-cli-arguments-'))
+    roots.push(root)
+    const database = join(root, 'workflow.db')
+    const output: string[] = []
+    const diagnostics: string[] = []
+    const io: WorkflowCliIo = { stdout: line => output.push(line), stderr: line => diagnostics.push(line), async readStdin() { return '' } }
+
+    expect(await runWorkflowCli(['search', '--limt', '1', '--db', database], io)).toBe(2)
+    expect(JSON.parse(output.pop()!)).toMatchObject({ ok: false, error: { code: 'WORKFLOW_REQUEST_INVALID', message: 'unknown option: --limt' } })
+    expect(await runWorkflowCli(['search', '--limit', '1', '--limit', '2', '--db', database], io)).toBe(2)
+    expect(JSON.parse(output.pop()!)).toMatchObject({ ok: false, error: { message: 'option may only be supplied once: --limit' } })
+    expect(await runWorkflowCli(['run-get', 'run-1', 'unexpected', '--db', database], io)).toBe(2)
+    expect(JSON.parse(output.pop()!)).toMatchObject({ ok: false, error: { message: 'command expects 1 positional argument(s), received 2' } })
+    expect(diagnostics).toHaveLength(3)
+    expect(existsSync(database)).toBe(false)
+  })
+
   it('persists a detached run and completes it through the leased CLI worker', async () => {
     const root = mkdtempSync(join(tmpdir(), 'agent-workflow-cli-background-'))
     roots.push(root)
@@ -104,6 +122,11 @@ describe('agent-workflow CLI protocol', () => {
     ], line => lines.push(line))).toBe(0)
     const accepted = data(lines.pop()!) as { readonly runId: string; readonly status: string }
     expect(accepted.status).toBe('accepted')
+    expect(await runWorkflowCli([
+      'run', 'script-transform-demo@1', '--input-json', JSON.stringify({ customer: ' detached ', orders: [] }),
+      '--detach', '--idempotency-key', 'background-1', '--db', database, '--host', host,
+    ], line => lines.push(line))).toBe(0)
+    expect(data(lines.pop()!)).toEqual(accepted)
     expect(await runWorkflowCli(['worker', '--once', '--db', database, '--host', host], line => lines.push(line))).toBe(0)
     expect(data(lines.pop()!)).toMatchObject({ runId: accepted.runId, status: 'completed' })
     expect(await runWorkflowCli(['run-get', accepted.runId, '--db', database, '--host', host], line => lines.push(line))).toBe(0)

@@ -97,6 +97,8 @@ Script 与 Condition/Foreach 分开，因为后两者会改变 Scheduler 的权�
 
 Core 只持久化 `authorityRef`，不保存 Session、Token 或 Agent 对象。启动和恢复时由 Host 提供或重新解析 Authority，并再次执行 Host policy。
 
+Agent Access 在此基础上增加资源访问隔离：持久化 Run 默认只能被相同 `authorityRef` 读取、Trace、Replay 或 Resume。跨租户运维必须由 Host 显式注入 Access authorizer，不能仅因知道 `runId` 获得数据。
+
 有效能力是以下交集：
 
 ```text

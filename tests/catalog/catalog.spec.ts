@@ -98,6 +98,18 @@ describe('workflow template catalog', () => {
     expect(await catalog.list()).toEqual([expect.objectContaining({ id: 'catalog-test', draftRevision: 3, publishedRevision: 2 })])
   })
 
+  it('searches only immutable published metadata and never exposes later draft changes', async () => {
+    const { catalog } = setup()
+    const draft = await catalog.createDraft(template({ name: 'Published catalog name' }))
+    await catalog.publish(draft.id, draft.revision)
+    await catalog.updateDraft(draft.id, draft.revision, template({ name: 'Unpublished draft name' }))
+
+    expect(await catalog.search({ query: 'Unpublished' })).toEqual({ items: [] })
+    expect(await catalog.search({ query: 'Published', limit: 1 })).toMatchObject({
+      items: [{ ref: 'catalog-test@1', name: 'Published catalog name' }],
+    })
+  })
+
   it('allows invalid drafts but refuses to publish them with diagnostics', async () => {
     const { catalog } = setup()
     const draft = await catalog.createDraft(template({ endUses: 'plugin.missing@1' }))

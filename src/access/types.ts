@@ -17,6 +17,26 @@ export interface AgentAccessContext {
   readonly signal?: AbortSignal
 }
 
+export type WorkflowAccessOperation =
+  | 'search' | 'describe' | 'run' | 'run.get' | 'trace' | 'replay' | 'resume'
+  | 'nodes.list' | 'validate' | 'draft.get' | 'draft.put' | 'diff' | 'publish'
+
+export interface WorkflowAccessAuthorizationRequest {
+  readonly operation: WorkflowAccessOperation
+  readonly context: AgentAccessContext
+  readonly workflowId?: string
+  readonly workflowRef?: string
+  readonly runId?: string
+  readonly resourceAuthorityRef?: string
+}
+
+export type WorkflowAccessAuthorizer = (request: WorkflowAccessAuthorizationRequest) => boolean | Promise<boolean>
+
+export interface WorkflowAgentAccessOptions {
+  /** Defaults to same-authority access for persisted Runs and allows catalog operations. */
+  readonly authorize?: WorkflowAccessAuthorizer
+}
+
 export interface WorkflowSearchRequest {
   readonly query?: string
   readonly limit?: number

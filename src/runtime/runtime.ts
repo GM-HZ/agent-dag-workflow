@@ -392,9 +392,14 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   #persistedHandle(record: WorkflowRunRecord): WorkflowRunHandle {
     if (isTerminal(record.checkpoint.status)) return historicalHandle(record)
     const runId = record.runId
+    const store = this.#runStore
+    let observedResult: Promise<WorkflowRunResult> | undefined
     return {
       runId,
-      result: waitForPersistedResult(this.#runStore, runId),
+      get result() {
+        observedResult ??= waitForPersistedResult(store, runId)
+        return observedResult
+      },
       live: options => this.#live.subscribe(runId, options?.signal),
       async cancel() {},
     }

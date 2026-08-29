@@ -49,4 +49,32 @@ describe('WorkflowAgentAccess', () => {
     await expect(access.describe({ ref: 'tool-flow' }, { authorityRef: 'agent:test', authority: {}, origin: { type: 'sdk' } }))
       .rejects.toMatchObject({ code: 'WORKFLOW_REVISION_REQUIRED' })
   })
+
+  it('isolates persisted runs by authority unless an explicit access policy allows them', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const runtime = new WorkflowRuntime({
+      nodes,
+      catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes),
+      runStore: new InMemoryWorkflowRunStore(),
+      services: { tools: { async execute(request) { return { echo: request.inputs.message ?? null } } } },
+    })
+    const access = new WorkflowAgentAccess(runtime)
+    const owner = { authorityRef: 'tenant:owner', authority: {}, origin: { type: 'sdk' as const, source: 'owner' } }
+    const stranger = { authorityRef: 'tenant:stranger', authority: {}, origin: { type: 'sdk' as const, source: 'stranger' } }
+    const draft = await access.putDraft(toolWorkflowTemplate(), owner)
+    await access.publish(draft.id, draft.revision, owner)
+    const result = await access.run({ ref: 'tool-flow@1', inputs: { message: 'private' } }, owner)
+
+    await expect(access.getRun(result.runId, stranger)).rejects.toMatchObject({ code: 'WORKFLOW_AUTHORITY_DENIED' })
+    await expect(access.trace({ runId: result.runId, view: 'events' }, stranger)).rejects.toMatchObject({ code: 'WORKFLOW_AUTHORITY_DENIED' })
+    await expect(access.replay(result.runId, 'inspect', stranger)).rejects.toMatchObject({ code: 'WORKFLOW_AUTHORITY_DENIED' })
+    await expect(access.resume(result.runId, stranger)).rejects.toMatchObject({ code: 'WORKFLOW_AUTHORITY_DENIED' })
+
+    const operatorAccess = new WorkflowAgentAccess(runtime, {
+      authorize: request => request.resourceAuthorityRef === undefined || request.context.authorityRef === 'operator:root',
+    })
+    await expect(operatorAccess.getRun(result.runId, { ...stranger, authorityRef: 'operator:root' }))
+      .resolves.toMatchObject({ status: 'completed', outputs: { answer: 'private' } })
+  })
 })

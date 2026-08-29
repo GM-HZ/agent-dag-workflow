@@ -4,6 +4,8 @@ import { parseWorkflowTemplate, stableJsonStringify } from '../../core/index.js'
 import {
   WorkflowCatalogError,
   type PublishedWorkflowRevision,
+  type WorkflowCatalogSearchRequest,
+  type WorkflowCatalogSearchResult,
   type WorkflowCatalogRepository,
   type WorkflowCatalogSummary,
   type WorkflowDraft,
@@ -73,6 +75,42 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
 
   async readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined> {
     return this.readPublishedSync(id, revision)
+  }
+
+  async searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult> {
+    const query = request.query ?? ''
+    const limit = request.limit ?? 10
+    const after = request.after ?? ''
+    const rows = this.db.prepare(`WITH latest AS (
+        SELECT id, MAX(revision) AS revision FROM workflow_revisions GROUP BY id
+      )
+      SELECT r.id, r.revision, r.source_draft_revision, r.template_json, r.content_hash, r.semantic_hash, r.published_at
+      FROM workflow_revisions r
+      INNER JOIN latest l ON l.id = r.id AND l.revision = r.revision
+      WHERE r.id > ? AND (
+        ? = ''
+        OR instr(lower(r.id), ?) > 0
+        OR instr(lower(CAST(json_extract(r.template_json, '$.metadata.name') AS TEXT)), ?) > 0
+        OR instr(lower(COALESCE(CAST(json_extract(r.template_json, '$.metadata.description') AS TEXT), '')), ?) > 0
+      )
+      ORDER BY r.id
+      LIMIT ?`).all(after, query, query, query, query, limit + 1)
+    const matches = rows.map(row => {
+      const published = decodePublished(row)
+      const { name, description } = published.template.metadata
+      return Object.freeze({
+        id: published.id,
+        revision: published.revision,
+        ref: `${published.id}@${published.revision}`,
+        name,
+        ...(description === undefined ? {} : { description }),
+        semanticHash: published.semanticHash,
+        publishedAt: published.publishedAt,
+      })
+    })
+    const items = Object.freeze(matches.slice(0, limit))
+    const cursor = items.at(-1)?.id
+    return Object.freeze({ items, ...(matches.length > limit && cursor !== undefined ? { nextAfter: cursor } : {}) })
   }
 
   private readPublishedSync(id: string, revision?: number): PublishedWorkflowRevision | undefined {

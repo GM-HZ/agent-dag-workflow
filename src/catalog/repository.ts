@@ -1,5 +1,12 @@
 import type { MaterializedWorkflowTemplate } from '../core/index.js'
-import { WorkflowCatalogError, type PublishedWorkflowRevision, type WorkflowCatalogSummary, type WorkflowDraft } from './types.js'
+import {
+  WorkflowCatalogError,
+  type PublishedWorkflowRevision,
+  type WorkflowCatalogSearchRequest,
+  type WorkflowCatalogSearchResult,
+  type WorkflowCatalogSummary,
+  type WorkflowDraft,
+} from './types.js'
 
 export interface WorkflowCatalogRepository {
   createDraft(materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft>
@@ -7,6 +14,7 @@ export interface WorkflowCatalogRepository {
   updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft>
   publishDraft(id: string, expectedDraftRevision: number, now: number): Promise<PublishedWorkflowRevision>
   readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined>
+  searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult>
   list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
@@ -72,6 +80,34 @@ export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogReposit
     if (revision === undefined) return revisions?.at(-1)
     if (!Number.isSafeInteger(revision) || revision < 1) return undefined
     return revisions?.[revision - 1]
+  }
+
+  async searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult> {
+    const query = request.query ?? ''
+    const limit = request.limit ?? 10
+    const after = request.after ?? ''
+    const matches = [...this.published.entries()]
+      .filter(([id, revisions]) => id > after && revisions.length > 0)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .flatMap(([id, revisions]) => {
+        const published = revisions.at(-1)!
+        const { name, description } = published.template.metadata
+        const haystack = `${id}\n${name}\n${description ?? ''}`.toLocaleLowerCase()
+        if (query.length > 0 && !haystack.includes(query)) return []
+        return [{
+          id,
+          revision: published.revision,
+          ref: `${id}@${published.revision}`,
+          name,
+          ...(description === undefined ? {} : { description }),
+          semanticHash: published.semanticHash,
+          publishedAt: published.publishedAt,
+        }]
+      })
+      .slice(0, limit + 1)
+    const items = Object.freeze(matches.slice(0, limit).map(item => Object.freeze(item)))
+    const cursor = items.at(-1)?.id
+    return Object.freeze({ items, ...(matches.length > limit && cursor !== undefined ? { nextAfter: cursor } : {}) })
   }
 
   async list(): Promise<readonly WorkflowCatalogSummary[]> {

@@ -150,6 +150,9 @@ describe('SQLite workflow catalog repository', () => {
     expect(published).toMatchObject({ revision: 1, sourceDraftRevision: 2, publishedAt: 1234 })
     expect((await service.getPublished('sqlite-test')).template.metadata.name).toBe('Updated')
     expect(await service.list()).toEqual([expect.objectContaining({ id: 'sqlite-test', draftRevision: 2, publishedRevision: 1 })])
+    await service.updateDraft(draft.id, updated.revision, template('Unpublished'))
+    expect(await service.search({ query: 'Unpublished' })).toEqual({ items: [] })
+    expect(await service.search({ query: 'Updated' })).toMatchObject({ items: [{ ref: 'sqlite-test@1', name: 'Updated' }] })
     repository.close()
   })
 

@@ -102,27 +102,7 @@ export class WorkflowTemplateCatalog {
     const limit = Math.min(50, Math.max(1, request.limit ?? 10))
     const after = request.after ?? ''
     if (after.length > 256) throw new WorkflowCatalogError('CATALOG_INVALID_ENVELOPE', 'workflow search cursor must be at most 256 characters')
-    const summaries = (await this.repository.list()).filter(summary => summary.publishedRevision !== undefined && summary.id > after)
-    const matches: import('./types.js').WorkflowCatalogSearchItem[] = []
-    let hasMore = false
-    for (const summary of summaries) {
-      const published = await this.getPublished(summary.id, summary.publishedRevision)
-      const description = published.template.metadata.description
-      const haystack = `${summary.id}\n${summary.name}\n${description ?? ''}`.toLocaleLowerCase()
-      if (query.length > 0 && !haystack.includes(query)) continue
-      if (matches.length === limit) { hasMore = true; break }
-      matches.push(Object.freeze({
-        id: summary.id,
-        revision: published.revision,
-        ref: `${summary.id}@${published.revision}`,
-        name: summary.name,
-        ...(description === undefined ? {} : { description }),
-        semanticHash: published.semanticHash,
-        publishedAt: published.publishedAt,
-      }))
-    }
-    const cursor = matches.at(-1)?.id
-    return Object.freeze({ items: Object.freeze(matches), ...(hasMore && cursor !== undefined ? { nextAfter: cursor } : {}) })
+    return this.repository.searchPublished({ query, limit, after })
   }
 
   private async validatePublishedDependencies(root: WorkflowTemplate): Promise<WorkflowDiagnostic[]> {
