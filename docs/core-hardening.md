@@ -14,9 +14,12 @@ The default ceilings are intentionally separate from the normal execution defaul
 | Node runs | 100 | 1,000 |
 | Duration | 10 minutes | 60 minutes |
 | Output bytes | 1 MiB | 8 MiB |
+| Retained Checkpoint bytes | — | 12 MiB |
 | Subworkflow depth | 8 | 16 |
 
 The compiler and Catalog publication reject authored values above the configured ceiling. The Engine computes `min(authored/default, deployment)` again at execution and recovery time. This second check protects inline runs, persisted runs, and deployments whose policy became stricter after publication.
+
+`maxCheckpointBytes` is Host-only because it limits cumulative retained state rather than one template operation. Core checks the initial graph state, progress, committed node outputs, and the assembled terminal result before capture/commit. A rejected addition is rolled back and becomes a durable failure without entering the Checkpoint. Recovery after a deployment limit reduction uses the existing Checkpoint, worst-case ready-queue size, and a small fixed recovery-metadata reserve as its floor, so an older Run is not made administratively unrecoverable.
 
 ## 2. Path-safe data bindings
 
@@ -39,10 +42,11 @@ An external invocation follows this order:
 4. Validate NodeDefinition output schema.
 5. Validate instance `expects` schema.
 6. Validate selected ports and byte limits.
-7. Capture validated capability/node output according to deployment policy.
-8. Atomically commit `capability.completed`, `node.output-validated`, `node.output-committed`, `node.completed`, outgoing edges, and the checkpoint containing the output.
+7. Verify that the cumulative Checkpoint remains inside the Host budget.
+8. Capture validated capability/node output according to deployment policy.
+9. Atomically commit `capability.completed`, `node.output-validated`, `node.output-committed`, `node.completed`, outgoing edges, and the checkpoint containing the output.
 
-If steps 2-7 fail, Core commits `capability.failed` and then a durable node/run failure. Invalid or oversized dynamic data never receives a completed event and never enters Artifact capture. A process crash after the external side effect but before the atomic completion commit leaves the node `running`; retry-never nodes consequently require an explicit operator decision.
+If steps 2-8 fail, Core commits `capability.failed` and then a durable node/run failure. Invalid or oversized dynamic data never receives a completed event and never enters Artifact capture. A process crash after the external side effect but before the atomic completion commit leaves the node `running`; retry-never nodes consequently require an explicit operator decision.
 
 Recorded replay uses the same schema, expectation, port, and size gates before atomically committing `capability.replayed` with the restored node output.
 

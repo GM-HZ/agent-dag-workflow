@@ -76,7 +76,7 @@ sum min max unique sort sortBy withIndex joinBy mapGet filterEq json parseJson f
 - Memory Store 用于测试和单进程嵌入；持久运行使用 `./sqlite` 或 Host Store。
 - 节点 timeout 和取消是协作式的，Gateway/Node 必须观察 `AbortSignal`。
 - 外部副作用的 exactly-once 不能由 DAG 单独保证；Gateway 应使用稳定 `invocationId` 幂等，并对未知结果进入人工处理。
-- `WorkflowDeploymentLimits` 由 Host 持有；模板 policy 只能收紧，编译、发布和执行都会 fail closed。
+- `WorkflowDeploymentLimits` 由 Host 持有；模板 policy 只能收紧。`maxCheckpointBytes` 只属于 Host，用于限制所有节点输出与进度累计形成的持久状态。
 - 分支数据 binding 必须由 producer 支配 consumer，最终输出必须来自全路径必达的 End。
 - 外部输出完成事件、Artifact 和节点 Checkpoint 只在 schema、expects、端口及大小全部通过后提交。
 - UI、DSH、CLI、MCP 和 Trigger 都位于 Adapter 层，不属于 Core。

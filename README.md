@@ -29,7 +29,7 @@ flowchart LR
 - 没有 Provider 层：MCP Tool、本地受控命令、DMS、HTTP、数据库和消息能力都由 Host Gateway 适配。
 - 权限只会收窄：模板先声明 `requires`，节点再声明固定依赖；最终能力是模板声明、节点声明、Authority 和 Host policy 的交集。
 - Agent Access 默认只允许同一 `authorityRef` 读取、追踪、重放或恢复持久化 Run；多租户管理员访问必须通过显式 `authorize` policy 授权。
-- Host 通过 `WorkflowDeploymentLimits` 持有不可提升的并发、时长、节点次数、输出大小和子流程深度 ceiling。
+- Host 通过 `WorkflowDeploymentLimits` 持有不可提升的并发、时长、节点次数、单次输出、累计 Checkpoint 和子流程深度 ceiling。
 - 编译器执行分支路径支配检查，拒绝发布在某条激活路径上必然缺少数据的 Workflow。
 - 外部动态结果只有通过 lossless JSON、schema、`expects`、端口和大小检查后，才会进入 Artifact、Journal 和 Checkpoint。
 - Script 只做纯 JSON：`core.script@1` 没有网络、文件、环境变量、密钥或 `eval`。含外部副作用的循环必须使用 `core.foreach@1`。

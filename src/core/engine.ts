@@ -36,16 +36,15 @@ import type {
 } from './types.js'
 
 export const WORKFLOW_ENGINE_VERSION = '1.0.0'
+const CHECKPOINT_RECOVERY_RESERVE_BYTES = 4_096
 
 interface NodeCompletionSuccess {
   readonly nodeId: string
   readonly ok: true
   readonly result: WorkflowNodeExecutionResult
-  readonly capture?: WorkflowDataCapture
   readonly capability?: {
     readonly type: 'capability.completed' | 'capability.replayed'
     readonly invocationId: string
-    readonly capture?: WorkflowDataCapture
   }
 }
 
@@ -134,9 +133,11 @@ export class DagWorkflowEngine {
     const createdAt = this.#now()
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
     assertExecutionPlan(plan, workflow, this.#registry)
-    const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
     state.nodeStates.set(workflow.startNodeId, 'ready')
     state.ready.push(workflow.startNodeId)
+    const initialCheckpoint = checkpointOf(id, workflow.semanticHash, state, createdAt, 0)
+    assertStateCheckpointSize(id, workflow.semanticHash, state, this.#deploymentLimits.maxCheckpointBytes, workflow.order)
+    const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
     await this.#runStore.createRun({
       runId: id,
       template: workflow.template,
@@ -154,7 +155,7 @@ export class DagWorkflowEngine {
         executionMode: 'background',
       },
       createdAt,
-      checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
+      checkpoint: initialCheckpoint,
       events: [],
     })
     await this.#commit(id, workflow, state, [
@@ -212,9 +213,11 @@ export class DagWorkflowEngine {
     const createdAt = this.#now()
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
     assertExecutionPlan(plan, workflow, this.#registry)
-    const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
     state.nodeStates.set(workflow.startNodeId, 'ready')
     state.ready.push(workflow.startNodeId)
+    const initialCheckpoint = checkpointOf(id, workflow.semanticHash, state, createdAt, 0)
+    assertStateCheckpointSize(id, workflow.semanticHash, state, this.#deploymentLimits.maxCheckpointBytes, workflow.order)
+    const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
     await this.#runStore?.createRun({
       runId: id,
       template: workflow.template,
@@ -232,7 +235,7 @@ export class DagWorkflowEngine {
         executionMode: 'foreground',
       },
       createdAt,
-      checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
+      checkpoint: initialCheckpoint,
       events: [],
     })
     return this.#startOwnedRun({
@@ -247,6 +250,7 @@ export class DagWorkflowEngine {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       ...(request.recordedNodeOutputs === undefined ? {} : { recordedNodeOutputs: request.recordedNodeOutputs }),
+      checkpointMaxBytes: this.#deploymentLimits.maxCheckpointBytes,
       initialEvents: [{ type: 'run.accepted', ...inputCapture }, { type: 'run.queued' }, { type: 'run.started' }, { type: 'node.ready', nodeId: workflow.startNodeId }],
       initializeStart: false,
     })
@@ -335,6 +339,10 @@ export class DagWorkflowEngine {
       plan: record.plan,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+      checkpointMaxBytes: Math.max(
+        this.#deploymentLimits.maxCheckpointBytes,
+        checkpointSizeWithReadyReserve(record.checkpoint, workflow.order) + CHECKPOINT_RECOVERY_RESERVE_BYTES,
+      ),
       initialEvents: [...recoveredInitialEvents, ...attentionEvents],
       initializeStart: false,
     })
@@ -423,6 +431,7 @@ export class DagWorkflowEngine {
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
+    readonly checkpointMaxBytes: number
     readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
   }): WorkflowRun {
     const controller = new AbortController()
@@ -476,6 +485,7 @@ export class DagWorkflowEngine {
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
+    readonly checkpointMaxBytes: number
     readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
   }): Promise<WorkflowRunResult> {
     const { id: runId, workflow, inputs: workflowInputs, state, authority, controller, onEvent, execution, plan } = options
@@ -552,8 +562,16 @@ export class DagWorkflowEngine {
                 if (controller.signal.aborted) throw new WorkflowExecutionError('WORKFLOW_CANCELLED', 'cannot checkpoint node progress after cancellation', { nodeId: item.nodeId })
                 const value = snapshotJsonValue(progress)
                 assertOutputSize(value, policies.maxOutputBytes, `node ${item.nodeId} progress`)
+                const previous = state.nodeProgress.get(item.nodeId)
                 state.nodeProgress.set(item.nodeId, value)
-                await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }])
+                try {
+                  assertStateCheckpointSize(runId, workflow.semanticHash, state, options.checkpointMaxBytes, workflow.order)
+                  await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }])
+                } catch (error: unknown) {
+                  if (previous === undefined) state.nodeProgress.delete(item.nodeId)
+                  else state.nodeProgress.set(item.nodeId, previous)
+                  throw error
+                }
               },
               item.attempt,
               commit,
@@ -583,15 +601,37 @@ export class DagWorkflowEngine {
 
         state.nodeStates.set(completion.nodeId, 'succeeded')
         state.nodeOutputs.set(completion.nodeId, completion.result.outputs)
+        let capabilityCapture: WorkflowDataCapture | undefined
+        let nodeCapture: WorkflowDataCapture | undefined
+        try {
+          assertStateCheckpointSize(runId, workflow.semanticHash, state, options.checkpointMaxBytes, workflow.order)
+          capabilityCapture = completion.capability?.type === 'capability.completed'
+            ? await this.#capture?.capture({
+                runId, nodeId: completion.nodeId, phase: 'capability.output', value: completion.result.outputs,
+              })
+            : undefined
+          nodeCapture = await this.#capture?.capture({
+            runId, nodeId: completion.nodeId, phase: 'node.output', value: completion.result.outputs,
+          })
+        } catch (error: unknown) {
+          state.nodeOutputs.delete(completion.nodeId)
+          state.nodeStates.set(completion.nodeId, 'failed')
+          const message = renderError(error)
+          controller.abort(`node ${completion.nodeId} failed`)
+          const cancelled = await settleActive(active)
+          return finishFailure(message, completion.nodeId, cancelled, completion.capability?.type === 'capability.completed'
+            ? [{ type: 'capability.failed', nodeId: completion.nodeId, invocationId: completion.capability.invocationId, error: message }]
+            : [])
+        }
         const events: WorkflowEventInput[] = [
           ...(completion.capability === undefined ? [] : [{
             type: completion.capability.type,
             nodeId: completion.nodeId,
             invocationId: completion.capability.invocationId,
-            ...completion.capability.capture,
+            ...capabilityCapture,
           } as WorkflowEventInput]),
           { type: 'node.output-validated', nodeId: completion.nodeId },
-          { type: 'node.output-committed', nodeId: completion.nodeId, ...completion.capture },
+          { type: 'node.output-committed', nodeId: completion.nodeId, ...nodeCapture },
           { type: 'node.completed', nodeId: completion.nodeId },
         ]
         settleOutgoingEdges(completion.nodeId, completion.result.selectedPorts ?? ['success'], events)
@@ -608,6 +648,13 @@ export class DagWorkflowEngine {
       state.status = 'completed'
       state.resultOutputs = outputs
       delete state.error
+      try {
+        assertStateCheckpointSize(runId, workflow.semanticHash, state, options.checkpointMaxBytes, workflow.order)
+      } catch (error: unknown) {
+        state.status = 'running'
+        delete state.resultOutputs
+        return finishFailure(renderError(error))
+      }
       await commit([{ type: 'run.completed' }])
       return successResult(runId, state)
     } catch (error: unknown) {
@@ -635,10 +682,16 @@ export class DagWorkflowEngine {
       return cancelled
     }
 
-    async function finishFailure(error: string, failedNodeId?: string, cancelled: readonly string[] = []): Promise<WorkflowRunFailure> {
+    async function finishFailure(
+      error: string,
+      failedNodeId?: string,
+      cancelled: readonly string[] = [],
+      prefix: readonly WorkflowEventInput[] = [],
+    ): Promise<WorkflowRunFailure> {
       state.status = 'failed'
       state.error = error
       const events: WorkflowEventInput[] = [
+        ...prefix,
         ...(failedNodeId === undefined ? [] : [{ type: 'node.failed' as const, nodeId: failedNodeId, error }]),
         ...cancelled.map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
         { type: 'run.failed', error },
@@ -846,12 +899,10 @@ export class DagWorkflowEngine {
         const selectedPorts = node.template.uses === 'human.approval@1'
           ? [outputs.approved === true ? 'approved' : 'rejected']
           : undefined
-        const capture = await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'node.output', value: outputs })
         return {
           nodeId: node.template.id,
           ok: true,
           result: { outputs, ...(selectedPorts === undefined ? {} : { selectedPorts }) },
-          ...(capture === undefined ? {} : { capture }),
           capability: { type: 'capability.replayed', invocationId },
         }
       }
@@ -894,20 +945,14 @@ export class DagWorkflowEngine {
           throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
         }
         assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `node ${node.template.id} output`)
-        const capabilityCapture = external
-          ? await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'capability.output', value: outputs })
-          : undefined
-        const capture = await this.#capture?.capture({ runId, nodeId: node.template.id, phase: 'node.output', value: outputs })
         return {
           nodeId: node.template.id,
           ok: true,
           result,
-          ...(capture === undefined ? {} : { capture }),
           ...(external ? {
             capability: {
               type: 'capability.completed' as const,
               invocationId,
-              ...(capabilityCapture === undefined ? {} : { capture: capabilityCapture }),
             },
           } : {}),
         }
@@ -1151,6 +1196,33 @@ function assertOutputSize(value: JsonValue, maxBytes: number, label: string): vo
   if (bytes > maxBytes) throw new WorkflowExecutionError('OUTPUT_TOO_LARGE', `${label} is ${bytes} bytes, limit is ${maxBytes}`)
 }
 
+function checkpointSizeBytes(checkpoint: WorkflowRunCheckpoint): number {
+  return Buffer.byteLength(stableJsonStringify(checkpoint as unknown as JsonValue), 'utf8')
+}
+
+function assertStateCheckpointSize(
+  runId: string,
+  semanticHash: string,
+  state: RuntimeState,
+  maxBytes: number,
+  allNodeIds: readonly string[],
+): void {
+  // Max-safe sequence/timestamp widths make this an upper bound for the next
+  // materialized checkpoint instead of depending on the current digit count.
+  const checkpoint = checkpointOf(runId, semanticHash, state, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+  const bytes = checkpointSizeWithReadyReserve(checkpoint, allNodeIds)
+  if (bytes > maxBytes) {
+    throw new WorkflowExecutionError('CHECKPOINT_TOO_LARGE', `workflow checkpoint is ${bytes} bytes, limit is ${maxBytes}`)
+  }
+}
+
+function checkpointSizeWithReadyReserve(
+  checkpoint: WorkflowRunCheckpoint,
+  allNodeIds: readonly string[],
+): number {
+  return checkpointSizeBytes({ ...checkpoint, ready: allNodeIds })
+}
+
 function normalizeCancellationReason(reason: unknown): string {
   if (reason === undefined) return 'cancelled'
   if (typeof reason !== 'string' || reason.length === 0 || Buffer.byteLength(reason, 'utf8') > 4_096) {
@@ -1169,6 +1241,7 @@ function administrativeDeploymentLimits(
     maxNodeRuns: Math.max(configured.maxNodeRuns, authored?.maxNodeRuns ?? 1),
     maxDurationMs: Math.max(configured.maxDurationMs, authored?.maxDurationMs ?? 1),
     maxOutputBytes: Math.max(configured.maxOutputBytes, authored?.maxOutputBytes ?? 1),
+    maxCheckpointBytes: configured.maxCheckpointBytes,
     subworkflowMaxDepth: Math.max(configured.subworkflowMaxDepth, authored?.subworkflowMaxDepth ?? 1),
   })
 }

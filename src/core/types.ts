@@ -55,6 +55,8 @@ export interface WorkflowDeploymentLimits {
   readonly maxNodeRuns: number
   readonly maxDurationMs: number
   readonly maxOutputBytes: number
+  /** Maximum retained durable checkpoint state. Template authors cannot raise or lower it. */
+  readonly maxCheckpointBytes: number
   readonly subworkflowMaxDepth: number
 }
 

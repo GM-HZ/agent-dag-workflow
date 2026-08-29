@@ -186,7 +186,7 @@ policies:
   subworkflowMaxDepth: 8
 ```
 
-模板值只能低于等于 Host 注入的 `WorkflowDeploymentLimits`。Catalog 发布时校验，执行器和恢复路径再次取 `min(template/default, deployment)`，防止 inline 或历史模板提升资源额度。
+模板值只能低于等于 Host 注入的 `WorkflowDeploymentLimits`。Catalog 发布时校验，执行器和恢复路径再次取 `min(template/default, deployment)`，防止 inline 或历史模板提升资源额度。累计持久状态的 `maxCheckpointBytes` 只由 Host 配置，不是模板 policy，避免模板用大量合法的单节点输出耗尽 Store。
 
 ## Layout
 

@@ -16,6 +16,7 @@ export type { MaterializedWorkflowTemplate } from './hash.js'
 export {
   DEFAULT_WORKFLOW_DEPLOYMENT_LIMITS,
   DEFAULT_WORKFLOW_POLICIES,
+  MAX_WORKFLOW_CHECKPOINT_BYTES,
   effectiveWorkflowPolicies,
   normalizeWorkflowDeploymentLimits,
 } from './limits.js'
