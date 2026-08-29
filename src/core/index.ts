@@ -37,6 +37,6 @@ export {
 } from './script-runtime.js'
 export type { WorkflowScriptRuntimeDisposer } from './script-runtime.js'
 export { parseWorkflowTemplate, WORKFLOW_TEMPLATE_SCHEMA } from './schema.js'
-export { InMemoryWorkflowRunStore, snapshotRunCheckpoint, validateRunStoreCommit, WorkflowRunStoreError } from './run-store.js'
+export { InMemoryWorkflowRunStore, MAX_WORKFLOW_COMMIT_BYTES, snapshotRunCheckpoint, validateRunStoreCommit, WorkflowRunStoreError } from './run-store.js'
 export type { WorkflowRunStoreErrorCode } from './run-store.js'
 export type * from './types.js'

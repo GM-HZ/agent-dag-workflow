@@ -20,6 +20,8 @@ import type {
 } from '../catalog/index.js'
 import type {
   CanvasCatalogSummary,
+  CanvasListRequest,
+  CanvasOperationsSnapshot,
   CanvasDraftCreateRequest,
   CanvasDraftDiffRequest,
   CanvasDraftPublishRequest,
@@ -166,6 +168,21 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   async templates(sessionId: string): Promise<readonly CanvasCatalogSummary[]> {
     await this.guard(sessionId, 'templates:list')
     return snapshotJsonValue(await this.host.workflowTemplates.list()) as unknown as readonly CanvasCatalogSummary[]
+  }
+
+  @Remote
+  async operations(sessionId: string, request: CanvasListRequest): Promise<CanvasOperationsSnapshot> {
+    await Promise.all([
+      this.guard(sessionId, 'bindings:list'),
+      this.guard(sessionId, 'ingress:list'),
+      this.guard(sessionId, 'delivery:list'),
+    ])
+    const [bindings, ingress, deliveryAttention] = await Promise.all([
+      this.config.bindings?.list() ?? Promise.resolve([]),
+      this.config.ingress?.list(request) ?? Promise.resolve([]),
+      this.config.delivery?.listAttention(request) ?? Promise.resolve([]),
+    ])
+    return snapshotJsonValue({ bindings, ingress, deliveryAttention }) as unknown as CanvasOperationsSnapshot
   }
 
   @Remote

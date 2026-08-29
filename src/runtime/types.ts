@@ -32,8 +32,14 @@ export interface WorkflowLaunchRequest {
   readonly traceContext?: { readonly traceId: string; readonly parentSpanId?: string }
   readonly idempotencyKey?: string
   readonly deliveryRef?: string
+  /** Foreground executes in the caller; background persists and enqueues for a WorkflowRunWorker. */
+  readonly executionMode?: 'foreground' | 'background'
   readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
+}
+
+export interface WorkflowRunQueue {
+  enqueue(runId: string): Promise<void>
 }
 
 export interface WorkflowRuntimeResumeRequest {
@@ -94,6 +100,7 @@ export interface WorkflowReplayRequest {
 export interface WorkflowRuntimeApi {
   listNodes(): Promise<readonly WorkflowNodeDescriptor[]>
   listTemplates(): Promise<readonly import('../catalog/index.js').WorkflowCatalogSummary[]>
+  getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
   validate(template: WorkflowTemplate): Promise<readonly import('../core/index.js').WorkflowDiagnostic[]>
   createDraft(template: WorkflowTemplate): Promise<WorkflowDraft>
   updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft>

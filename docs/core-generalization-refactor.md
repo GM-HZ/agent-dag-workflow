@@ -1,8 +1,8 @@
 # Agent DAG Workflow 核心通用化重构方案
 
-> 状态：Accepted · implementation in progress
+> 状态：Accepted · implementation complete · local gates passed
 >
-> 目标分支：`codex/generalize-workflow-core`
+> 目标分支：本地 `main` 候选（通过全部门禁后才允许推送/发布）
 >
 > 基线：`main@4e4f40a`
 >
@@ -30,7 +30,7 @@ npm install @gm-hz/agent-dag-workflow
 
 ```ts
 import { WorkflowRuntime } from '@gm-hz/agent-dag-workflow'
-import { createDshAdapter } from '@gm-hz/agent-dag-workflow/dsh'
+import * as DshWorkflow from '@gm-hz/agent-dag-workflow/dsh'
 import { createMcpServer } from '@gm-hz/agent-dag-workflow/mcp'
 import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 ```
@@ -39,7 +39,7 @@ import { createCronTrigger } from '@gm-hz/agent-dag-workflow/triggers/cron'
 
 ### 1.1 最终 Review 结论
 
-本方案可以进入实现，但以以下收口为前提：
+本方案已按以下边界完成实现与收口：
 
 1. `1.0.0` 聚焦通用 Core、Journal、CLI/SDK/DSH/MCP 宿主一致性、统一 Launch/Trigger 契约和可验证的本地 Worker；不把生产级消息平台或分布式调度平台伪装成本次交付；
 2. 所有新协议的持久化、Catalog 和 Runtime 公共边界采用异步接口，SQLite/Memory 只是同步实现的异步包装，避免后续接入服务端 Store 时再次破坏 API；
@@ -494,7 +494,7 @@ CLI、MCP、DSH 工具和 Canvas 只是该门面的授权适配，不复制业�
 
 `nodeDefinitionSetHash` 不对运行时函数源码做不稳定 hash，而由 Registry 对已注册定义的 `{ uses, schemaHash, implementationDigest }` 排序计算；`implementationDigest` 由构建产物或可信 Adapter manifest 提供。缺失 digest 的自定义节点只能用于明确标记为 non-replayable 的开发运行，不能发布为生产 Workflow。
 
-`launch()` 总是先持久化 run 再返回 Handle。调用者等待 `result` 就是前台运行，只保存 `runId` 就是后台运行，不额外创造两套 start/background API。`live()` 是非权威体验通道；进程重启后通过 `getRun()`/`readEvents()` 恢复事实。
+`launch()` 总是先持久化 run 再返回 Handle。直接调用默认前台执行；Trigger 显式使用同一请求上的 `executionMode: 'background'`，只保存 run 并进入 durable queue，随后由 Worker claim/lease/resume。这里没有第二套业务执行 API，前后台仍共享同一个 Runtime、计划、Journal 和 Handle。`live()` 是非权威体验通道；进程重启后通过 `getRun()`/`readEvents()` 恢复事实。
 
 ### 7.5 Run 状态机
 
@@ -860,6 +860,8 @@ workflow_resume
 
 MCP Agent 和 DSH Agent 调用同一个 Runtime 门面。Tool 的完整结构化结果由协议返回，用户可见文本保持紧凑，不在对话中回显大型模板和 Trace。
 
+除此之外，MCP Server 将目录中每个工作流的当前已发布修订投影为普通 Tool，名称固定为 `workflow_<id>_r<revision>`（`-` 转 `_`）；历史修订仍由 `workflow_run` 显式引用。投影 Tool 的 arguments 直接作为 Workflow Input，仍经过固定 revision、Input Schema、Authority、Host policy 和 Journal；它不是另一条执行路径。
+
 ### 10.4 Canvas
 
 Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
@@ -870,6 +872,7 @@ Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
 - DSH 可以挂载 Canvas，其他 Host 也可以通过相同 Control API 使用；
 - 默认展示业务 Trace，基础设施 Event 按需展开；
 - Recorded Replay 可以在原图上展示历史状态。
+- 运维页只读投影 Binding、Ingress duplicate/run 关联、unknown Delivery 和 Trace，可从触发记录跳转到权威运行轨迹。
 
 ## 11. 安全不变量
 
@@ -893,12 +896,7 @@ Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
 
 ### 12.1 分支与发布
 
-```text
-main                              当前稳定线
-codex/generalize-workflow-core    1.0.0 通用化重构
-```
-
-在 1.0.0 达到全部验收门禁前，不发布 npm、不修改 DSH Market 稳定条目。
+当前实现已经收敛到本地 `main` 候选，不维护第二条兼容实现线。在 1.0.0 达到全部验收门禁前，不推送远端、不发布 npm、不修改 DSH Market 稳定条目。
 
 ### 12.2 不保留双轨兼容
 
@@ -1220,7 +1218,7 @@ Launch/Trigger 协议 + Migration 契约
 - Trigger pre-run 事实使用独立 Ingress Journal；
 - `1.0.0` 完成阶段 A-F 的协议和 reference implementation；不承诺生产级消息平台或分布式基础设施。
 
-品牌包名已经固定。发布前仅剩默认 Artifact 保留期限需要由部署策略确定；它不得成为 Core 隐式行为。
+品牌包名已经固定。Core 不设置虚假的默认 Artifact 保留期限：Memory/SQLite reference Store 不声明自动 retention；需要保留期或静态加密的部署必须提供具备对应 capability 的 Store，否则 Runtime 拒绝该配置。
 
 ## 20. 首轮实施与收口清单
 

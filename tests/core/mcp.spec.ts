@@ -18,12 +18,19 @@ describe('workflow MCP control surface', () => {
     })
     const mcp = new WorkflowMcpServer(runtime)
     const context = { authorityRef: 'mcp:user', authority: {} }
-    expect(mcp.listTools().map(item => item.name)).toContain('workflow_nodes_list')
+    expect((await mcp.listTools()).map(item => item.name)).toContain('workflow_nodes_list')
     expect(await mcp.callTool('workflow_nodes_list', {}, context)).toEqual(expect.arrayContaining([
       expect.objectContaining({ uses: 'tool.call@1' }),
     ]))
     const draft = await mcp.callTool('workflow_draft_create', { template: toolWorkflowTemplate() as unknown as import('../../src/core/index.js').JsonValue }, context) as import('../../src/core/index.js').JsonObject
     await mcp.callTool('workflow_publish', { id: draft.id!, expectedRevision: draft.revision! }, context)
+    expect(await mcp.listTools()).toContainEqual(expect.objectContaining({
+      name: 'workflow_tool_flow_r1', kind: 'workflow', workflow: { id: 'tool-flow', revision: 1 },
+      inputSchema: expect.objectContaining({ required: ['message'] }),
+      outputSchema: expect.objectContaining({ required: ['answer'] }),
+    }))
+    const projected = await mcp.callTool('workflow_tool_flow_r1', { message: 'ordinary MCP tool' }, context) as import('../../src/core/index.js').JsonObject
+    expect(projected).toEqual({ answer: 'ordinary MCP tool' })
     const result = await mcp.callTool('workflow_run', { id: draft.id!, revision: 1, inputs: { message: 'mcp' } }, context) as import('../../src/core/index.js').JsonObject
     expect(result).toMatchObject({ status: 'completed', outputs: { answer: 'mcp' } })
     const trace = await mcp.callTool('workflow_trace', { runId: result.runId!, limit: 5 }, context) as import('../../src/core/index.js').JsonObject

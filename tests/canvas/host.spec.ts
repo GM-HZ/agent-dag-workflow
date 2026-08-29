@@ -10,9 +10,13 @@ import type {
   DshWorkflowToolDefinition,
 } from '../../src/adapters/dsh/index.js'
 import { describe, expect, it, vi } from 'vitest'
-import * as CanvasPlugin from '../../lib/canvas/index.js'
 import { starterTemplate } from '../../src/canvas/client/ux.js'
 import type { CanvasWorkflowTemplate, WorkflowCanvasAction } from '../../src/canvas/types.js'
+
+// Canvas host decorators are lowered by the production TypeScript build.
+// An indirect specifier keeps clean typechecking independent from lib/.
+const builtCanvasHost = '../../lib/canvas/index.js'
+const CanvasPlugin = await import(builtCanvasHost)
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -37,6 +41,12 @@ class StubTools extends Service {
 
 class StubSubagents extends Service implements DshSubagentRuntimeLike {
   constructor(ctx: Context) { super(ctx, 'subagents') }
+  list(): readonly string[] { return ['spawn'] }
+  getProvider(name: string) {
+    return name === 'spawn'
+      ? { capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true } }
+      : undefined
+  }
   async start(): ReturnType<DshSubagentRuntimeLike['start']> { throw new Error('not used') }
 }
 
@@ -192,5 +202,47 @@ describe('workflow canvas Host gateway', () => {
     expect(trace.events.map(event => event.type)).toContain('checkpoint.committed')
     expect(actions).toEqual(['nodes:list', 'draft:create', 'draft:validate', 'draft:publish', 'run:start', 'run:trace'])
     expect(authorize).toHaveBeenLastCalledWith({ sessionId: agent.id, agent, action: 'run:trace', resourceId: result.runId })
+  })
+
+  it('exposes trigger bindings, duplicate ingress audit, and uncertain deliveries through the operations surface', async () => {
+    const ctx = await runtime()
+    const agent = { id: 'operations-session', session: new Session() }
+    ctx.agents.register(agent.id, agent)
+    const binding = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const,
+      kind: 'WorkflowBinding' as const,
+      metadata: { id: 'dingtalk-weekly', revision: 2 },
+      spec: {
+        workflow: { id: 'ai-weekly', revision: 4 },
+        trigger: { uses: 'dingtalk.message@1', with: {} },
+        inputMapping: {}, authorityRef: 'principal:weekly', deliveryRef: 'dingtalk:conversation-1',
+      },
+    }
+    const envelope = {
+      schemaVersion: 1 as const, triggerId: 'trigger-2', source: 'dingtalk', sourceEventId: 'event-9',
+      receivedAt: 101, payload: {},
+    }
+    const ingress = {
+      triggerId: 'trigger-2', dedupeKey: 'dingtalk:event-9', binding: binding.metadata,
+      source: 'dingtalk', sourceEventId: 'event-9', status: 'launched' as const,
+      runId: 'run-operations', receivedAt: 101, envelope, duplicateCount: 2,
+    }
+    const delivery = {
+      invocationId: 'run-operations:dingtalk:terminal', runId: 'run-operations', deliveryRef: 'dingtalk:conversation-1',
+      phase: 'terminal' as const, payload: {}, status: 'unknown' as const, attempts: 2, updatedAt: 109,
+      error: 'connection reset',
+    }
+    const authorize = vi.fn(request => ({ subject: 'operator', agent: request.agent }))
+    await ctx.plugin(CanvasPlugin, {
+      authorize,
+      bindings: { list: async () => [binding] },
+      ingress: { list: async () => [ingress] },
+      delivery: { listAttention: async () => [delivery] },
+    })
+
+    await expect(ctx.workflowCanvas.operations(agent.id, { limit: 20 })).resolves.toEqual({
+      bindings: [binding], ingress: [ingress], deliveryAttention: [delivery],
+    })
+    expect(authorize.mock.calls.map(([request]) => request.action)).toEqual(['bindings:list', 'ingress:list', 'delivery:list'])
   })
 })

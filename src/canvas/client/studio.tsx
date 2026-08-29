@@ -24,6 +24,7 @@ import type {
   CanvasJsonObject,
   CanvasJsonValue,
   CanvasNodeDefinition,
+  CanvasOperationsSnapshot,
   CanvasRunResult,
   CanvasTemplateDiff,
   CanvasTrace,
@@ -101,6 +102,8 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const [error, setError] = useState<WorkflowErrorPresentation>()
   const [showInfrastructureEvents, setShowInfrastructureEvents] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
+  const [surface, setSurface] = useState<'design' | 'operations'>('design')
+  const [operations, setOperations] = useState<CanvasOperationsSnapshot>({ bindings: [], ingress: [], deliveryAttention: [] })
   const [recoveryNotice, setRecoveryNotice] = useState(initialRecovery !== undefined)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>()
 
@@ -138,6 +141,12 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   }, [api, sessionId])
 
   const syncCatalog = useCallback(() => execute('同步工作流目录', refreshCatalog), [execute, refreshCatalog])
+
+  const refreshOperations = useCallback(() => execute('刷新触发与投递', async () => {
+    const value = await api.request('workflowCanvas.operations', () => api.remote.operations(sessionId, { limit: 200 }), { retries: 1 })
+    setOperations(value)
+    return value
+  }), [api, execute, sessionId])
 
   useEffect(() => { void syncCatalog() }, [syncCatalog])
 
@@ -366,12 +375,12 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const selectedOutput = selectedNode === undefined ? undefined : trace?.nodeOutputs[selectedNode]
   const selectedProgress = selectedNode === undefined ? undefined : trace?.nodeProgress[selectedNode]
 
-  return <div className="wf-studio" data-workflow-studio>
+  return <div className="wf-studio" data-workflow-studio data-surface={surface}>
     <style>{CANVAS_CSS + PRODUCT_CSS + EXPERIENCE_CSS}</style>
     <header className="wf-topbar">
       <div className="wf-brand">
         <span className="wf-brand-mark">D</span>
-        <span><b>DSH DAG Workflow</b><small>可审计工作流</small></span>
+        <span><b>AGENT DAG WORKFLOW</b><small>可审计工作流</small></span>
       </div>
       <div className="wf-doc-title">
         <span className="wf-status-dot" data-busy={busy} data-connection={connectionState} />
@@ -385,6 +394,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
         <span><i />{template.spec.requires?.length ?? 0} 项依赖</span><span><i />全程审计</span><span><i />Schema 校验</span>
       </div>
       <div className="wf-actions">
+        <button onClick={() => { const next = surface === 'design' ? 'operations' : 'design'; setSurface(next); if (next === 'operations') void refreshOperations() }} disabled={busy}>{surface === 'design' ? '触发与投递' : '返回设计'}</button>
         <button onClick={startNew} disabled={busy} title={busy ? '请等待当前操作完成' : '新建工作流'}>新建</button>
         <button onClick={() => void save()} disabled={busy || !hasUnsavedChanges(documentState)} title={busy ? '请等待当前操作完成' : !hasUnsavedChanges(documentState) ? '当前草稿没有待保存内容' : '保存当前草稿'}>保存</button>
         <button onClick={() => void validate()} disabled={busy} title={busy ? '请等待当前操作完成' : '使用同一套运行时规则校验'}>校验</button>
@@ -415,14 +425,14 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
       <SectionLabel index="02" text="添加节点" />
       <div className="wf-palette-tabs" role="tablist" aria-label="节点分类">
         <button role="tab" data-active={paletteGroup === 'nodes'} onClick={() => setPaletteGroup('nodes')}>流程节点 <span>{definitions.filter(item => item.kind === 'node').length}</span></button>
-        <button role="tab" data-active={paletteGroup === 'tools'} onClick={() => setPaletteGroup('tools')}>DSH Tool <span>{definitions.filter(item => item.kind === 'tool').length}</span></button>
+        <button role="tab" data-active={paletteGroup === 'tools'} onClick={() => setPaletteGroup('tools')}>Agent Tool <span>{definitions.filter(item => item.kind === 'tool').length}</span></button>
       </div>
       <div className="wf-palette-search"><span>⌕</span><input value={paletteQuery} onChange={event => setPaletteQuery(event.target.value)} placeholder={paletteGroup === 'nodes' ? '搜索流程节点…' : '搜索当前 Agent 可用的 Tool…'} aria-label="搜索工作流节点" /></div>
       <div className="wf-node-list">
         {filteredDefinitions.length === 0 ? <p className="wf-list-empty">当前分类没有匹配项</p> : filteredDefinitions.map((definition, index) => <button
           key={definition.catalogId} className="wf-palette-node"
           onClick={() => mutate(addNode(template, definition, { x: 140 + index % 2 * 280, y: 100 + index * 42 }))}
-        ><span>{nodeGlyph(definition)}</span><b>{definitionDisplayTitle(definition)}</b><small>{definitionDisplayDescription(definition)}</small><em>{definition.kind === 'tool' ? '通过 DSH 权限边界执行' : definition.uses}</em></button>)}
+        ><span>{nodeGlyph(definition)}</span><b>{definitionDisplayTitle(definition)}</b><small>{definitionDisplayDescription(definition)}</small><em>{definition.kind === 'tool' ? '通过 Host 权限边界执行' : definition.uses}</em></button>)}
       </div>
       <div className="wf-palette-foot"><span>显示 {filteredDefinitions.length} 项</span><span>模板 v1alpha1</span></div>
     </aside>
@@ -468,9 +478,36 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
       <div className="wf-statusbar"><span>{documentStateLabel(documentState)} · {connectionStateLabel(connectionState)}</span><span>{error?.title ?? activity}</span></div>
     </section>
 
+    {surface === 'operations' ? <WorkflowOperationsPanel snapshot={operations} busy={busy} onRefresh={() => void refreshOperations()} onOpenRun={runId => {
+      setSurface('design')
+      void execute('打开运行轨迹', async () => {
+        const value = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId }), { retries: 1 })
+        setTrace(value)
+        return value
+      })
+    }} /> : null}
+
     {confirmPublish ? <div className="wf-modal-backdrop" role="presentation"><section className="wf-modal" role="dialog" aria-modal="true" aria-labelledby="wf-publish-title"><span className="wf-modal-icon">↗</span><h2 id="wf-publish-title">发布不可变修订？</h2><p>发布前会自动保存并再次使用当前草稿修订。发布后的运行必须明确引用该修订，后续编辑会产生新的草稿修订。</p><div><button onClick={() => setConfirmPublish(false)}>取消</button><button className="wf-primary" onClick={() => void publish()}>确认发布</button></div></section></div> : null}
   </div>
 }
+
+function WorkflowOperationsPanel({ snapshot, busy, onRefresh, onOpenRun }: {
+  readonly snapshot: CanvasOperationsSnapshot
+  readonly busy: boolean
+  readonly onRefresh: () => void
+  readonly onOpenRun: (runId: string) => void
+}) {
+  return <section className="wf-operations" aria-label="触发与投递审计">
+    <header><div><p>OPERATIONS / TRIGGER</p><h1>触发、运行与投递</h1><span>这里展示 Host 提供的绑定、去重入口记录和需要人工关注的投递。所有入口都引用不可变工作流修订。</span></div><button onClick={onRefresh} disabled={busy}>↻ 刷新</button></header>
+    <div className="wf-operations-grid">
+      <section><h2>绑定 <em>{snapshot.bindings.length}</em></h2>{snapshot.bindings.length === 0 ? <EmptyOperation text="当前 Host 没有暴露触发绑定" /> : snapshot.bindings.map(binding => <article key={`${binding.metadata.id}@${binding.metadata.revision}`}><b>{binding.metadata.id}</b><code>{binding.spec.trigger.uses}</code><span>{binding.spec.workflow.id}@{binding.spec.workflow.revision}</span><small>{binding.spec.authorityRef} · {binding.spec.enabled === false ? '已停用' : '启用中'}</small></article>)}</section>
+      <section><h2>入口审计 <em>{snapshot.ingress.length}</em></h2>{snapshot.ingress.length === 0 ? <EmptyOperation text="还没有收到外部触发" /> : snapshot.ingress.map(record => <article key={record.triggerId} data-status={record.status}><b>{record.source} / {record.sourceEventId}</b><code>{record.status}</code><span>{record.binding.id}@{record.binding.revision}</span><small>{record.runId ?? record.reasonCode ?? '尚未关联运行'} · 重复 {record.duplicateCount ?? 0} 次</small>{record.runId === undefined ? null : <button onClick={() => onOpenRun(record.runId!)}>查看 Trace</button>}</article>)}</section>
+      <section><h2>投递待处理 <em>{snapshot.deliveryAttention.length}</em></h2>{snapshot.deliveryAttention.length === 0 ? <EmptyOperation text="没有状态不确定的投递" /> : snapshot.deliveryAttention.map(record => <article key={record.invocationId} data-status="unknown"><b>{record.deliveryRef}</b><code>{record.phase} / {record.status}</code><span>{record.runId}</span><small>尝试 {record.attempts} 次 · {record.error ?? '等待确认'}</small><button onClick={() => onOpenRun(record.runId)}>查看 Trace</button></article>)}</section>
+    </div>
+  </section>
+}
+
+function EmptyOperation({ text }: { readonly text: string }) { return <div className="wf-operation-empty">✓<span>{text}</span></div> }
 
 function WorkflowNodeView({ data, selected }: NodeProps<WorkflowFlowNode>) {
   const renderer = workflowNodeRenderers.resolve(data.template.uses)
@@ -713,7 +750,7 @@ function clearRecovery(sessionId: string): void {
 }
 
 const PRODUCT_CSS = String.raw`
-/* DSH DAG Workflow: light-first, host-aware product skin. */
+/* Agent DAG Workflow: light-first, host-aware product skin. */
 .wf-studio{
   --wf-bg:#f6f7fb;--wf-surface:#ffffff;--wf-surface-soft:#f1f3f7;--wf-surface-hover:#eef3ff;
   --wf-border:#e2e6ed;--wf-border-strong:#cbd2dc;--wf-text:#171b24;--wf-muted:#667085;
@@ -770,6 +807,7 @@ const EXPERIENCE_CSS = String.raw`
 .wf-welcome{position:absolute;z-index:4;left:50%;top:50%;width:min(690px,calc(100% - 80px));transform:translate(-50%,-50%);padding:31px;border:1px solid var(--wf-border);border-radius:18px;background:color-mix(in srgb,var(--wf-surface) 96%,transparent);box-shadow:0 22px 65px rgba(31,43,68,.14);backdrop-filter:blur(18px)}.wf-welcome-kicker{color:var(--wf-brand);font-size:10px;font-weight:700}.wf-welcome h1{margin:9px 0 8px;color:var(--wf-text);font-size:25px;letter-spacing:-.025em}.wf-welcome>p{max-width:570px;margin:0;color:var(--wf-muted);font-size:11px;line-height:1.7}.wf-welcome-actions{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:24px}.wf-welcome-actions button{display:grid;grid-template-columns:28px 1fr;min-height:94px;padding:13px;border:1px solid var(--wf-border);border-radius:11px;background:var(--wf-surface-soft);color:var(--wf-text);text-align:left;cursor:pointer}.wf-welcome-actions button:hover:not(:disabled){border-color:var(--wf-brand);transform:translateY(-2px)}.wf-welcome-actions button>span{grid-row:1/3;color:var(--wf-brand);font-size:9px;font-weight:750}.wf-welcome-actions b{font-size:11px}.wf-welcome-actions small{margin-top:5px;color:var(--wf-muted);font-size:9px;line-height:1.4}.wf-welcome-actions .wf-welcome-primary{background:var(--wf-brand);border-color:var(--wf-brand);color:#fff}.wf-welcome-actions .wf-welcome-primary span,.wf-welcome-actions .wf-welcome-primary small{color:#dce8ff}
 .wf-advanced{margin:2px 0 18px;border:1px solid var(--wf-border);border-radius:10px;background:color-mix(in srgb,var(--wf-surface-soft) 58%,transparent)}.wf-advanced>summary{padding:11px 12px;color:var(--wf-text);font-size:10px;font-weight:650;cursor:pointer}.wf-advanced>p{margin:0;padding:0 12px 11px;color:var(--wf-muted);font-size:9px;line-height:1.55}.wf-advanced[open]{padding-bottom:2px}.wf-advanced[open]>summary{margin-bottom:10px;border-bottom:1px solid var(--wf-border)}.wf-advanced>label{margin-inline:12px}.wf-field-error{float:right;color:var(--wf-danger);font-weight:500;letter-spacing:0}.wf-node-run{margin:2px 0 16px;padding:11px;border:1px solid var(--wf-border);border-radius:10px;background:var(--wf-surface-soft)}.wf-node-run header{display:flex;justify-content:space-between;font-size:10px}.wf-node-run header span{color:var(--wf-success)}.wf-node-run details{margin-top:9px;color:var(--wf-muted);font-size:9px}.wf-node-run pre{max-height:150px;overflow:auto;padding:8px;border-radius:7px;background:var(--wf-surface);color:var(--wf-text);font:9px/1.45 var(--ds-font-family-code),monospace;white-space:pre-wrap}
 .wf-trace-head .wf-subtle,.wf-trace-head .wf-copy-run{font-size:9px;color:var(--wf-muted)}.wf-run-failure{flex:0 0 270px;display:grid;grid-template-columns:30px 1fr;align-items:center;padding:8px 10px;border:1px solid color-mix(in srgb,var(--wf-danger) 38%,var(--wf-border));border-radius:9px;background:color-mix(in srgb,var(--wf-danger) 7%,var(--wf-surface));color:var(--wf-text)}.wf-run-failure>span{color:var(--wf-danger);font-size:18px}.wf-run-failure div{display:grid;gap:4px}.wf-run-failure small{color:var(--wf-muted);font-size:8px;line-height:1.35}.wf-events button[data-tone=danger]{border-color:color-mix(in srgb,var(--wf-danger) 45%,var(--wf-border))}.wf-events button[data-tone=success]{border-color:color-mix(in srgb,var(--wf-success) 34%,var(--wf-border))}.wf-events button[data-tone=warning]{border-color:color-mix(in srgb,var(--wf-warning) 40%,var(--wf-border))}
+.wf-studio[data-surface=operations]>.wf-palette,.wf-studio[data-surface=operations]>.wf-canvas,.wf-studio[data-surface=operations]>.wf-inspector,.wf-studio[data-surface=operations]>.wf-trace{display:none}.wf-operations{grid-row:2/4;grid-column:1/-1;overflow:auto;padding:30px;background:var(--wf-bg);color:var(--wf-text)}.wf-operations>header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;max-width:1320px;margin:0 auto 25px}.wf-operations>header p{margin:0 0 8px;color:var(--wf-brand);font-size:9px;font-weight:800;letter-spacing:.18em}.wf-operations>header h1{margin:0 0 8px;font-size:24px}.wf-operations>header span{color:var(--wf-muted);font-size:10px}.wf-operations>header button{height:36px;padding:0 14px;border:1px solid var(--wf-border);border-radius:8px;background:var(--wf-surface);color:var(--wf-text);cursor:pointer}.wf-operations-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;max-width:1320px;margin:auto}.wf-operations-grid>section{min-height:360px;padding:15px;border:1px solid var(--wf-border);border-radius:14px;background:var(--wf-surface)}.wf-operations-grid h2{display:flex;justify-content:space-between;margin:0 0 13px;font-size:12px}.wf-operations-grid h2 em{font-style:normal;color:var(--wf-brand)}.wf-operations-grid article{position:relative;display:grid;gap:6px;margin-bottom:8px;padding:12px;border:1px solid var(--wf-border);border-radius:9px;background:var(--wf-surface-soft)}.wf-operations-grid article[data-status=rejected],.wf-operations-grid article[data-status=unknown]{border-color:color-mix(in srgb,var(--wf-danger) 40%,var(--wf-border))}.wf-operations-grid article b{font-size:10px}.wf-operations-grid article code{color:var(--wf-brand);font-size:8px}.wf-operations-grid article span,.wf-operations-grid article small{overflow:hidden;color:var(--wf-muted);font-size:8px;text-overflow:ellipsis;white-space:nowrap}.wf-operations-grid article button{position:absolute;right:9px;top:9px;border:0;background:transparent;color:var(--wf-brand);font-size:8px;cursor:pointer}.wf-operation-empty{display:grid;place-items:center;min-height:260px;color:var(--wf-success);font-size:24px}.wf-operation-empty span{color:var(--wf-muted);font-size:9px}@media(max-width:900px){.wf-operations-grid{grid-template-columns:1fr}.wf-operations{padding:18px}}
 .wf-modal-backdrop{position:absolute;inset:0;z-index:50;display:grid;place-items:center;background:rgba(16,24,40,.34);backdrop-filter:blur(4px)}.wf-modal{width:min(440px,calc(100% - 36px));padding:28px;border:1px solid var(--wf-border);border-radius:17px;background:var(--wf-surface);box-shadow:0 26px 80px rgba(16,24,40,.3);color:var(--wf-text)}.wf-modal-icon{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:var(--wf-brand-soft);color:var(--wf-brand);font-size:22px}.wf-modal h2{margin:17px 0 8px;font-size:19px}.wf-modal p{margin:0;color:var(--wf-muted);font-size:11px;line-height:1.7}.wf-modal>div{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}.wf-modal button{height:36px;padding:0 15px;border:1px solid var(--wf-border);border-radius:8px;background:var(--wf-surface-soft);color:var(--wf-text);cursor:pointer}.wf-modal .wf-primary{border-color:var(--wf-brand);background:var(--wf-brand);color:#fff}
 @media(max-width:900px){.wf-welcome-actions{grid-template-columns:1fr}.wf-welcome{width:calc(100% - 36px);padding:22px}.wf-welcome-actions button{min-height:68px}.wf-document-state{display:none}.wf-actions button:nth-child(-n+2){display:inline-flex}.wf-system-banner,.wf-error-banner{width:calc(100% - 24px)}}
 `

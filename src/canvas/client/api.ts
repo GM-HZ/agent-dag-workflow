@@ -1,5 +1,7 @@
 import type {
   CanvasCatalogSummary,
+  CanvasListRequest,
+  CanvasOperationsSnapshot,
   CanvasDraftCreateRequest,
   CanvasDraftDiffRequest,
   CanvasDraftPublishRequest,
@@ -42,6 +44,7 @@ export class WorkflowCanvasRequestError extends Error {
 export interface WorkflowCanvasRemoteNamespace {
   nodes(sessionId: string): Promise<RemoteResult<readonly CanvasNodeDefinition[]>>
   templates(sessionId: string): Promise<RemoteResult<readonly CanvasCatalogSummary[]>>
+  operations(sessionId: string, request: CanvasListRequest): Promise<RemoteResult<CanvasOperationsSnapshot>>
   createDraft(sessionId: string, request: CanvasDraftCreateRequest): Promise<RemoteResult<CanvasWorkflowDraft>>
   readDraft(sessionId: string, request: CanvasDraftReadRequest): Promise<RemoteResult<CanvasWorkflowDraft>>
   updateDraft(sessionId: string, request: CanvasDraftUpdateRequest): Promise<RemoteResult<CanvasWorkflowDraft>>

@@ -41,7 +41,7 @@ pnpm test
 pnpm showcase:install
 ```
 
-默认数据库是 `~/.dsh/dsh-dag-workflow/workflows.db`；验证隔离数据库时可传入 `--db`：
+默认数据库是 `~/.dsh/agent-dag-workflow/workflows.db`；验证隔离数据库时可传入 `--db`：
 
 ```bash
 pnpm showcase:install -- --db /absolute/path/to/workflows.db

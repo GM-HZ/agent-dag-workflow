@@ -80,7 +80,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
     definitions.set(node.id, definition)
     outputSchemas.set(node.id, node.expects?.schema ?? definition.outputSchema)
     if ((node.policy?.retry?.maxAttempts ?? 1) > 1) {
-      diagnostics.push(diagnostic('RETRY_UNSUPPORTED', 'v0.1 executes every node at most once; maxAttempts must be 1', node.id, ['spec', 'nodes', index, 'policy', 'retry']))
+      diagnostics.push(diagnostic('RETRY_UNSUPPORTED', 'the current engine executes every node at most once; maxAttempts must be 1', node.id, ['spec', 'nodes', index, 'policy', 'retry']))
     }
     let configValid = false
     try {

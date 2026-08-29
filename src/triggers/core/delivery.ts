@@ -1,4 +1,5 @@
-import { snapshotJsonObject, snapshotJsonValue, type JsonObject } from '../../core/index.js'
+import { createHash } from 'node:crypto'
+import { snapshotJsonObject, snapshotJsonValue, stableJsonStringify, type JsonObject, type JsonValue } from '../../core/index.js'
 
 export type WorkflowDeliveryPhase = 'accepted' | 'progress' | 'terminal'
 
@@ -24,6 +25,7 @@ export interface WorkflowResultDeliveryGateway {
 export interface WorkflowDeliveryStore {
   get(invocationId: string): Promise<WorkflowDeliveryRecord | undefined>
   save(record: WorkflowDeliveryRecord, expectedAttempts: number): Promise<void>
+  listAttention(query?: { readonly limit?: number }): Promise<readonly WorkflowDeliveryRecord[]>
 }
 
 export class InMemoryWorkflowDeliveryStore implements WorkflowDeliveryStore {
@@ -34,10 +36,16 @@ export class InMemoryWorkflowDeliveryStore implements WorkflowDeliveryStore {
     if ((current?.attempts ?? 0) !== expectedAttempts) throw new Error(`workflow delivery attempt conflict: ${record.invocationId}`)
     this.#records.set(record.invocationId, snapshotJsonValue(record) as unknown as WorkflowDeliveryRecord)
   }
+  async listAttention(query: { readonly limit?: number } = {}): Promise<readonly WorkflowDeliveryRecord[]> {
+    const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
+    return [...this.#records.values()].filter(record => record.status !== 'delivered')
+      .sort((left, right) => left.updatedAt - right.updatedAt || left.invocationId.localeCompare(right.invocationId)).slice(0, limit)
+  }
 }
 
 export class WorkflowResultDeliveryService {
   readonly #now: () => number
+  readonly #inflight = new Map<string, Promise<WorkflowDeliveryRecord>>()
   constructor(
     private readonly gateway: WorkflowResultDeliveryGateway,
     private readonly store: WorkflowDeliveryStore,
@@ -45,8 +53,20 @@ export class WorkflowResultDeliveryService {
   ) { this.#now = now }
 
   async deliver(request: WorkflowDeliveryRequest): Promise<WorkflowDeliveryRecord> {
-    const invocationId = `${request.runId}:${request.deliveryRef}:${request.phase}`
+    const invocationId = workflowDeliveryInvocationId(request)
+    const inflight = this.#inflight.get(invocationId)
+    if (inflight !== undefined) return inflight
+    const delivery = this.#deliver(request, invocationId)
+    this.#inflight.set(invocationId, delivery)
+    try { return await delivery } finally { if (this.#inflight.get(invocationId) === delivery) this.#inflight.delete(invocationId) }
+  }
+
+  async #deliver(request: WorkflowDeliveryRequest, invocationId: string): Promise<WorkflowDeliveryRecord> {
     const current = await this.store.get(invocationId)
+    if (current !== undefined && (current.runId !== request.runId || current.deliveryRef !== request.deliveryRef
+      || current.phase !== request.phase || stableJsonStringify(current.payload) !== stableJsonStringify(request.payload))) {
+      throw new Error(`workflow delivery invocation is already bound to another immutable request: ${invocationId}`)
+    }
     if (current?.status === 'delivered') return current
     const attempts = current?.attempts ?? 0
     const pending: WorkflowDeliveryRecord = snapshotJsonValue({
@@ -74,4 +94,14 @@ export class WorkflowResultDeliveryService {
       throw error
     }
   }
+}
+
+export function workflowDeliveryInvocationId(request: Pick<WorkflowDeliveryRequest, 'runId' | 'deliveryRef' | 'phase'>): string {
+  if (request.runId.length === 0 || request.runId.length > 1024
+    || request.deliveryRef.length === 0 || request.deliveryRef.length > 4096
+    || !(['accepted', 'progress', 'terminal'] as const).includes(request.phase)) {
+    throw new Error('workflow delivery identity is invalid')
+  }
+  const tuple = [request.runId, request.deliveryRef, request.phase] as JsonValue
+  return `delivery-${createHash('sha256').update(stableJsonStringify(tuple)).digest('hex')}`
 }

@@ -118,6 +118,48 @@ export class DagWorkflowEngine {
     )
   }
 
+  async queue(request: WorkflowStartRequest): Promise<WorkflowRun> {
+    if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'background queue requires a WorkflowRunStore')
+    const workflow = compileWorkflowOrThrow(request.template, this.#registry)
+    const inputs = snapshotJsonObject(request.inputs)
+    const inputErrors = workflow.validateWorkflowInputs(inputs)
+    if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
+    const id = request.runId ?? `dag-${randomUUID()}`
+    const state = createInitialState(workflow, 0, workflow.template.spec.policies?.subworkflowMaxDepth ?? 8, undefined)
+    const createdAt = this.#now()
+    const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
+    assertExecutionPlan(plan, workflow, this.#registry)
+    const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
+    state.nodeStates.set(workflow.startNodeId, 'ready')
+    state.ready.push(workflow.startNodeId)
+    await this.#runStore.createRun({
+      runId: id,
+      template: workflow.template,
+      semanticHash: workflow.semanticHash,
+      plan,
+      inputs,
+      execution: {
+        authorityRef: request.execution.authorityRef,
+        origin: request.execution.origin,
+        ...(request.execution.traceContext === undefined ? {} : { traceContext: request.execution.traceContext }),
+      },
+      launch: {
+        ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
+        ...(request.deliveryRef === undefined ? {} : { deliveryRef: request.deliveryRef }),
+        executionMode: 'background',
+      },
+      createdAt,
+      checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
+      events: [],
+    })
+    await this.#commit(id, workflow, state, [
+      { type: 'run.accepted', ...inputCapture },
+      { type: 'run.queued' },
+      { type: 'node.ready', nodeId: workflow.startNodeId },
+    ], plan, request.execution, request.onEvent)
+    return this.#queuedRun(id, request.execution)
+  }
+
   async invoke(request: WorkflowInvocationRequest): Promise<WorkflowRun> {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'nested workflow invocation requires a WorkflowRunStore')
     if (!Number.isSafeInteger(request.depth) || request.depth < 1) {
@@ -166,6 +208,8 @@ export class DagWorkflowEngine {
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
     assertExecutionPlan(plan, workflow, this.#registry)
     const inputCapture = await this.#capture?.capture({ runId: id, phase: 'workflow.input', value: inputs })
+    state.nodeStates.set(workflow.startNodeId, 'ready')
+    state.ready.push(workflow.startNodeId)
     await this.#runStore?.createRun({
       runId: id,
       template: workflow.template,
@@ -180,6 +224,7 @@ export class DagWorkflowEngine {
       launch: {
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
         ...(request.deliveryRef === undefined ? {} : { deliveryRef: request.deliveryRef }),
+        executionMode: 'foreground',
       },
       createdAt,
       checkpoint: checkpointOf(id, workflow.semanticHash, state, createdAt, 0),
@@ -198,7 +243,7 @@ export class DagWorkflowEngine {
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       ...(request.recordedNodeOutputs === undefined ? {} : { recordedNodeOutputs: request.recordedNodeOutputs }),
       initialEvents: [{ type: 'run.accepted', ...inputCapture }, { type: 'run.queued' }, { type: 'run.started' }, { type: 'node.ready', nodeId: workflow.startNodeId }],
-      initializeStart: true,
+      initializeStart: false,
     })
   }
 
@@ -265,6 +310,15 @@ export class DagWorkflowEngine {
 
     state.status = 'running'
     delete state.error
+    const recoveredInitialEvents: WorkflowEventInput[] = record.checkpoint.seq === 0
+      ? [
+          { type: 'run.accepted', ...await this.#capture?.capture({ runId: record.runId, phase: 'workflow.input', value: record.inputs }) },
+          { type: 'run.queued' },
+          ...(record.launch.executionMode === 'background' ? [] : [{ type: 'run.started' } as const]),
+          { type: 'node.ready', nodeId: workflow.startNodeId },
+          ...(record.launch.executionMode === 'background' ? [{ type: 'run.started' } as const] : []),
+        ]
+      : [record.events.some(event => event.type === 'run.started') ? { type: 'run.resumed' } : { type: 'run.started' }]
     return this.#startOwnedRun({
       id: record.runId,
       createdAt: record.createdAt,
@@ -276,9 +330,36 @@ export class DagWorkflowEngine {
       plan: record.plan,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
-      initialEvents: [{ type: 'run.resumed' }, ...attentionEvents],
+      initialEvents: [...recoveredInitialEvents, ...attentionEvents],
       initializeStart: false,
     })
+  }
+
+  #queuedRun(runId: string, execution: import('./types.js').WorkflowExecutionContext): WorkflowRun {
+    const store = this.#runStore!
+    const result = (async (): Promise<WorkflowRunResult> => {
+      for (;;) {
+        const record = await store.loadRun(runId)
+        if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
+        if (record.checkpoint.status !== 'running') {
+          const workflow = compileWorkflowOrThrow(record.template, this.#registry)
+          const state = restoreState(record, workflow)
+          return state.status === 'completed' ? successResult(runId, state) : failureResult(runId, state)
+        }
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+    })()
+    return {
+      id: runId,
+      result,
+      cancel: async reason => {
+        const controller = new AbortController()
+        controller.abort(reason ?? 'cancelled')
+        const resumed = await this.resume({ runId, execution, signal: controller.signal })
+        await resumed.result
+      },
+      async dispose() { await result },
+    }
   }
 
   #startOwnedRun(options: {
@@ -996,5 +1077,6 @@ function renderAbortReason(reason: unknown, fallback: string): string {
 }
 
 function renderError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message : String(error)
+  return message.length <= 32_768 ? message : `${message.slice(0, 32_747)}…[truncated]`
 }

@@ -1,4 +1,4 @@
-import { registerCoreNodes, WorkflowNodeRegistry, type WorkflowTemplate } from '../../src/core/index.js'
+import { endNodeDefinition, registerCoreNodes, startNodeDefinition, WorkflowNodeRegistry, type WorkflowTemplate } from '../../src/core/index.js'
 import { describe, expect, it } from 'vitest'
 import {
   diffWorkflowTemplates,
@@ -106,6 +106,22 @@ describe('workflow template catalog', () => {
     await expect(catalog.publish(draft.id, draft.revision)).rejects.toEqual(expect.objectContaining({
       code: 'CATALOG_PUBLISH_INVALID',
       diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'UNKNOWN_NODE_TYPE' })]),
+    }))
+  })
+
+  it('allows digest-less definitions only for inline development and blocks publication', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    const { implementationDigest: _start, ...start } = startNodeDefinition
+    const { implementationDigest: _end, ...end } = endNodeDefinition
+    nodes.register(start); nodes.register(end)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const draft = await catalog.createDraft(template())
+    expect(await catalog.validate(draft.template)).toContainEqual(expect.objectContaining({
+      code: 'NODE_IMPLEMENTATION_DIGEST_MISSING', severity: 'warning',
+    }))
+    await expect(catalog.publish(draft.id, draft.revision)).rejects.toEqual(expect.objectContaining({
+      code: 'CATALOG_PUBLISH_INVALID',
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'NODE_IMPLEMENTATION_DIGEST_MISSING', severity: 'error' })]),
     }))
   })
 

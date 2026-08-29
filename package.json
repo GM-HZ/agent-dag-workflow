@@ -105,7 +105,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
-    "agent-workflow": "./lib/cli.js"
+    "agent-workflow": "lib/cli.js"
   },
   "files": [
     "lib",
@@ -113,6 +113,9 @@
     "lib/typert.host.d.ts",
     "lib/typert.remote-client.js",
     "lib/typert.remote-client.d.ts",
+    "docs",
+    "examples",
+    "spec",
     "skills",
     "cordis.patch.yml",
     "README.md",
@@ -128,7 +131,8 @@
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-layout"
       ],
-      "platform": "web"
+      "platform": "web",
+      "immediately": true
     }
   },
   "publishConfig": {
@@ -147,10 +151,18 @@
     "react-dom": "^18.2.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis": { "optional": true },
-    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
-    "react": { "optional": true },
-    "react-dom": { "optional": true }
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
@@ -169,11 +181,26 @@
     "type": "git",
     "url": "git+https://github.com/GM-HZ/dsh-dag-workflow.git"
   },
-  "keywords": ["agent", "dag", "workflow", "mcp", "skill", "canvas", "deepseek-harness", "dsh-plugin"],
+  "keywords": [
+    "agent",
+    "dag",
+    "workflow",
+    "mcp",
+    "skill",
+    "canvas",
+    "deepseek-harness",
+    "dsh-plugin"
+  ],
   "author": "GM-HZ",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/GM-HZ/dsh-dag-workflow/issues"
   },
-  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme"
+  "homepage": "https://github.com/GM-HZ/dsh-dag-workflow#readme",
+  "directories": {
+    "doc": "docs",
+    "example": "examples",
+    "lib": "lib",
+    "test": "tests"
+  }
 }

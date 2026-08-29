@@ -52,6 +52,12 @@ export class WorkflowTemplateCatalog {
 
   async validate(template: WorkflowTemplate): Promise<readonly WorkflowDiagnostic[]> {
     const diagnostics = [...compileWorkflow(template, this.nodes).diagnostics]
+    if (!this.nodes.definitionSet(template.spec.nodes.map(node => node.uses)).replayable) {
+      diagnostics.push({
+        code: 'NODE_IMPLEMENTATION_DIGEST_MISSING', severity: 'warning',
+        message: 'one or more node definitions have no implementation digest; inline development runs are allowed but publishing is not',
+      })
+    }
     if (!diagnostics.some(item => item.code === 'TEMPLATE_NOT_LOSSLESS_JSON')) {
       diagnostics.push(...await this.validatePublishedDependencies(template))
     }
@@ -67,7 +73,13 @@ export class WorkflowTemplateCatalog {
     if (draft.revision !== expectedDraftRevision) {
       throw new WorkflowCatalogError('CATALOG_REVISION_CONFLICT', `workflow ${id} expected draft revision ${expectedDraftRevision}, actual ${draft.revision}`)
     }
-    const diagnostics = await this.validate(draft.template)
+    const diagnostics = [...await this.validate(draft.template)]
+    if (!this.nodes.definitionSet(draft.template.spec.nodes.map(node => node.uses)).replayable) {
+      diagnostics.push({
+        code: 'NODE_IMPLEMENTATION_DIGEST_MISSING', severity: 'error',
+        message: 'published workflows require an implementation digest for every node definition',
+      })
+    }
     if (diagnostics.some(diagnostic => diagnostic.severity === 'error')) {
       throw new WorkflowCatalogError('CATALOG_PUBLISH_INVALID', `workflow ${id} cannot be published`, diagnostics)
     }

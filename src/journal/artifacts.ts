@@ -19,11 +19,18 @@ export interface WorkflowCapturePolicy {
 }
 
 export interface WorkflowArtifactStore {
+  readonly capabilities?: {
+    /** True only when the concrete deployment encrypts artifact bytes at rest. */
+    readonly encryptionAtRest: boolean
+    /** True only when the store enforces automatic retention expiry. */
+    readonly retentionPolicy: boolean
+  }
   put(content: Uint8Array, options: { readonly mediaType: string; readonly redacted?: boolean }): Promise<WorkflowArtifactRef>
   read(refs: readonly WorkflowArtifactRef[]): Promise<readonly WorkflowArtifact[]>
 }
 
 export class InMemoryWorkflowArtifactStore implements WorkflowArtifactStore {
+  readonly capabilities = Object.freeze({ encryptionAtRest: false, retentionPolicy: false })
   readonly #artifacts = new Map<string, WorkflowArtifact>()
 
   async put(content: Uint8Array, options: { readonly mediaType: string; readonly redacted?: boolean }): Promise<WorkflowArtifactRef> {

@@ -12,7 +12,9 @@ import type {
   DshWorkflowToolDefinition,
 } from '../src/adapters/dsh/index.js'
 import { describe, expect, it } from 'vitest'
-import * as Workflow from '../lib/adapters/dsh/bundle.js'
+// The DSH bundle patch loads the built package root. Keep the specifier
+// indirect so clean source typechecking does not depend on pre-existing lib/.
+const builtPackageRoot = '../lib/index.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -36,6 +38,12 @@ class StubTools extends Service {
 
 class StubSubagents extends Service implements DshSubagentRuntimeLike {
   constructor(ctx: Context) { super(ctx, 'subagents') }
+  list(): readonly string[] { return ['spawn'] }
+  getProvider(name: string) {
+    return name === 'spawn'
+      ? { capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true } }
+      : undefined
+  }
   async start(): ReturnType<DshSubagentRuntimeLike['start']> { throw new Error('not used') }
 }
 
@@ -82,7 +90,8 @@ function template(): WorkflowTemplate {
 
 describe('installable DSH workflow package', () => {
   it('mounts the durable services and reopens their SQLite state', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'dsh-dag-workflow-bundle-'))
+    const Workflow = await import(builtPackageRoot)
+    const directory = mkdtempSync(join(tmpdir(), 'agent-dag-workflow-bundle-'))
     const databasePath = join(directory, 'nested', 'workflows.db')
     try {
       const first = await host()

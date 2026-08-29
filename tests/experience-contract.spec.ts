@@ -9,9 +9,9 @@ const skill = readFileSync(new URL('../skills/workflow-builder/SKILL.md', import
 
 describe('user experience contract', () => {
   it('uses one product name and Chinese workflow terminology in the shipped UI', () => {
-    expect(studio).toContain('DSH DAG Workflow')
+    expect(studio).toContain('AGENT DAG WORKFLOW')
     expect(overlay).toContain('<b>工作流</b>')
-    expect(client).toContain("label: 'DSH DAG Workflow'")
+    expect(client).toContain("label: 'Agent DAG Workflow'")
     expect(model).toContain("name: '未命名工作流'")
     for (const source of [studio, overlay, client, model]) {
       expect(source).not.toMatch(/GUARDED DAG STUDIO|Workflow Signal Studio|Untitled signal|>FLOW<|NO DIAGNOSTICS|RETRY UNKNOWN|>RESUME</)

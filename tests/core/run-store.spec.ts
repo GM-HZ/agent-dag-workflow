@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   DagWorkflowEngine,
   InMemoryWorkflowRunStore,
+  MAX_WORKFLOW_COMMIT_BYTES,
   registerCoreNodes,
+  validateRunStoreCommit,
   WorkflowNodeRegistry,
   WorkflowPauseError,
   type WorkflowEvent,
@@ -161,6 +163,37 @@ function subworkflowParentTemplate(): WorkflowTemplate {
 }
 
 describe('workflow run store and recovery', () => {
+  it('recovers a queued run when the process dies between run creation and its first Journal commit', async () => {
+    const store = new OneShotFailingStore(events => events.some(event => event.type === 'run.accepted'))
+    const firstEngine = new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store })
+    await expect(firstEngine.queue({
+      runId: 'queue-create-gap', execution: testExecution,
+      template: toolWorkflowTemplate(), inputs: { message: 'recover-initial' },
+    })).rejects.toThrow('simulated process crash')
+    expect((await store.loadRun('queue-create-gap'))?.checkpoint).toMatchObject({ seq: 0, ready: ['start'], nodeStates: { start: 'ready' } })
+
+    const resumed = await new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store })
+      .resume({ runId: 'queue-create-gap', execution: testExecution })
+    await expect(resumed.result).resolves.toMatchObject({ status: 'completed', outputs: { answer: 'recover-initial' } })
+    expect((await store.readEvents('queue-create-gap')).slice(0, 5).map(event => event.type))
+      .toEqual(['run.accepted', 'run.queued', 'node.ready', 'run.started', 'checkpoint.committed'])
+  })
+
+  it('rejects an oversized atomic checkpoint and Journal commit before storage', () => {
+    const checkpoint: WorkflowRunCheckpoint = {
+      version: 1, runId: 'oversized', semanticHash: 'hash', seq: 1, status: 'running',
+      nodeStates: {}, edgeStates: {}, nodeOutputs: {}, nodeProgress: {}, ready: [], nodeRuns: 0,
+      nodeAttempts: {}, depth: 0, subworkflowDepthLimit: 8, updatedAt: 1,
+    }
+    const event = {
+      schemaVersion: 1, eventId: 'oversized:1', runId: 'oversized', seq: 1, type: 'run.started', occurredAt: 1,
+      workflow: { id: 'oversized', semanticHash: 'hash', engineVersion: '1.0.0', nodeDefinitionSetHash: 'nodes' },
+      correlation: { traceId: 'trace', spanId: 'span' }, origin: { type: 'sdk' },
+      payload: { padding: 'x'.repeat(MAX_WORKFLOW_COMMIT_BYTES) },
+    } as unknown as WorkflowEvent
+    expect(() => validateRunStoreCommit('oversized', 0, checkpoint, [event])).toThrow(/commit is .*limit/)
+  })
+
   it('journals contiguous events and a terminal checkpoint', async () => {
     const store = new InMemoryWorkflowRunStore()
     const engine = new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store, now: () => 100 })

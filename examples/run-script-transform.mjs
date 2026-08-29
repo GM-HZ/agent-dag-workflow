@@ -8,8 +8,9 @@ import {
 const template = JSON.parse(await readFile(new URL('./script-transform.workflow.json', import.meta.url), 'utf8'))
 const registry = new WorkflowNodeRegistry()
 registerCoreNodes(registry)
-const result = await new DagWorkflowEngine(registry).start({
+const run = await new DagWorkflowEngine(registry).start({
   template,
+  execution: { authorityRef: 'example:local', authority: {}, origin: { type: 'sdk', source: 'demo' } },
   inputs: {
     customer: '  gm-hz  ',
     orders: [
@@ -18,7 +19,8 @@ const result = await new DagWorkflowEngine(registry).start({
       { id: 'A-102', amount: 60, approved: true }
     ]
   }
-}).result
+})
+const result = await run.result
 
 if (result.status !== 'completed') throw new Error(result.error)
 console.log(JSON.stringify({ runId: result.runId, outputs: result.outputs }, null, 2))

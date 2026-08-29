@@ -55,6 +55,7 @@ export type WorkflowCanvasAction =
   | 'nodes:list' | 'templates:list'
   | 'draft:create' | 'draft:read' | 'draft:update' | 'draft:validate' | 'draft:diff' | 'draft:publish'
   | 'run:start' | 'run:resume' | 'run:trace'
+  | 'bindings:list' | 'ingress:list' | 'delivery:list'
 
 /** Minimal host surface required by Canvas. It deliberately does not depend on DSH. */
 export interface WorkflowCanvasSessionLike {
@@ -92,7 +93,72 @@ export interface WorkflowCanvasConfig {
   readonly authorize?: (
     request: WorkflowCanvasAuthorizationRequest,
   ) => Promise<WorkflowCanvasPrincipal | undefined> | WorkflowCanvasPrincipal | undefined
+  /** Optional host-neutral operations adapters. Canvas remains usable without a trigger deployment. */
+  readonly bindings?: { list(): Promise<readonly CanvasWorkflowTriggerBinding[]> }
+  readonly ingress?: { list(query?: { readonly limit?: number }): Promise<readonly CanvasWorkflowIngressRecord[]> }
+  readonly delivery?: { listAttention(query?: { readonly limit?: number }): Promise<readonly CanvasWorkflowDeliveryRecord[]> }
 }
+
+export interface CanvasWorkflowTriggerBinding {
+  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
+  readonly kind: 'WorkflowBinding'
+  readonly metadata: { readonly id: string; readonly revision: number }
+  readonly spec: {
+    readonly workflow: { readonly id: string; readonly revision: number }
+    readonly trigger: { readonly uses: string; readonly with: CanvasJsonObject }
+    readonly inputMapping: Readonly<Record<string, CanvasJsonValue>>
+    readonly authorityRef: string
+    readonly enabled?: boolean
+    readonly deliveryRef?: string
+  }
+}
+
+export interface CanvasWorkflowTriggerEnvelope {
+  readonly schemaVersion: 1
+  readonly triggerId: string
+  readonly source: string
+  readonly sourceEventId: string
+  readonly receivedAt: number
+  readonly occurredAt?: number
+  readonly payload: CanvasJsonObject
+  readonly metadata?: CanvasJsonObject
+}
+
+export interface CanvasWorkflowIngressRecord {
+  readonly triggerId: string
+  readonly dedupeKey: string
+  readonly binding: { readonly id: string; readonly revision: number }
+  readonly source: string
+  readonly sourceEventId: string
+  readonly status: 'received' | 'rejected' | 'deduplicated' | 'launched'
+  readonly reasonCode?: string
+  readonly runId?: string
+  readonly receivedAt: number
+  readonly envelope: CanvasWorkflowTriggerEnvelope
+  readonly duplicateCount?: number
+  readonly lastDuplicateAt?: number
+  readonly duplicateTriggerIds?: readonly string[]
+}
+
+export interface CanvasWorkflowDeliveryRecord {
+  readonly invocationId: string
+  readonly runId: string
+  readonly deliveryRef: string
+  readonly phase: 'accepted' | 'progress' | 'terminal'
+  readonly payload: CanvasJsonObject
+  readonly status: 'pending' | 'delivered' | 'unknown'
+  readonly attempts: number
+  readonly updatedAt: number
+  readonly error?: string
+}
+
+export interface CanvasOperationsSnapshot {
+  readonly bindings: readonly CanvasWorkflowTriggerBinding[]
+  readonly ingress: readonly CanvasWorkflowIngressRecord[]
+  readonly deliveryAttention: readonly CanvasWorkflowDeliveryRecord[]
+}
+
+export interface CanvasListRequest { readonly limit?: number }
 
 export interface CanvasNodeDefinition {
   /** Unique palette identity; Tool entries share tool.call@1 but have distinct catalog ids. */

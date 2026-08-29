@@ -11,7 +11,7 @@ import {
 import type { DshWorkflowPluginConfig } from './types.js'
 import { WorkflowAuthoringService } from './authoring.js'
 
-export const name = 'dsh-dag-workflow'
+export const name = 'agent-dag-workflow'
 export const inject = ['tools', 'subagents', 'approval', 'skills']
 
 export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}): Promise<void> {
@@ -22,13 +22,13 @@ export async function apply(ctx: Context, config: DshWorkflowPluginConfig = {}):
   if ((config.catalog ?? 'memory') === 'memory') {
     if (ctx.get('workflowTemplates') === undefined) await ctx.plugin(InMemoryWorkflowTemplatesService)
   } else if (ctx.get('workflowTemplates') === undefined) {
-    throw new Error("catalog: 'external' requires a workflowTemplates service to be installed before dsh-dag-workflow")
+    throw new Error("catalog: 'external' requires a workflowTemplates service to be installed before agent-dag-workflow")
   }
 
   if ((config.runStore ?? 'memory') === 'memory') {
     if (ctx.get('workflowRuns') === undefined) await ctx.plugin(InMemoryWorkflowRunsService)
   } else if (ctx.get('workflowRuns') === undefined) {
-    throw new Error("runStore: 'external' requires a workflowRuns service to be installed before dsh-dag-workflow")
+    throw new Error("runStore: 'external' requires a workflowRuns service to be installed before agent-dag-workflow")
   }
 
   await ctx.plugin(DshDagWorkflowEngineService, config)

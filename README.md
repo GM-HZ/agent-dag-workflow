@@ -26,6 +26,7 @@ flowchart LR
 - Script 只做纯 JSON：`core.script@1` 没有网络、文件、环境变量、密钥或 `eval`。含外部副作用的循环必须使用 `core.foreach@1`。
 - 运行可复现：run 固化模板、发布修订、依赖闭包、Engine 版本和 NodeDefinition set hash；Journal 与 Checkpoint 原子提交。
 - Trigger 不进入 DAG：Cron、Webhook、钉钉等只产生可信 Envelope，再通过固定 Binding 启动发布修订。
+- 外部入口不执行 DAG：Trigger 只持久化 run 并入队，Worker 再 claim/lease/resume；接收进程崩溃可从 Ingress 与 Journal 恢复。
 
 完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
@@ -195,6 +196,7 @@ const replay = await runtime.replay({ runId, mode: 'recorded' })
 ```
 
 Recorded Replay 不声称重放模型隐藏思维链。它只使用显式输入、公开内容、结构化输出和按部署 Capture Policy 保存的 Artifact。
+默认 Memory/SQLite Artifact Store 不伪装提供静态加密或自动过期；启用对应策略时必须换成声明了 `encryptionAtRest`/`retentionPolicy` capability 的 Store，否则 Runtime 会拒绝启动。
 
 ## CLI
 
@@ -231,6 +233,7 @@ dsh web
 ```
 
 插件向 DSH 注册 `workflow-builder` Skill，以及查询节点、创建/更新/校验 draft、发布和运行的受保护工具。Canvas 编辑的是同一份 `WorkflowTemplate`，Trace 来自同一份 Journal。
+Canvas 的“触发与投递”页面还能查看 Binding、重复 Ingress、run 关联和状态不确定的 Delivery，并从入口直接打开权威 Trace。
 
 ## Trigger
 
@@ -242,6 +245,8 @@ Trigger 通过不可变 Binding 把可信入口映射到固定发布修订：
 ```
 
 外部 payload 不能指定最终 Authority、幂等键或 Workflow revision。Cron、Webhook 和钉钉只提供 reference adapter；生产部署仍需按平台协议实现可靠 HTTP/消息接收、加密凭据、持久队列和运维告警。
+
+MCP 除控制面 `workflow_*` Tool 外，还会把目录中每个工作流的当前已发布 revision 投影成普通 Tool（例如 `workflow_weekly_ai_r3`）。普通 Agent 直接传入该 Workflow 的输入 JSON，并收到严格符合模板 `outputSchema` 的业务输出；相同 Runtime、Authority 和 Journal 仍负责完整审计，历史 revision 与运行元数据可通过 `workflow_run`/`workflow_trace` 明确访问。
 
 ## 示例与验证
 

@@ -17,6 +17,7 @@ import {
   type WorkflowToolRequest,
 } from '../../src/core/index.js'
 import { WorkflowTemplateCatalog } from '../../src/catalog/index.js'
+import { WorkflowRuntime } from '../../src/runtime/index.js'
 import {
   WorkflowNodeRegistryService,
   WorkflowScriptRuntimeRegistryService,
@@ -26,7 +27,10 @@ import {
   SqliteWorkflowCatalogRepository,
   SqliteWorkflowRunStore,
   SqliteWorkflowRunCoordinator,
+  SqliteWorkflowDeliveryStore,
+  SqliteWorkflowIngressStore,
 } from '../../src/storage/sqlite/index.js'
+import { WorkflowResultDeliveryService, WorkflowRunWorker } from '../../src/triggers/core/index.js'
 import { SqliteWorkflowRunsService, SqliteWorkflowTemplatesService } from '../../src/storage/sqlite/cordis.js'
 
 const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
@@ -38,7 +42,7 @@ afterEach(() => {
 })
 
 function dbPath(): string {
-  const root = mkdtempSync(join(tmpdir(), 'dsh-dag-workflow-sqlite-'))
+  const root = mkdtempSync(join(tmpdir(), 'agent-dag-workflow-sqlite-'))
   temporaryRoots.push(root)
   return join(root, 'workflows.db')
 }
@@ -258,7 +262,7 @@ describe('SQLite workflow catalog repository', () => {
     const initialized = new SqliteWorkflowCatalogRepository({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('DROP TABLE workflow_run_queue; DROP TABLE workflow_run_events; DROP TABLE workflow_runs; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; PRAGMA user_version = 1;')
+    old.exec('DROP TABLE workflow_delivery; DROP TABLE workflow_run_queue; DROP TABLE workflow_run_events; DROP TABLE workflow_runs; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; PRAGMA user_version = 1;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })
@@ -271,7 +275,7 @@ describe('SQLite workflow catalog repository', () => {
     const initialized = new SqliteWorkflowRunStore({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; PRAGMA user_version = 2;')
+    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; PRAGMA user_version = 2;')
     old.close()
 
     const migrated = new SqliteWorkflowRunStore({ path })
@@ -279,13 +283,40 @@ describe('SQLite workflow catalog repository', () => {
     migrated.close()
   })
 
+  it('quarantines an unsupported in-flight legacy checkpoint for operator attention', async () => {
+    const path = dbPath()
+    const underlying = new SqliteWorkflowRunStore({ path })
+    const failing = new OneShotFailingRunStore(underlying, events => events.some(event => event.type === 'run.accepted'))
+    const engine = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: failing })
+    const run = await engine.start({ execution: testExecution, template: toolTemplate(), inputs: { message: 'legacy' } })
+    await expect(run.result).resolves.toMatchObject({ status: 'failed', error: 'simulated crash before SQLite checkpoint commit' })
+    underlying.close()
+
+    const old = new DatabaseSync(path)
+    old.exec(`ALTER TABLE workflow_runs DROP COLUMN plan_json;
+      ALTER TABLE workflow_runs DROP COLUMN launch_json;
+      DROP TABLE workflow_artifacts;
+      DROP TABLE workflow_ingress;
+      DROP TABLE workflow_run_queue;
+      DROP TABLE workflow_delivery;
+      PRAGMA user_version = 4;`)
+    old.close()
+
+    const migrated = new SqliteWorkflowRunStore({ path })
+    const record = await migrated.loadRun(run.id)
+    expect(record?.checkpoint).toMatchObject({ status: 'paused', error: expect.stringContaining('MIGRATION_IN_FLIGHT_UNSUPPORTED') })
+    expect(record?.plan).toMatchObject({ engineVersion: 'migration-unavailable', replayable: false })
+    migrated.close()
+  })
+
   for (const fixture of [
-    { version: 3, sql: 'ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue;' },
-    { version: 4, sql: 'ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue;' },
-    { version: 5, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue;' },
-    { version: 6, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue;' },
-    { version: 7, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_run_queue;' },
-    { version: 8, sql: 'DROP TABLE workflow_run_queue;' },
+    { version: 3, sql: 'ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 4, sql: 'ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 5, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 6, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 7, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 8, sql: 'DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery;' },
+    { version: 9, sql: 'DROP TABLE workflow_delivery;' },
   ]) {
     it(`migrates a real v${fixture.version} schema fixture and reopens idempotently`, async () => {
       const path = dbPath()
@@ -320,6 +351,75 @@ describe('SQLite workflow catalog repository', () => {
     await coordinator.release({ runId: 'run-1', leaseToken: second!.leaseToken })
     expect(await coordinator.claim({ workerId: 'worker-c', leaseMs: 100 })).toBeUndefined()
     coordinator.close()
+  })
+
+  it('allows only one of two SQLite-backed workers to execute a queued run', async () => {
+    const path = dbPath()
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    const repository = new SqliteWorkflowCatalogRepository({ path })
+    const catalog = new WorkflowTemplateCatalog(repository, nodes)
+    const runs = new SqliteWorkflowRunStore({ path })
+    const queueA = new SqliteWorkflowRunCoordinator({ path })
+    const queueB = new SqliteWorkflowRunCoordinator({ path })
+    let calls = 0
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: runs, queue: queueA,
+      services: { tools: { async execute(request) { calls++; await Promise.resolve(); return { echo: request.inputs.message ?? null } } } },
+      authorityResolver: { async resolve(ref) { return { ref } } },
+    })
+    const draft = await catalog.createDraft(toolTemplate())
+    await catalog.publish(draft.id, draft.revision)
+    const queued = await runtime.launch({
+      target: { type: 'published', id: draft.id, revision: 1 }, inputs: { message: 'once' },
+      authorityRef: 'sqlite:worker', origin: { type: 'trigger', source: 'race' }, executionMode: 'background',
+    })
+    const [left, right] = await Promise.all([
+      new WorkflowRunWorker(runtime, queueA).runOnce({ workerId: 'worker-a', leaseMs: 1_000 }),
+      new WorkflowRunWorker(runtime, queueB).runOnce({ workerId: 'worker-b', leaseMs: 1_000 }),
+    ])
+    expect([left, right].filter(value => value !== undefined)).toHaveLength(1)
+    expect(await queued.result).toMatchObject({ status: 'completed', outputs: { answer: 'once' } })
+    expect(calls).toBe(1)
+    queueB.close(); queueA.close(); runs.close(); repository.close()
+  })
+
+  it('persists unknown result-delivery attempts and deduplicates a successful retry across reopen', async () => {
+    const path = dbPath()
+    const firstStore = new SqliteWorkflowDeliveryStore({ path })
+    const first = new WorkflowResultDeliveryService({ async deliver() { throw new Error('response lost') } }, firstStore, () => 100)
+    const request = { runId: 'run-delivery', deliveryRef: 'reply', phase: 'terminal' as const, payload: { ok: true } }
+    await expect(first.deliver(request)).rejects.toThrow('response lost')
+    expect(await firstStore.listAttention()).toEqual([expect.objectContaining({ attempts: 1, status: 'unknown' })])
+    firstStore.close()
+
+    let sends = 0
+    const reopened = new SqliteWorkflowDeliveryStore({ path })
+    const retry = new WorkflowResultDeliveryService({ async deliver() { sends++ } }, reopened, () => 200)
+    await expect(retry.deliver(request)).resolves.toMatchObject({ attempts: 2, status: 'delivered' })
+    await retry.deliver(request)
+    expect(sends).toBe(1)
+    expect(await reopened.listAttention()).toEqual([])
+    reopened.close()
+  })
+
+  it('atomically deduplicates the same ingress event across two SQLite store instances', async () => {
+    const path = dbPath()
+    const left = new SqliteWorkflowIngressStore({ path })
+    const right = new SqliteWorkflowIngressStore({ path })
+    const envelope = { schemaVersion: 1 as const, triggerId: 'left-trigger', source: 'webhook', sourceEventId: 'event-race', receivedAt: 100, payload: {} }
+    const base = {
+      triggerId: envelope.triggerId, dedupeKey: 'binding@1\0webhook\0event-race', binding: { id: 'binding', revision: 1 },
+      source: 'webhook', sourceEventId: 'event-race', status: 'received' as const, receivedAt: 100, envelope,
+    }
+    const [first, second] = await Promise.all([
+      left.acceptOrGet(base),
+      right.acceptOrGet({ ...base, triggerId: 'right-trigger', receivedAt: 101, envelope: { ...envelope, triggerId: 'right-trigger', receivedAt: 101 } }),
+    ])
+    expect([first.accepted, second.accepted].filter(Boolean)).toHaveLength(1)
+    const duplicate = first.accepted ? second.record : first.record
+    expect(duplicate).toMatchObject({ triggerId: 'left-trigger', duplicateCount: 1, duplicateTriggerIds: ['right-trigger'] })
+    expect(await left.list()).toHaveLength(1)
+    right.close(); left.close()
   })
 
   it('publishes the SQLite run store as ctx.workflowRuns', async () => {

@@ -164,7 +164,7 @@ export function workflowFailurePresentation(trace: CanvasTrace | undefined): Wor
 }
 
 export function recoveryStorageKey(sessionId: string): string {
-  return `dsh-dag-workflow:recovery:${sessionId}`
+  return `agent-dag-workflow:recovery:${sessionId}`
 }
 
 export function serializeRecoverySnapshot(snapshot: WorkflowRecoverySnapshot): string {

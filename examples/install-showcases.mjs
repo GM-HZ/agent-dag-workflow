@@ -21,7 +21,7 @@ const showcaseFiles = [
 ]
 const workerRevision = 2
 
-const databasePath = resolve(argumentValue('--db') ?? `${homedir()}/.dsh/dsh-dag-workflow/workflows.db`)
+const databasePath = resolve(argumentValue('--db') ?? `${homedir()}/.dsh/agent-dag-workflow/workflows.db`)
 const repository = new SqliteWorkflowCatalogRepository({ path: databasePath })
 const nodes = new WorkflowNodeRegistry()
 const disposeNodes = registerCoreNodes(nodes)
@@ -31,19 +31,19 @@ try {
   const results = []
   for (const filename of showcaseFiles) {
     const template = parseWorkflowTemplate(readFileSync(resolve(examplesDirectory, filename), 'utf8'))
-    const diagnostics = catalog.validate(template)
+    const diagnostics = await catalog.validate(template)
     const errors = diagnostics.filter(item => item.severity === 'error')
     if (errors.length > 0) throw new Error(`${filename} is invalid:\n${JSON.stringify(errors, null, 2)}`)
     const materialized = materializeWorkflowTemplate(template)
-    const current = repository.readDraft(template.metadata.id)
+    const current = await repository.readDraft(template.metadata.id)
     const draft = current === undefined
-      ? catalog.createDraft(template)
+      ? await catalog.createDraft(template)
       : current.contentHash === materialized.contentHash
         ? current
-        : catalog.updateDraft(current.id, current.revision, template)
+        : await catalog.updateDraft(current.id, current.revision, template)
 
     if (template.metadata.id === 'contract-clause-review-worker') {
-      while (repository.readPublished(draft.id, workerRevision) === undefined) catalog.publish(draft.id, draft.revision)
+      while (await repository.readPublished(draft.id, workerRevision) === undefined) await catalog.publish(draft.id, draft.revision)
       results.push(`${draft.id}: installed draft r${draft.revision}, published immutable revision ${workerRevision}`)
     } else {
       results.push(`${draft.id}: installed draft r${draft.revision}`)

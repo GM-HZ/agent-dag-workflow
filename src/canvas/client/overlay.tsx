@@ -57,7 +57,7 @@ export function WorkflowCanvasOverlay({ remote, sessions, controller }: Workflow
     className="wf-launcher"
     data-workflow-canvas-launcher
     disabled={!canLaunchWorkflowCanvas(snapshot.current)}
-    title={!canLaunchWorkflowCanvas(snapshot.current) ? '请先打开一个 DSH 顶层会话' : '打开 DSH DAG Workflow'}
+    title={!canLaunchWorkflowCanvas(snapshot.current) ? '请先打开一个 Agent 顶层会话' : '打开 Agent DAG Workflow'}
     onClick={() => controller.open()}
   >
     <style>{LAUNCHER_CSS}</style>

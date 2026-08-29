@@ -1,17 +1,18 @@
 ---
 name: workflow-builder
-description: Plan, create, validate, review, publish, and test DSH DAG workflows through guarded workflow tools. Use for requests to build or modify reusable workflows, DAG automations, workflow templates, human approval flows, subworkflows, or foreach pipelines.
+description: Plan, create, validate, review, publish, and test Agent DAG workflows through guarded workflow tools. Use for requests to build or modify reusable workflows, DAG automations, workflow templates, human approval flows, subworkflows, or foreach pipelines.
 ---
 
-# Build DSH workflows
+# Build Agent DAG workflows
 
 Use only the `workflow_*` tools for catalog mutations and runs. Do not write a template directly to disk or claim a node/tool exists without querying the registry.
 
 1. Clarify the workflow goal, inputs, outputs, external side effects, required human decisions, and reuse boundaries. Ask only when an ambiguity changes behavior or authority.
-2. Call `workflow_nodes_list`. Apply the two-level extension rule: select a returned DSH `tool` and use `tool.call@1` for every ordinary external call; select an exact custom `type@version` Node only when the workflow needs lifecycle semantics that a Tool cannot express. `agent.run@1` always uses the current owning DSH Agent context; never add an execution-implementation selector. Restrict `with.outputSchema` to the structured-output dialect advertised by `agent`. Obey all config/input/output schemas. Inspect `scriptRuntimes` before choosing `core.script@1`; never invent a Tool, Node, or language id.
+2. Call `workflow_nodes_list`. Apply the two-level extension rule: select a returned Host `tool` and use `tool.call@1` for every ordinary external call; select an exact custom `type@version` Node only when the workflow needs lifecycle semantics that a Tool cannot express. `agent.run@1` always uses the current owning Agent authority; never add an execution-implementation selector. Restrict `with.outputSchema` to the structured-output dialect advertised by `agent`. Obey all config/input/output schemas. Inspect `scriptRuntimes` before choosing `core.script@1`; never invent a Tool, Node, or language id.
 3. Draft a topology plan first: stable kebab-case template id, stable node ids, node purposes, edges, branch ports, and explicit start/end nodes. Keep ordinary edges acyclic; express iteration only with `core.foreach@1`.
-4. Build the complete `workflow.gm-hz.dev/v1alpha1` JSON template. Use structured bindings (`literal`, `input`, `output`, `secret`) and fixed published revisions for subworkflow/foreach targets. Never invent secret values.
-   - Build `spec.requires` from every selected node's `capabilities/defaultRequirements`, fixed config-derived Tool/Runtime/subworkflow, and every secret reference. A requirement is an allowlist entry, not permission. Never omit it to make validation pass and never add broad unused capabilities.
+4. Build the complete `workflow.gm-hz.dev/v1alpha1` JSON template. Use only the structured bindings `literal`, `input`, and `output`, plus fixed published revisions for subworkflow/foreach targets. Secret values never enter a Binding.
+   - Build `spec.requires` from every selected node's `capabilities/defaultRequirements` and fixed config-derived Tool/Runtime/subworkflow references. A requirement is an allowlist entry, not permission. Never omit it to make validation pass and never add broad unused capabilities.
+   - When an external capability needs credentials, put only a static opaque `credentialRef`/`connectionRef` in that trusted node's config. The Host resolves it at the Gateway boundary; never put the secret value in the template, inputs, Script, Journal, or output.
    - Declare `node.expects.schema` and a reasonable `maxBytes` for dynamic Tool/Agent results before consuming them. The schema covers the complete node output object (for a Tool, usually `{ result: ... }`).
    - Use `core.script@1` for deterministic JSON shaping, field mapping, text formatting, filtering, projection, and aggregation when a listed runtime supports it.
    - The built-in `json.expr@1` reads only `input`, must return one object, and has no I/O. Keep external calls in `tool.call@1`, model reasoning in `agent.run@1`, and human decisions in `human.approval@1`.
@@ -23,6 +24,6 @@ Use only the `workflow_*` tools for catalog mutations and runs. Do not write a t
 8. Publish only when the user already requested publication or confirms after seeing the diff. Call `workflow_publish` with the exact current draft revision; never retry a CAS conflict without reading and reviewing the newer draft.
 9. When requested, call `workflow_run` with an exact published id/revision. Use inline templates only for an explicitly described draft test. Report the run id and paused/needs-attention state without treating it as success.
 
-After creating or updating a draft, keep the user-facing handoff compact: report the workflow name, draft id, current draft revision, validation counts, and the next decision. Tell the user to open **工作流** in DSH to inspect the same template. Do not paste the complete WorkflowTemplate into chat unless the user explicitly asks for the raw JSON. Never imply that the Canvas contains a separate copy.
+After creating or updating a draft, keep the user-facing handoff compact: report the workflow name, draft id, current draft revision, validation counts, and the next decision. If the current Host exposes Canvas, tell the user to open **工作流** to inspect the same template. Do not paste the complete WorkflowTemplate into chat unless the user explicitly asks for the raw JSON. Never imply that the Canvas contains a separate copy.
 
 Keep Canvas and generated content as projections of the same template. Do not create a second DSL or encode runtime behavior in layout fields.

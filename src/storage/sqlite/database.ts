@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 
-export const SQLITE_SCHEMA_VERSION = 9
+export const SQLITE_SCHEMA_VERSION = 10
 export const SQLITE_APPLICATION_ID = 1_146_308_695
 
 export interface SqliteWorkflowOptions {
@@ -47,6 +47,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA application_id = ${SQLITE_APPLICATION_ID}; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 1 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
@@ -55,6 +56,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 2 && applicationId === SQLITE_APPLICATION_ID) {
     const names = tableNames(db)
@@ -68,6 +70,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 3 && applicationId === SQLITE_APPLICATION_ID) {
     addExecutionContext(db)
@@ -76,6 +79,7 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 4 && applicationId === SQLITE_APPLICATION_ID) {
     addExecutionPlan(db)
@@ -83,32 +87,52 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 5 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
     createArtifactTables(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 6 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
     createIngressTables(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 7 && applicationId === SQLITE_APPLICATION_ID) {
     addLaunchMetadata(db)
     createRunQueueTables(db)
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version === 8 && applicationId === SQLITE_APPLICATION_ID) {
     createRunQueueTables(db)
+    createDeliveryTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 9 && applicationId === SQLITE_APPLICATION_ID) {
+    createDeliveryTables(db)
     db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
   const names = tableNames(db)
-  if (names.join(',') !== 'workflow_artifacts,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
+  if (names.join(',') !== 'workflow_artifacts,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
     throw new Error('workflow database required schema objects do not match this build')
   }
+}
+
+function createDeliveryTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE workflow_delivery (
+      invocation_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'unknown')),
+      attempts INTEGER NOT NULL CHECK (attempts >= 1),
+      record_json TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    ) STRICT;
+  `)
 }
 
 function createRunQueueTables(db: DatabaseSync): void {
@@ -207,6 +231,29 @@ function addExecutionContext(db: DatabaseSync): void {
 function addExecutionPlan(db: DatabaseSync): void {
   const fallback = '{"root":{"id":"migration-unavailable","semanticHash":"migration-unavailable","template":{}},"dependencies":[],"engineVersion":"migration-unavailable","nodeDefinitionSetHash":"migration-unavailable","replayable":false}'
   db.exec(`ALTER TABLE workflow_runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT '${fallback}';`)
+  quarantineLegacyInFlightRuns(db)
+}
+
+function quarantineLegacyInFlightRuns(db: DatabaseSync): void {
+  const reason = 'MIGRATION_IN_FLIGHT_UNSUPPORTED: execution plan was not persisted by the source schema; inspect only or restart as a new run'
+  const rows = db.prepare(`SELECT run_id, checkpoint_json FROM workflow_runs WHERE status IN ('running', 'paused')`).all()
+  const update = db.prepare(`UPDATE workflow_runs SET checkpoint_json = ?, status = 'paused', updated_at = ? WHERE run_id = ?`)
+  for (const row of rows) {
+    const record = row as Record<string, unknown>
+    if (typeof record.run_id !== 'string' || typeof record.checkpoint_json !== 'string') throw new Error('legacy workflow run row is invalid')
+    const checkpoint = JSON.parse(record.checkpoint_json) as Record<string, unknown>
+    checkpoint.status = 'paused'
+    checkpoint.error = reason
+    const nodeStates = checkpoint.nodeStates
+    if (nodeStates !== null && typeof nodeStates === 'object' && !Array.isArray(nodeStates)) {
+      for (const [nodeId, status] of Object.entries(nodeStates)) {
+        if (status === 'running' || status === 'waiting') (nodeStates as Record<string, unknown>)[nodeId] = 'needs_attention'
+      }
+    }
+    const updatedAt = Date.now()
+    checkpoint.updatedAt = updatedAt
+    update.run(JSON.stringify(checkpoint), updatedAt, record.run_id)
+  }
 }
 
 function addLaunchMetadata(db: DatabaseSync): void {

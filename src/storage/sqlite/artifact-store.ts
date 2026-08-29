@@ -5,6 +5,7 @@ import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from '.
 export type SqliteWorkflowArtifactStoreOptions = SqliteWorkflowOptions
 
 export class SqliteWorkflowArtifactStore implements WorkflowArtifactStore {
+  readonly capabilities = Object.freeze({ encryptionAtRest: false, retentionPolicy: false })
   readonly #db: DatabaseSync
 
   constructor(options: SqliteWorkflowArtifactStoreOptions) { this.#db = openWorkflowDatabase(options) }

@@ -3,7 +3,7 @@ kind: WorkflowTemplate
 metadata:
   id: tool-echo
   name: Tool echo
-  description: Minimal workflow supported by the v0.1 runtime.
+  description: Minimal host-neutral Tool workflow.
 spec:
   requires:
     - { kind: capability, uses: gateway.tool.execute }

@@ -12,7 +12,7 @@ export class SqliteWorkflowTemplatesService extends RepositoryWorkflowTemplatesS
     const repository = new SqliteWorkflowCatalogRepository(config)
     super(ctx, repository)
     this.repository = repository
-    ctx.effect(() => () => { this.repository.close() }, 'dsh-dag-workflow: close SQLite catalog')
+    ctx.effect(() => () => { this.repository.close() }, 'agent-dag-workflow: close SQLite catalog')
   }
 }
 
@@ -22,7 +22,7 @@ export class SqliteWorkflowRunsService extends WorkflowRunsService {
   constructor(ctx: Context, config: SqliteWorkflowRunStoreOptions) {
     super(ctx)
     this.store = new SqliteWorkflowRunStore(config)
-    ctx.effect(() => () => { this.store.close() }, 'dsh-dag-workflow: close SQLite run store')
+    ctx.effect(() => () => { this.store.close() }, 'agent-dag-workflow: close SQLite run store')
   }
 
   async createRun(record: WorkflowRunRecord): Promise<void> { await this.store.createRun(record) }

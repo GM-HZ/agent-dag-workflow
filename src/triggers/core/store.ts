@@ -7,7 +7,17 @@ export class InMemoryWorkflowIngressStore implements WorkflowIngressStore {
 
   async acceptOrGet(record: WorkflowIngressRecord): Promise<{ readonly record: WorkflowIngressRecord; readonly accepted: boolean }> {
     const priorId = this.#dedupe.get(record.dedupeKey)
-    if (priorId !== undefined) return { record: this.#records.get(priorId)!, accepted: false }
+    if (priorId !== undefined) {
+      const prior = this.#records.get(priorId)!
+      const duplicate = snapshotJsonValue({
+        ...prior,
+        duplicateCount: (prior.duplicateCount ?? 0) + 1,
+        lastDuplicateAt: record.receivedAt,
+        duplicateTriggerIds: [...(prior.duplicateTriggerIds ?? []), record.triggerId].slice(-32),
+      }) as unknown as WorkflowIngressRecord
+      this.#records.set(priorId, duplicate)
+      return { record: duplicate, accepted: false }
+    }
     if (this.#records.has(record.triggerId)) throw new Error(`trigger id already exists with another dedupe key: ${record.triggerId}`)
     const snapshot = snapshotJsonValue(record) as unknown as WorkflowIngressRecord
     this.#records.set(record.triggerId, snapshot)
@@ -19,6 +29,10 @@ export class InMemoryWorkflowIngressStore implements WorkflowIngressStore {
   async markRejected(triggerId: string, reasonCode: string): Promise<void> { this.#transition(triggerId, { status: 'rejected', reasonCode }) }
   async get(triggerId: string): Promise<WorkflowIngressRecord | undefined> { return this.#records.get(triggerId) }
   async listPending(): Promise<readonly WorkflowIngressRecord[]> { return [...this.#records.values()].filter(item => item.status === 'received') }
+  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowIngressRecord[]> {
+    const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
+    return [...this.#records.values()].sort((left, right) => right.receivedAt - left.receivedAt || left.triggerId.localeCompare(right.triggerId)).slice(0, limit)
+  }
 
   #transition(triggerId: string, change: { readonly status: 'launched'; readonly runId: string } | { readonly status: 'rejected'; readonly reasonCode: string }): void {
     const current = this.#records.get(triggerId)

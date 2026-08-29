@@ -31,6 +31,7 @@ import type {
   WorkflowReplayRequest,
   WorkflowRunHandle,
   WorkflowRunSummary,
+  WorkflowRunQueue,
   WorkflowRuntimeApi,
 } from './types.js'
 
@@ -44,6 +45,7 @@ export interface WorkflowRuntimeOptions {
   readonly allowInline?: boolean
   readonly artifactStore?: WorkflowArtifactStore
   readonly capturePolicy?: WorkflowCapturePolicy
+  readonly queue?: WorkflowRunQueue
 }
 
 export class WorkflowRuntime implements WorkflowRuntimeApi {
@@ -57,6 +59,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   readonly #capture: import('../core/index.js').WorkflowDataCaptureGateway
   readonly #capturePolicy: WorkflowCapturePolicy
   readonly #artifactStore: WorkflowArtifactStore | undefined
+  readonly #queue: WorkflowRunQueue | undefined
   readonly #idempotent = new Map<string, { readonly fingerprint: string; readonly handle: Promise<WorkflowRunHandle> }>()
 
   constructor(options: WorkflowRuntimeOptions) {
@@ -67,9 +70,19 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     this.#authorityResolver = options.authorityResolver
     this.#live = options.liveEvents ?? new WorkflowLiveEventBus()
     this.#allowInline = options.allowInline ?? true
+    this.#queue = options.queue
     const policy = options.capturePolicy ?? { mode: 'metadata', maxArtifactBytes: 1024 * 1024 }
     if (!Number.isSafeInteger(policy.maxArtifactBytes) || policy.maxArtifactBytes < 0) throw new Error('capturePolicy.maxArtifactBytes must be a non-negative safe integer')
     if (policy.mode === 'replayable' && options.artifactStore === undefined) throw new Error('replayable capture policy requires an artifact store')
+    if (policy.encryptArtifacts === true && options.artifactStore?.capabilities?.encryptionAtRest !== true) {
+      throw new Error('capturePolicy.encryptArtifacts requires an artifact store with encryptionAtRest capability')
+    }
+    if (policy.retentionDays !== undefined) {
+      if (!Number.isSafeInteger(policy.retentionDays) || policy.retentionDays <= 0) throw new Error('capturePolicy.retentionDays must be a positive safe integer')
+      if (options.artifactStore?.capabilities?.retentionPolicy !== true) {
+        throw new Error('capturePolicy.retentionDays requires an artifact store with retentionPolicy capability')
+      }
+    }
     this.#capturePolicy = policy
     this.#artifactStore = options.artifactStore
     this.#capture = createCaptureGateway(policy, options.artifactStore)
@@ -89,6 +102,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     }) as unknown as import('./types.js').WorkflowNodeDescriptor)
   }
   async listTemplates() { return this.#catalog.list() }
+  async getPublished(id: string, revision?: number) { return this.#catalog.getPublished(id, revision) }
   async createDraft(template: WorkflowTemplate) { return this.#catalog.createDraft(template) }
   async updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate) { return this.#catalog.updateDraft(id, expectedRevision, template) }
   async publish(id: string, expectedDraftRevision: number) { return this.#catalog.publish(id, expectedDraftRevision) }
@@ -119,6 +133,9 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   }
 
   async #launch(request: WorkflowLaunchRequest): Promise<WorkflowRunHandle> {
+    const executionMode = request.executionMode ?? 'foreground'
+    if (executionMode === 'background' && this.#queue === undefined) throw new Error('background workflow launch requires a WorkflowRunQueue')
+    if (executionMode === 'background' && this.#authorityResolver === undefined) throw new Error('background workflow launch requires a WorkflowAuthorityResolver for worker recovery')
     const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.signal)
     const root = request.target.type === 'published'
       ? await this.#publishedEntry(request.target.id, request.target.revision)
@@ -141,12 +158,13 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       const existing = await this.#runStore.loadRun(runId)
       if (existing !== undefined) {
         assertIdempotentLaunch(existing, request, plan, inputs)
+        if (executionMode === 'background' && existing.checkpoint.status === 'running') await this.#queue!.enqueue(existing.runId)
         return this.#persistedHandle(existing)
       }
     }
     let run: WorkflowRun
     try {
-      run = await engine.start({
+      const startRequest = {
         ...(runId === undefined ? {} : { runId }),
         template: root.template,
         plan,
@@ -156,12 +174,17 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         ...(request.deliveryRef === undefined ? {} : { deliveryRef: request.deliveryRef }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
         onEvent: emit,
-      })
+      }
+      run = executionMode === 'background'
+        ? await engine.queue(startRequest)
+        : await engine.start(startRequest)
+      if (executionMode === 'background') await this.#queue!.enqueue(run.id)
     } catch (error: unknown) {
       if (runId === undefined || !isRunAlreadyExists(error)) throw error
       const existing = await this.#runStore.loadRun(runId)
       if (existing === undefined) throw error
       assertIdempotentLaunch(existing, request, plan, inputs)
+      if (executionMode === 'background' && existing.checkpoint.status === 'running') await this.#queue!.enqueue(existing.runId)
       return this.#persistedHandle(existing)
     }
     return this.#handle(run)
@@ -434,6 +457,8 @@ function launchRequestFingerprint(request: WorkflowLaunchRequest): string {
     .update(stableJsonStringify(request.inputs))
     .update('\0')
     .update(request.deliveryRef ?? '')
+    .update('\0')
+    .update(request.executionMode ?? 'foreground')
     .digest('hex')
 }
 
@@ -446,6 +471,7 @@ function assertIdempotentLaunch(
   const matches = record.execution.authorityRef === request.authorityRef
     && record.launch.idempotencyKey === request.idempotencyKey
     && record.launch.deliveryRef === request.deliveryRef
+    && (record.launch.executionMode ?? 'foreground') === (request.executionMode ?? 'foreground')
     && record.semanticHash === plan.root.semanticHash
     && stableJsonStringify(record.inputs) === stableJsonStringify(inputs)
   if (!matches) throw new Error(`idempotency key is already bound to a different immutable launch: ${request.idempotencyKey}`)

@@ -39,7 +39,7 @@ export class WorkflowAuthoringService {
   static inject = ['tools', 'subagents', 'skills', 'workflowNodes', 'workflowScripts', 'workflowTemplates', 'dagWorkflowEngine']
 
   constructor(ctx: Context) {
-    ctx.effect(() => registerWorkflowAuthoring(ctx), 'dsh-dag-workflow: authoring tools and skill')
+    ctx.effect(() => registerWorkflowAuthoring(ctx), 'agent-dag-workflow: authoring tools and skill')
   }
 }
 
@@ -49,8 +49,8 @@ export function registerWorkflowAuthoring(rawContext: Context): () => void {
   const skillContent = readFileSync(new URL('../../../skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')
   disposers.push(ctx.skills.register({
     name: 'workflow-builder',
-    description: 'Plan, create, validate, review, publish, and test DSH DAG workflows through the guarded workflow tools. Use for requests to build or modify reusable workflows, DAG automations, or workflow templates.',
-    source: 'bundled:dsh-dag-workflow',
+    description: 'Plan, create, validate, review, publish, and test Agent DAG workflows through guarded workflow tools. Use for requests to build or modify reusable workflows, DAG automations, or workflow templates.',
+    source: 'bundled:agent-dag-workflow',
     content: stripFrontmatter(skillContent),
     invocation: { modelInvocable: true, userInvocable: true },
   }))
@@ -178,8 +178,8 @@ function currentAgentCapabilities(runtime: DshSubagentRuntimeLike): {
   readonly toolFilter: boolean
   readonly persona: boolean
 } {
-  const capabilities = (runtime.list?.() ?? [])
-    .map(name => runtime.getProvider?.(name)?.capabilities)
+  const capabilities = runtime.list()
+    .map(name => runtime.getProvider(name)?.capabilities)
     .filter(value => value !== undefined)
   return {
     outputSchema: capabilities.some(value => value.outputSchema),

@@ -29,8 +29,8 @@ export interface DshSubagentRunLike {
 }
 
 export interface DshSubagentRuntimeLike {
-  list?(): readonly string[]
-  getProvider?(name: string): {
+  list(): readonly string[]
+  getProvider(name: string): {
     readonly capabilities: {
       readonly outputSchema: boolean
       readonly depthLimit: boolean

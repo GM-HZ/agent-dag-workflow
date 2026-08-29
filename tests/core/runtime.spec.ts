@@ -3,15 +3,19 @@ import { WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import { InMemoryWorkflowCatalogRepository } from '../../src/catalog/repository.js'
 import {
   InMemoryWorkflowRunStore,
+  endNodeDefinition,
+  startNodeDefinition,
   WorkflowNodeRegistry,
   registerCoreNodes,
   type WorkflowEvent,
   type WorkflowRunCheckpoint,
   type WorkflowTemplate,
+  type WorkflowNodeDefinition,
 } from '../../src/core/index.js'
 import { WorkflowLiveEventBus, WorkflowRuntime, type WorkflowLiveEvent } from '../../src/runtime/index.js'
 import { InMemoryWorkflowArtifactStore, type WorkflowArtifactStore } from '../../src/journal/index.js'
 import { toolWorkflowTemplate } from './fixtures.js'
+import { InMemoryWorkflowRunCoordinator, WorkflowRunWorker } from '../../src/triggers/core/index.js'
 
 function setup() {
   const nodes = new WorkflowNodeRegistry()
@@ -46,6 +50,82 @@ describe('host-neutral WorkflowRuntime', () => {
     expect((await stream.next()).value?.liveSeq).toBe(3)
     bus.close('run-live')
     expect((await stream.next()).done).toBe(true)
+  })
+
+  it('projects checkpointed progress live, persists it in Journal, and closes subscriptions', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    nodes.register(startNodeDefinition)
+    nodes.register(endNodeDefinition)
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const progressNode: WorkflowNodeDefinition = {
+      type: 'test.progress', version: 1, title: 'Progress', description: 'Checkpoint progress',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], retry: 'safe', implementationDigest: 'test-progress-v1',
+      async execute(context) { await gate; await context.checkpointProgress({ percent: 50 }); return { outputs: { done: true } } },
+    }
+    nodes.register(progressNode)
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'live-progress', name: 'Live progress' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object', required: ['done'], properties: { done: { type: 'boolean' } } },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'progress', uses: 'test.progress@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { done: { output: { nodeId: 'progress', path: ['done'] } } } },
+        ],
+        edges: [{ id: 'a', source: 'start', target: 'progress' }, { id: 'b', source: 'progress', target: 'end' }],
+        outputs: { done: { output: { nodeId: 'end', path: ['done'] } } },
+      },
+    }
+    const runs = new InMemoryWorkflowRunStore()
+    const runtime = new WorkflowRuntime({ nodes, catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes), runStore: runs })
+    const handle = await runtime.launch({ target: { type: 'inline', template }, inputs: {}, authorityRef: 'live:test', authority: {}, origin: { type: 'sdk' } })
+    const stream = handle.live()[Symbol.asyncIterator]()
+    release()
+    const live = await stream.next()
+    expect(live.value).toMatchObject({ runId: handle.runId, nodeId: 'progress', type: 'node.progress', data: { progress: { percent: 50 } } })
+    expect(await handle.result).toMatchObject({ status: 'completed', outputs: { done: true } })
+    expect((await stream.next()).done).toBe(true)
+    const journal = (await runtime.readEvents(handle.runId, { limit: 100 })).events.find(event => event.type === 'node.progress')
+    expect(journal?.seq).toBe(live.value?.liveSeq)
+    expect(journal?.payload).toEqual({ progress: { percent: 50 } })
+
+    const controller = new AbortController()
+    const cancelled = new WorkflowLiveEventBus().subscribe('never', controller.signal)[Symbol.asyncIterator]()
+    controller.abort()
+    expect((await cancelled.next()).done).toBe(true)
+  })
+
+  it('pins implementation digests and refuses incompatible or non-replayable plans', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    let disposeStart = nodes.register({ ...startNodeDefinition, implementationDigest: 'start-build-a' })
+    let disposeEnd = nodes.register({ ...endNodeDefinition, implementationDigest: 'end-build-a' })
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const runs = new InMemoryWorkflowRunStore()
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'digest-lock', name: 'Digest lock' },
+      spec: { inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, nodes: [
+        { id: 'start', uses: 'core.start@1', with: {}, inputs: {} }, { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+      ], edges: [{ id: 'edge', source: 'start', target: 'end' }], outputs: {} },
+    }
+    const runtime = new WorkflowRuntime({ nodes, catalog, runStore: runs })
+    const source = await runtime.launch({ target: { type: 'inline', template }, inputs: {}, authorityRef: 'digest:test', authority: {}, origin: { type: 'sdk' } })
+    expect((await source.result).status).toBe('completed')
+    disposeStart(); disposeEnd()
+    disposeStart = nodes.register({ ...startNodeDefinition, implementationDigest: 'start-build-b' })
+    disposeEnd = nodes.register({ ...endNodeDefinition, implementationDigest: 'end-build-b' })
+    await expect(runtime.resume({ runId: source.runId, authorityRef: 'digest:test', authority: {} })).rejects.toThrow('node definition set hash')
+    disposeStart(); disposeEnd()
+
+    const { implementationDigest: _startDigest, ...startWithoutDigest } = startNodeDefinition
+    const { implementationDigest: _endDigest, ...endWithoutDigest } = endNodeDefinition
+    nodes.register(startWithoutDigest)
+    nodes.register(endWithoutDigest)
+    const nonReplayable = await runtime.launch({ target: { type: 'inline', template: { ...template, metadata: { id: 'missing-digest', name: 'Missing digest' } } }, inputs: {}, authorityRef: 'digest:test', authority: {}, origin: { type: 'sdk' } })
+    expect((await nonReplayable.result).status).toBe('completed')
+    expect((await runs.loadRun(nonReplayable.runId))?.plan.replayable).toBe(false)
+    await expect(runtime.replay({ runId: nonReplayable.runId, mode: 'recorded' })).rejects.toThrow('implementation digests')
   })
 
   it('locks published plans, emits envelope v1, pages Journal, and replays without external calls', async () => {
@@ -107,6 +187,44 @@ describe('host-neutral WorkflowRuntime', () => {
 
     await expect(secondRuntime.launch({ ...request, inputs: { message: 'different' } }))
       .rejects.toThrow('different immutable launch')
+  })
+
+  it('persists a background launch without executing it in the ingress process', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const runs = new InMemoryWorkflowRunStore()
+    const queue = new InMemoryWorkflowRunCoordinator()
+    const execute = vi.fn(async (request: import('../../src/core/index.js').WorkflowToolRequest) => ({ echo: request.inputs.message ?? null }))
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: runs, queue, services: { tools: { execute } },
+      authorityResolver: { async resolve(ref) { return { ref } } },
+    })
+    const draft = await catalog.createDraft(toolWorkflowTemplate())
+    await catalog.publish(draft.id, draft.revision)
+    const handle = await runtime.launch({
+      target: { type: 'published', id: draft.id, revision: 1 }, inputs: { message: 'background' },
+      authorityRef: 'worker:user', origin: { type: 'trigger', source: 'test' },
+      idempotencyKey: 'event-1', executionMode: 'background',
+    })
+    expect(execute).not.toHaveBeenCalled()
+    expect((await runtime.getRun(handle.runId))?.status).toBe('running')
+    expect((await runtime.readEvents(handle.runId, { limit: 100 })).events.map(event => event.type))
+      .toEqual(['run.accepted', 'run.queued', 'node.ready', 'checkpoint.committed'])
+
+    const workerResult = await new WorkflowRunWorker(runtime, queue).runOnce({ workerId: 'worker-1', leaseMs: 1_000 })
+    expect(workerResult).toMatchObject({ status: 'completed', outputs: { answer: 'background' } })
+    expect(await handle.result).toMatchObject({ status: 'completed', outputs: { answer: 'background' } })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect((await runtime.readEvents(handle.runId, { limit: 100 })).events.map(event => event.type)).toContain('run.started')
+
+    const duplicate = await runtime.launch({
+      target: { type: 'published', id: draft.id, revision: 1 }, inputs: { message: 'background' },
+      authorityRef: 'worker:user', origin: { type: 'trigger', source: 'retry' },
+      idempotencyKey: 'event-1', executionMode: 'background',
+    })
+    expect(duplicate.runId).toBe(handle.runId)
+    expect(await queue.claim({ workerId: 'worker-2', leaseMs: 1_000 })).toBeUndefined()
   })
 
   it('recreates the locked subworkflow gateway when resuming a crashed parent', async () => {
@@ -196,6 +314,16 @@ describe('host-neutral WorkflowRuntime', () => {
       const ref = event.payload.artifact as unknown as import('../../src/journal/index.js').WorkflowArtifactRef
       expect(await artifacts.read([ref])).toHaveLength(1)
     }
+  })
+
+  it('rejects encryption and retention promises unsupported by the configured artifact store', () => {
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const common = { nodes, catalog, runStore: new InMemoryWorkflowRunStore(), artifactStore: new InMemoryWorkflowArtifactStore() }
+    expect(() => new WorkflowRuntime({ ...common, capturePolicy: { mode: 'standard', maxArtifactBytes: 1024, encryptArtifacts: true } }))
+      .toThrow('encryptionAtRest capability')
+    expect(() => new WorkflowRuntime({ ...common, capturePolicy: { mode: 'standard', maxArtifactBytes: 1024, retentionDays: 30 } }))
+      .toThrow('retentionPolicy capability')
   })
 
   it('refuses recorded replay when required artifacts are missing, redacted, or inconsistent', async () => {

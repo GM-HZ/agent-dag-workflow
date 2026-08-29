@@ -487,7 +487,7 @@ export interface WorkflowRunRecord {
   readonly plan: WorkflowExecutionPlanSnapshot
   readonly inputs: JsonObject
   readonly execution: Omit<WorkflowExecutionContext, 'authority'>
-  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string }
+  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string; readonly executionMode?: 'foreground' | 'background' }
   readonly createdAt: number
   readonly checkpoint: WorkflowRunCheckpoint
   readonly events: readonly WorkflowEvent[]
@@ -499,7 +499,7 @@ export interface WorkflowRunMetadata {
   readonly semanticHash: string
   readonly plan: WorkflowExecutionPlanSnapshot
   readonly execution: Omit<WorkflowExecutionContext, 'authority'>
-  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string }
+  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string; readonly executionMode?: 'foreground' | 'background' }
   readonly createdAt: number
 }
 

@@ -1,7 +1,8 @@
-import { snapshotJsonObject, snapshotJsonValue } from './json.js'
+import { snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 import type { WorkflowRunCheckpoint, WorkflowRunRecord, WorkflowRunStore } from './types.js'
 
 export type WorkflowRunStoreErrorCode = 'RUN_ALREADY_EXISTS' | 'RUN_NOT_FOUND' | 'RUN_SEQUENCE_CONFLICT' | 'RUN_COMMIT_INVALID'
+export const MAX_WORKFLOW_COMMIT_BYTES = 16 * 1024 * 1024
 
 export class WorkflowRunStoreError extends Error {
   readonly code: WorkflowRunStoreErrorCode
@@ -96,6 +97,10 @@ function validateCommit(
   }
   if (checkpoint.runId !== runId || checkpoint.seq !== expectedSeq + events.length || checkpoint.version !== 1) {
     throw new WorkflowRunStoreError('RUN_COMMIT_INVALID', 'checkpoint identity/sequence does not match committed events')
+  }
+  const bytes = Buffer.byteLength(stableJsonStringify({ checkpoint, events } as unknown as import('./types.js').JsonValue), 'utf8')
+  if (bytes > MAX_WORKFLOW_COMMIT_BYTES) {
+    throw new WorkflowRunStoreError('RUN_COMMIT_INVALID', `workflow run commit is ${bytes} bytes, limit is ${MAX_WORKFLOW_COMMIT_BYTES}`)
   }
 }
 

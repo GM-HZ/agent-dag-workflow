@@ -7,11 +7,14 @@ export interface CronTriggerOptions {
   readonly timezone: string
   readonly sourceEventPrefix?: string
   readonly payload?: JsonObject
+  readonly misfirePolicy?: 'skip' | 'fire-once'
+  readonly now?: () => number
 }
 
 export function createCronTrigger(options: CronTriggerOptions) {
   validateCron(options.expression)
   new Intl.DateTimeFormat('en-US', { timeZone: options.timezone }).format(0)
+  const now = options.now ?? Date.now
   return {
     matches(time: Date): boolean { return matchesCron(options.expression, zonedParts(time, options.timezone)) },
     envelope(time: Date): WorkflowTriggerEnvelope {
@@ -22,11 +25,28 @@ export function createCronTrigger(options: CronTriggerOptions) {
         triggerId: randomUUID(),
         source: 'cron',
         sourceEventId,
-        receivedAt: Date.now(),
+        receivedAt: now(),
         occurredAt: minute,
         payload: options.payload ?? {},
         metadata: { expression: options.expression, timezone: options.timezone, scheduledAt: minute },
       }
+    },
+    dueBetween(lastCheckedExclusive: Date, current: Date): readonly WorkflowTriggerEnvelope[] {
+      if (!Number.isFinite(lastCheckedExclusive.getTime()) || !Number.isFinite(current.getTime())
+        || current.getTime() < lastCheckedExclusive.getTime()) throw new Error('cron scheduler window is invalid')
+      const start = Math.floor(lastCheckedExclusive.getTime() / 60_000) * 60_000 + 60_000
+      const end = Math.floor(current.getTime() / 60_000) * 60_000
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end < start - 60_000) throw new Error('cron scheduler window is invalid')
+      if (end - start > 366 * 24 * 60 * 60_000) throw new Error('cron scheduler window exceeds 366 days')
+      const matches: Date[] = []
+      for (let value = start; value <= end; value += 60_000) {
+        const candidate = new Date(value)
+        if (matchesCron(options.expression, zonedParts(candidate, options.timezone))) matches.push(candidate)
+      }
+      const selected = options.misfirePolicy === 'fire-once'
+        ? matches.slice(-1)
+        : matches.filter(candidate => candidate.getTime() === end)
+      return selected.map(candidate => this.envelope(candidate))
     },
   }
 }

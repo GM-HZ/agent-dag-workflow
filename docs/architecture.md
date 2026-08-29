@@ -130,6 +130,7 @@ launch / resume / getRun / readEvents / replay
 - Event seq 连续；
 - Event batch 与 Checkpoint 同事务；
 - `expectedSeq` CAS；
+- 单次 Checkpoint + Event batch 不超过明确的 16 MiB 上限；
 - Observer 只在提交成功后接收，且 Observer 失败不影响运行；
 - 输出通过 lossless JSON、大小、NodeDefinition Schema 和实例 `expects` 后才能提交。
 
@@ -140,6 +141,7 @@ Replay 分为：
 - `live`：创建新 run，重新调用外部能力。
 
 Artifact 使用内容寻址保存捕获数据。Capture Policy 属于部署配置，模板不能放宽它；Secret 明文不能进入 Binding、Event、Checkpoint、Artifact 或 Live Event。
+内存与默认 SQLite Artifact Store 不宣称静态加密或自动过期；若部署配置 `encryptArtifacts` 或 `retentionDays`，Store 必须显式声明对应 capability，否则 Runtime fail closed。
 
 ## 6. Trigger、Worker 与投递
 
@@ -159,9 +161,10 @@ Envelope 不接收来源自报的最终 Authority 或幂等键。Ingress 使用 
 
 Ingress 与 run create 可以同事务，也可以使用“持久 Ingress + 稳定幂等 runId + recoverPending”达到 outbox 等价效果。launch 已成功但关联写入失败时，Ingress 必须保持 `received`，不能误记为 `rejected`。
 
-本地 SQLite Coordinator 提供 queue、claim、lease、heartbeat 和过期接管。它不承诺 exactly-once：多 Worker 仍需要 lease fencing、Journal CAS、稳定 invocationId、Gateway 幂等和 unknown-state 策略共同工作。
+外部 Trigger 使用 background launch：Ingress 只原子保存 run/queue 事实，不在接收进程执行 DAG；Worker claim 后通过同一个 Runtime `resume` 执行。本地 SQLite Coordinator 提供 queue、claim、lease、heartbeat 和过期接管。它不承诺 exactly-once：多 Worker 仍需要 lease fencing、Journal CAS、稳定 invocationId、Gateway 幂等和 unknown-state 策略共同工作。
 
 Result Delivery 是独立外部副作用，使用 `runId + deliveryRef + phase` 生成稳定 invocationId；状态不明时保留 attempt 并以同一 invocationId 重试，不改变 Workflow 已完成事实。
+Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unknown Delivery 和 Journal Trace；这些仍是同一事实存储的只读投影，不是第二套状态模型。
 
 ## 7. 单包与 Adapter 隔离
 
@@ -188,7 +191,7 @@ Result Delivery 是独立外部副作用，使用 `runId + deliveryRef + phase` 
 - Store Schema：SQLite `user_version` 顺序事务迁移，每个历史 fixture 都要验证；
 - Template Protocol：0.2 只通过离线命令转换，运行时不双解析；
 - Node Definition：破坏性语义升级 `uses@major`，生成新发布 revision；
-- In-flight Checkpoint：不猜测迁移，生产升级使用 drain 或旧 Worker 完成。
+- In-flight Checkpoint：不猜测迁移；无法证明兼容的旧运行会被显式隔离为 `paused` 并标记 operator attention，生产升级仍优先 drain 或由旧 Worker 完成。
 
 Migration 不等于运行时兼容层。Core 不注册旧 API Version 或旧节点别名。
 

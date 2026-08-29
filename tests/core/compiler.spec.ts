@@ -12,7 +12,7 @@ import {
 import { toolWorkflowTemplate } from './fixtures.js'
 
 describe('workflow compiler', () => {
-  it('parses and compiles the checked-in v0.1 YAML example', () => {
+  it('parses and compiles the checked-in YAML example', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const source = readFileSync(new URL('../../examples/tool-echo.workflow.yaml', import.meta.url), 'utf8')

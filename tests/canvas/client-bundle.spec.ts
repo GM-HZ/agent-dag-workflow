@@ -21,7 +21,9 @@ describe('DSH Canvas client artifact', () => {
   it('ships the recoverable light-first studio and follows the DSH theme signal', async () => {
     const artifact = await readFile(new URL('../../lib/canvas/client.js', import.meta.url), 'utf8')
 
-    expect(artifact).toContain('DSH DAG Workflow')
+    expect(artifact).toContain('AGENT DAG WORKFLOW')
+    expect(artifact).toContain('Agent DAG Workflow')
+    expect(artifact).not.toContain('DSH DAG Workflow')
     expect(artifact).toContain('已恢复未保存内容')
     expect(artifact).toContain('搜索工作流节点')
     expect(artifact).toContain('显示底层事件')

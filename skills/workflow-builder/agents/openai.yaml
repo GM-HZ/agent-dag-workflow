@@ -1,4 +1,4 @@
 interface:
-  display_name: "DSH Workflow Builder"
-  short_description: "Build and validate reusable DSH DAG workflows"
-  default_prompt: "Use $workflow-builder to design, validate, and review a reusable DSH DAG workflow."
+  display_name: "Agent Workflow Builder"
+  short_description: "Build and validate reusable Agent DAG workflows"
+  default_prompt: "Use $workflow-builder to design, validate, and review a reusable Agent DAG workflow."

@@ -13,7 +13,18 @@ export class SqliteWorkflowIngressStore implements WorkflowIngressStore {
   async acceptOrGet(record: WorkflowIngressRecord): Promise<{ readonly record: WorkflowIngressRecord; readonly accepted: boolean }> {
     return transaction(this.#db, () => {
       const prior = this.#db.prepare('SELECT record_json FROM workflow_ingress WHERE dedupe_key = ?').get(record.dedupeKey)
-      if (prior !== undefined) return { record: decode(text(prior, 'record_json')), accepted: false }
+      if (prior !== undefined) {
+        const current = decode(text(prior, 'record_json'))
+        const duplicate = snapshotJsonValue({
+          ...current,
+          duplicateCount: (current.duplicateCount ?? 0) + 1,
+          lastDuplicateAt: record.receivedAt,
+          duplicateTriggerIds: [...(current.duplicateTriggerIds ?? []), record.triggerId].slice(-32),
+        }) as unknown as WorkflowIngressRecord
+        this.#db.prepare('UPDATE workflow_ingress SET record_json = ?, updated_at = ? WHERE dedupe_key = ?')
+          .run(encode(duplicate), record.receivedAt, record.dedupeKey)
+        return { record: duplicate, accepted: false }
+      }
       this.#db.prepare(`INSERT INTO workflow_ingress (trigger_id, dedupe_key, status, record_json, updated_at)
         VALUES (?, ?, 'received', ?, ?)`)
         .run(record.triggerId, record.dedupeKey, encode(record), record.receivedAt)
@@ -29,6 +40,11 @@ export class SqliteWorkflowIngressStore implements WorkflowIngressStore {
   }
   async listPending(): Promise<readonly WorkflowIngressRecord[]> {
     return this.#db.prepare(`SELECT record_json FROM workflow_ingress WHERE status = 'received' ORDER BY updated_at, trigger_id`).all()
+      .map(row => decode(text(row, 'record_json')))
+  }
+  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowIngressRecord[]> {
+    const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
+    return this.#db.prepare('SELECT record_json FROM workflow_ingress ORDER BY updated_at DESC, trigger_id LIMIT ?').all(limit)
       .map(row => decode(text(row, 'record_json')))
   }
 

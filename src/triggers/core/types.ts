@@ -43,6 +43,9 @@ export interface WorkflowIngressRecord {
   readonly runId?: string
   readonly receivedAt: number
   readonly envelope: WorkflowTriggerEnvelope
+  readonly duplicateCount?: number
+  readonly lastDuplicateAt?: number
+  readonly duplicateTriggerIds?: readonly string[]
 }
 
 export interface WorkflowIngressStore {
@@ -51,4 +54,5 @@ export interface WorkflowIngressStore {
   markRejected(triggerId: string, reasonCode: string): Promise<void>
   get(triggerId: string): Promise<WorkflowIngressRecord | undefined>
   listPending(): Promise<readonly WorkflowIngressRecord[]>
+  list(query?: { readonly limit?: number }): Promise<readonly WorkflowIngressRecord[]>
 }

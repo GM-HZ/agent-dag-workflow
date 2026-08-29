@@ -2,7 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { WorkflowCanvasGateway } from './host.js'
 import type { WorkflowCanvasConfig } from './types.js'
 
-export const name = 'dsh-dag-workflow-canvas'
+export const name = 'agent-dag-workflow-canvas'
 export const inject = ['workflowNodes', 'workflowTemplates', 'workflowRuns', 'dagWorkflowEngine', 'agents']
 
 export async function apply(ctx: Context, config: WorkflowCanvasConfig = {}): Promise<void> {

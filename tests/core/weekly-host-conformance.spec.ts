@@ -15,6 +15,7 @@ import {
   type WorkflowEngineServices,
 } from '../../src/core/index.js'
 import { WorkflowRuntime } from '../../src/runtime/index.js'
+import { InMemoryWorkflowArtifactStore } from '../../src/journal/index.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -25,7 +26,7 @@ const template = parseWorkflowTemplate(readFileSync(templatePath, 'utf8'))
 const inputs = { from: '2026-08-19T00:00:00+08:00', to: '2026-08-25T23:59:59+08:00' }
 
 describe('weekly AI model workflow Host conformance', () => {
-  it('keeps SDK, MCP, and CLI output and Journal contracts aligned with the DSH case', async () => {
+  it('keeps SDK, MCP, and CLI output and Journal contracts aligned with the adapter case', async () => {
     const sdk = fixtureRuntime()
     const sdkHandle = await sdk.runtime.launch({
       target: { type: 'inline', template }, inputs, authorityRef: 'sdk:test', authority: {}, origin: { type: 'sdk' },
@@ -33,6 +34,14 @@ describe('weekly AI model workflow Host conformance', () => {
     const sdkResult = await sdkHandle.result
     if (sdkResult.status !== 'completed') throw new Error(sdkResult.error)
     expect(sdkResult.status).toBe('completed')
+    expect(sdk.toolCalls).toBe(13)
+    expect(sdk.agentCalls).toBe(4)
+    const replay = await sdk.runtime.replay({ runId: sdkHandle.runId, mode: 'recorded' })
+    const replayResult = await replay.result
+    expect(replayResult).toMatchObject({ status: 'completed', outputs: sdkResult.outputs })
+    expect(replayResult.events.filter(event => event.type === 'capability.replayed')).toHaveLength(17)
+    expect(sdk.toolCalls).toBe(13)
+    expect(sdk.agentCalls).toBe(4)
 
     const mcpFixture = fixtureRuntime()
     const draft = await mcpFixture.runtime.createDraft(template)
@@ -79,11 +88,20 @@ function fixtureRuntime() {
   const nodes = new WorkflowNodeRegistry()
   registerCoreNodes(nodes)
   const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
-  const runtime = new WorkflowRuntime({ nodes, catalog, runStore: new InMemoryWorkflowRunStore(), services: weeklyServices() })
-  return { runtime }
+  let toolCalls = 0
+  let agentCalls = 0
+  const runtime = new WorkflowRuntime({
+    nodes,
+    catalog,
+    runStore: new InMemoryWorkflowRunStore(),
+    artifactStore: new InMemoryWorkflowArtifactStore(),
+    capturePolicy: { mode: 'replayable', maxArtifactBytes: 2 * 1024 * 1024 },
+    services: weeklyServices(() => { toolCalls++ }, () => { agentCalls++ }),
+  })
+  return { runtime, get toolCalls() { return toolCalls }, get agentCalls() { return agentCalls } }
 }
 
-function weeklyServices(): WorkflowEngineServices {
+function weeklyServices(onTool = () => {}, onAgent = () => {}): WorkflowEngineServices {
   const items = Array.from({ length: 100 }, (_, index) => {
     const publishedAt = `2026-08-${String(19 + (index % 7)).padStart(2, '0')}T${String(index % 24).padStart(2, '0')}:00:00+08:00`
     const url = `https://source.example/ai-model-${index}`
@@ -91,10 +109,12 @@ function weeklyServices(): WorkflowEngineServices {
   })
   return {
     tools: { async execute(request) {
+      onTool()
       if (request.uses !== 'web_search') throw new Error(`unexpected Tool: ${request.uses}`)
       return { content: request.nodeId, sources: items.slice(0, 8).map(item => ({ url: item.url, title: item.title, snippet: item.summary, publishedAt: item.publishedAt })), truncated: true }
     } },
     agents: { async execute(request) {
+      onAgent()
       let structured: JsonValue
       if (request.nodeId === 'plan-searches') structured = { batches: Array.from({ length: 13 }, (_, batch) => ({ queries: Array.from({ length: 4 }, (_, query) => `AI model topic ${batch}-${query}`) })) }
       else if (request.nodeId === 'normalize-news') structured = { items }

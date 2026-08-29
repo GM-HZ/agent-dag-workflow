@@ -1,8 +1,12 @@
 import { createHmac } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { InMemoryWorkflowDeliveryStore, InMemoryWorkflowIngressStore, InMemoryWorkflowRunCoordinator, WorkflowResultDeliveryService, WorkflowRunWorker, WorkflowTriggerIngress, type WorkflowTriggerBinding } from '../../src/triggers/core/index.js'
+import { InMemoryWorkflowDeliveryStore, InMemoryWorkflowIngressStore, InMemoryWorkflowRunCoordinator, WorkflowResultDeliveryService, WorkflowRunWorker, WorkflowTriggerIngress, workflowDeliveryInvocationId, workflowIngressDedupeKey, type WorkflowTriggerBinding } from '../../src/triggers/core/index.js'
 import { createCronTrigger } from '../../src/triggers/cron/index.js'
 import { WebhookTriggerAdapter } from '../../src/triggers/webhook/index.js'
+import { DingTalkTriggerAdapter, DingTalkWorkflowChannel, DingTalkWorkflowRouter } from '../../src/triggers/dingtalk/index.js'
+import { InMemoryWorkflowRunStore, registerCoreNodes, WorkflowNodeRegistry, type WorkflowTemplate } from '../../src/core/index.js'
+import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../../src/catalog/index.js'
+import { WorkflowRuntime } from '../../src/runtime/index.js'
 
 const binding: WorkflowTriggerBinding = {
   apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'hook', revision: 1 },
@@ -26,10 +30,24 @@ describe('trigger ingress', () => {
     const duplicate = await ingress.ingest(binding, { ...envelope, triggerId: 'trigger-2' })
     expect(first).toMatchObject({ status: 'launched', runId: 'run-1' })
     expect(duplicate.runId).toBe('run-1')
+    expect(duplicate).toMatchObject({ status: 'deduplicated', duplicateCount: 1, duplicateTriggerIds: ['trigger-2'] })
+    expect(await store.get('trigger-1')).toMatchObject({ status: 'launched', duplicateCount: 1, lastDuplicateAt: 100 })
     expect(launch).toHaveBeenCalledTimes(1)
     expect(launch).toHaveBeenCalledWith(expect.objectContaining({
-      authorityRef: 'service:hook', idempotencyKey: 'hook@1\0webhook\0event-1', inputs: { message: 'hello' },
+      authorityRef: 'service:hook', idempotencyKey: workflowIngressDedupeKey(binding, envelope), inputs: { message: 'hello' },
     }))
+  })
+
+  it('rejects a missing input mapping before launch and records a stable reason code', async () => {
+    const launch = vi.fn()
+    const store = new InMemoryWorkflowIngressStore()
+    const ingress = new WorkflowTriggerIngress({ launch } as unknown as import('../../src/runtime/index.js').WorkflowRuntimeApi, store, async () => binding)
+    const record = await ingress.ingest(binding, {
+      schemaVersion: 1, triggerId: 'bad-mapping', source: 'webhook', sourceEventId: 'missing-text', receivedAt: 100, payload: {},
+    })
+    expect(record).toMatchObject({ status: 'rejected', reasonCode: 'INGRESS_TRIGGER_INPUT_MAPPING_PATH_IS_MISSING_TEXT' })
+    expect(launch).not.toHaveBeenCalled()
+    expect(await store.get('bad-mapping')).toEqual(record)
   })
 
   it('validates HMAC webhooks and timezone cron schedules', () => {
@@ -49,6 +67,14 @@ describe('trigger ingress', () => {
     expect(cron.matches(new Date('2026-08-31T01:00:00.000Z'))).toBe(true)
     expect(cron.matches(new Date('2026-08-31T02:00:00.000Z'))).toBe(false)
     expect(cron.envelope(new Date('2026-08-31T01:00:00.000Z')).source).toBe('cron')
+
+    const skipped = createCronTrigger({ expression: '0 9 * * 1', timezone: 'Asia/Shanghai', misfirePolicy: 'skip', now: () => now })
+    expect(skipped.dueBetween(new Date('2026-08-31T00:59:00.000Z'), new Date('2026-08-31T01:05:00.000Z'))).toEqual([])
+    const recovered = createCronTrigger({ expression: '0 9 * * 1', timezone: 'Asia/Shanghai', misfirePolicy: 'fire-once', now: () => now })
+    expect(recovered.dueBetween(new Date('2026-08-24T00:59:00.000Z'), new Date('2026-08-31T01:05:00.000Z')))
+      .toEqual([expect.objectContaining({ occurredAt: Date.parse('2026-08-31T01:00:00.000Z'), receivedAt: now })])
+    expect(() => recovered.dueBetween(new Date('2026-08-31T01:05:00.000Z'), new Date('2026-08-31T01:04:59.000Z')))
+      .toThrow(/window is invalid/)
   })
 
   it('deduplicates terminal delivery and preserves unknown attempts for retry', async () => {
@@ -59,10 +85,35 @@ describe('trigger ingress', () => {
     const request = { runId: 'run-1', deliveryRef: 'reply-1', phase: 'terminal' as const, payload: { ok: true } }
     await expect(service.deliver(request)).rejects.toThrow('connection lost')
     const delivered = await service.deliver(request)
-    expect(delivered).toMatchObject({ status: 'delivered', attempts: 2, invocationId: 'run-1:reply-1:terminal' })
+    expect(delivered).toMatchObject({ status: 'delivered', attempts: 2, invocationId: workflowDeliveryInvocationId(request) })
     await service.deliver(request)
     expect(deliver).toHaveBeenCalledTimes(2)
-    expect(deliver.mock.calls[0]?.[0]).toMatchObject({ invocationId: 'run-1:reply-1:terminal' })
+    expect(deliver.mock.calls[0]?.[0]).toMatchObject({ invocationId: workflowDeliveryInvocationId(request) })
+  })
+
+  it('coalesces concurrent delivery attempts onto one stable external invocation', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const deliver = vi.fn(async () => gate)
+    const deliveryStore = new InMemoryWorkflowDeliveryStore()
+    const service = new WorkflowResultDeliveryService({ deliver }, deliveryStore, () => 200)
+    const request = { runId: 'run-concurrent', deliveryRef: 'reply-1', phase: 'terminal' as const, payload: { ok: true } }
+    const first = service.deliver(request)
+    const second = service.deliver(request)
+    await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1))
+    expect(await deliveryStore.listAttention()).toEqual([expect.objectContaining({ status: 'pending', attempts: 1 })])
+    release()
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ status: 'delivered', attempts: 1 }),
+      expect.objectContaining({ status: 'delivered', attempts: 1 }),
+    ])
+  })
+
+  it('never rebinds one delivery invocation id to a different payload', async () => {
+    const service = new WorkflowResultDeliveryService({ async deliver() {} }, new InMemoryWorkflowDeliveryStore(), () => 200)
+    await service.deliver({ runId: 'run-bound', deliveryRef: 'reply', phase: 'terminal', payload: { ok: true } })
+    await expect(service.deliver({ runId: 'run-bound', deliveryRef: 'reply', phase: 'terminal', payload: { ok: false } }))
+      .rejects.toThrow('already bound to another immutable request')
   })
 
   it('leaves an ingress pending when launch-link persistence fails and recovers it', async () => {
@@ -72,6 +123,7 @@ describe('trigger ingress', () => {
       acceptOrGet: record => base.acceptOrGet(record),
       get: id => base.get(id),
       listPending: () => base.listPending(),
+      list: query => base.list(query),
       markRejected: (id, reason) => base.markRejected(id, reason),
       async markLaunched(id, runId) { if (fail) { fail = false; throw new Error('simulated link crash') }; await base.markLaunched(id, runId) },
     }
@@ -83,6 +135,19 @@ describe('trigger ingress', () => {
     expect(await ingress.recoverPending()).toEqual([expect.objectContaining({ status: 'launched', runId: 'stable-run' })])
     expect(launch).toHaveBeenCalledTimes(2)
     expect(launch.mock.calls[0]?.[0].idempotencyKey).toBe(launch.mock.calls[1]?.[0].idempotencyKey)
+  })
+
+  it('leaves an ingress pending when the durable runtime or queue is unavailable', async () => {
+    const store = new InMemoryWorkflowIngressStore()
+    const launch = vi.fn()
+      .mockRejectedValueOnce(new Error('queue unavailable'))
+      .mockResolvedValue({ runId: 'recovered-run', result: Promise.resolve({ status: 'completed' }), live: async function* () {}, async cancel() {} })
+    const ingress = new WorkflowTriggerIngress({ launch } as unknown as import('../../src/runtime/index.js').WorkflowRuntimeApi, store, async () => binding)
+    const envelope = { schemaVersion: 1 as const, triggerId: 'queue-gap', source: 'webhook', sourceEventId: 'queue-event', receivedAt: 100, payload: { text: 'hello' } }
+    await expect(ingress.ingest(binding, envelope)).rejects.toThrow('queue unavailable')
+    expect(await store.get('queue-gap')).toMatchObject({ status: 'received' })
+    await expect(ingress.recoverPending()).resolves.toEqual([expect.objectContaining({ status: 'launched', runId: 'recovered-run' })])
+    expect(launch).toHaveBeenCalledTimes(2)
   })
 
   it('claims one recoverable run and resumes it through the shared Runtime API', async () => {
@@ -122,5 +187,138 @@ describe('trigger ingress', () => {
       .toMatchObject({ status: 'failed', error: 'commit lost' })
     expect(await coordinator.claim({ workerId: 'worker-2', leaseMs: 1_000 }))
       .toMatchObject({ runId: 'run-recoverable', workerId: 'worker-2' })
+  })
+
+  it('routes signed DingTalk commands, audits duplicates, and deduplicates accepted/terminal replies', async () => {
+    const now = 1_800_000_000_000
+    const timestamp = String(now)
+    const sign = createHmac('sha256', 'ding-secret').update(`${timestamp}\nding-secret`).digest('base64')
+    const body = {
+      senderStaffId: 'user-1', conversationId: 'group-1', msgId: 'ding-event-1',
+      text: { content: '/weekly-ai 2026-08-01 2026-08-07' },
+    }
+    const adapter = new DingTalkTriggerAdapter({
+      appSecret: 'ding-secret', now: () => now,
+      resolveAuthority: (sender, conversation) => sender === 'user-1' && conversation === 'group-1' ? 'principal:ding-user-1' : undefined,
+    })
+    const dingBinding: WorkflowTriggerBinding = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'weekly-ding', revision: 1 },
+      spec: {
+        workflow: { id: 'weekly-ai', revision: 3 }, trigger: { uses: 'dingtalk@1', with: {} },
+        inputMapping: {
+          from: { metadata: { path: ['route', 'arguments', 0] } },
+          to: { metadata: { path: ['route', 'arguments', 1] } },
+        }, authorityRef: 'service:weekly-ai', deliveryRef: 'ding:group-1:ding-event-1',
+      },
+    }
+    const launch = vi.fn(async () => ({ runId: 'run-ding', result: Promise.resolve({ status: 'completed' }), live: async function* () {}, async cancel() {} }))
+    const ingressStore = new InMemoryWorkflowIngressStore()
+    const ingress = new WorkflowTriggerIngress({ launch } as unknown as import('../../src/runtime/index.js').WorkflowRuntimeApi, ingressStore, async () => dingBinding)
+    const externalDeliver = vi.fn(async () => {})
+    const delivery = new WorkflowResultDeliveryService({ deliver: externalDeliver }, new InMemoryWorkflowDeliveryStore(), () => now)
+    const channel = new DingTalkWorkflowChannel(
+      adapter,
+      new DingTalkWorkflowRouter([{ binding: { id: 'weekly-ding', revision: 1 }, command: '/weekly-ai' }]),
+      ingress,
+      async () => dingBinding,
+      delivery,
+    )
+
+    expect(await channel.receive({ timestamp, sign, body })).toMatchObject({ status: 'launched', runId: 'run-ding' })
+    expect(await channel.receive({ timestamp, sign, body })).toMatchObject({ status: 'deduplicated', runId: 'run-ding', duplicateCount: 1 })
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({
+      executionMode: 'background', authorityRef: 'service:weekly-ai', inputs: { from: '2026-08-01', to: '2026-08-07' },
+    }))
+    expect(externalDeliver).toHaveBeenCalledTimes(1)
+
+    const completed = { status: 'completed' as const, runId: 'run-ding', outputs: { items: [] }, nodeStates: {}, edgeStates: {}, events: [] }
+    await channel.deliverTerminal(dingBinding, completed)
+    await channel.deliverTerminal(dingBinding, completed)
+    expect(externalDeliver).toHaveBeenCalledTimes(2)
+    expect(await ingressStore.get((await ingressStore.list())[0]!.triggerId)).toMatchObject({ duplicateCount: 1 })
+
+    expect(() => new DingTalkTriggerAdapter({ appSecret: 'ding-secret', now: () => now, resolveAuthority: () => undefined })
+      .accept({ timestamp, sign, body })).toThrow('identity is not mapped')
+  })
+
+  it('restricts DingTalk natural-language routing to an explicit binding allowlist', async () => {
+    const envelope = {
+      schemaVersion: 1 as const, triggerId: 'ding-natural', source: 'dingtalk', sourceEventId: 'message-2', receivedAt: 1,
+      payload: { content: '帮我整理本周 AI 新闻' }, metadata: { principalRef: 'principal:user' },
+    }
+    const router = new DingTalkWorkflowRouter(
+      [{ binding: { id: 'weekly-ding', revision: 1 } }],
+      { async route() { return { id: 'weekly-ding', revision: 1, inputs: { from: 'a', to: 'b' } } } },
+    )
+    await expect(router.route(envelope)).resolves.toMatchObject({
+      binding: { id: 'weekly-ding', revision: 1 },
+      envelope: { metadata: { route: { kind: 'natural-language', inputs: { from: 'a', to: 'b' } } } },
+    })
+    const malicious = new DingTalkWorkflowRouter(
+      [{ binding: { id: 'weekly-ding', revision: 1 } }],
+      { async route() { return { id: 'admin-flow', revision: 1, inputs: {} } } },
+    )
+    await expect(malicious.route(envelope)).rejects.toThrow('outside the allowlist')
+  })
+
+  it('carries a DingTalk command through background Worker, approval, Journal, and terminal reply', async () => {
+    const now = 1_800_000_000_000
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const runs = new InMemoryWorkflowRunStore()
+    const queue = new InMemoryWorkflowRunCoordinator()
+    const approvals = vi.fn(async () => 'allowed-once' as const)
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: runs, queue, services: { approvals: { request: approvals } },
+      authorityResolver: { async resolve(ref) { return { ref } } },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'approve-flow', name: 'Approve flow' },
+      spec: {
+        requires: [{ kind: 'capability', uses: 'gateway.approval.request' }, { kind: 'approval-action', uses: 'release' }],
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'approval', uses: 'human.approval@1', with: { action: 'release', reason: 'Release?' }, inputs: { artifact: { literal: 'v1' } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { approved: { output: { nodeId: 'approval', path: ['approved'] } } } },
+        ],
+        edges: [
+          { id: 'a', source: 'start', target: 'approval' },
+          { id: 'b', source: 'approval', target: 'end', sourcePort: 'approved' },
+          { id: 'c', source: 'approval', target: 'end', sourcePort: 'rejected' },
+        ],
+        outputs: { approved: { output: { nodeId: 'end', path: ['approved'] } } },
+      },
+    }
+    const draft = await catalog.createDraft(template); await catalog.publish(draft.id, draft.revision)
+    const dingBinding: WorkflowTriggerBinding = {
+      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'approve-ding', revision: 1 },
+      spec: { workflow: { id: 'approve-flow', revision: 1 }, trigger: { uses: 'dingtalk@1', with: {} }, inputMapping: {}, authorityRef: 'principal:approver', deliveryRef: 'ding:approval' },
+    }
+    const adapter = new DingTalkTriggerAdapter({ appSecret: 'approval-secret', now: () => now, resolveAuthority: () => 'principal:approver' })
+    const ingress = new WorkflowTriggerIngress(runtime, new InMemoryWorkflowIngressStore(), async () => dingBinding)
+    const deliver = vi.fn(async (_request: import('../../src/triggers/core/index.js').WorkflowDeliveryRequest & { readonly invocationId: string }) => {})
+    const channel = new DingTalkWorkflowChannel(
+      adapter, new DingTalkWorkflowRouter([{ binding: dingBinding.metadata, command: '/approve' }]), ingress, async () => dingBinding,
+      new WorkflowResultDeliveryService({ deliver }, new InMemoryWorkflowDeliveryStore(), () => now),
+    )
+    const timestamp = String(now)
+    const sign = createHmac('sha256', 'approval-secret').update(`${timestamp}\napproval-secret`).digest('base64')
+    const accepted = await channel.receive({ timestamp, sign, body: {
+      senderStaffId: 'operator', conversationId: 'release-room', msgId: 'approval-message', text: { content: '/approve' },
+    } })
+    const result = await new WorkflowRunWorker(runtime, queue).runOnce({ workerId: 'approval-worker', leaseMs: 1_000 })
+    if (result === undefined) throw new Error('approval run was not claimed')
+    await channel.deliverTerminal(dingBinding, result)
+    expect(accepted).toMatchObject({ status: 'launched', runId: result.runId })
+    expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
+    expect(approvals).toHaveBeenCalledTimes(1)
+    expect(deliver.mock.calls.map(([request]) => request.phase)).toEqual(['accepted', 'terminal'])
+    const journal = (await runtime.readEvents(result.runId, { limit: 100 })).events
+    expect(journal.map(event => event.type)).toEqual(expect.arrayContaining([
+      'run.accepted', 'run.queued', 'run.started', 'node.waiting', 'capability.requested', 'capability.completed', 'run.completed',
+    ]))
+    expect(journal.find(event => event.type === 'capability.requested')?.node).toMatchObject({ id: 'approval', invocationId: expect.any(String) })
   })
 })

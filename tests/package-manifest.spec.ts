@@ -6,7 +6,8 @@ interface PackageManifest {
   repository?: { url?: string; directory?: string }
   dependencies?: Record<string, string>
   exports?: Record<string, unknown>
-  dsh?: { bundle?: { patch?: string } }
+  files?: string[]
+  dsh?: { bundle?: { patch?: string }; client?: { immediately?: boolean; platform?: string } }
 }
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as PackageManifest
@@ -19,9 +20,14 @@ describe('published root package manifest', () => {
       url: 'git+https://github.com/GM-HZ/dsh-dag-workflow.git',
     })
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
+    expect(manifest.dsh?.client).toMatchObject({ platform: 'web', immediately: true })
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    expect(patch).toContain("name: '@gm-hz/agent-dag-workflow'")
+    expect(patch).not.toContain('@gm-hz/agent-dag-workflow/dsh')
     expect(Object.keys(manifest.exports ?? {})).toEqual(expect.arrayContaining([
       '.', './core', './catalog', './sqlite', './dsh', './canvas', './client', './package.json',
     ]))
+    expect(manifest.files).toEqual(expect.arrayContaining(['docs', 'examples', 'spec', 'skills']))
   })
 
   it('does not publish workspace-only runtime dependency ranges', () => {

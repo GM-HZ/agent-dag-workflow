@@ -115,7 +115,7 @@ export class WorkflowNodeRegistryService extends Service {
     super(ctx, 'workflowNodes')
     ctx.effect(() => registerCoreNodes(this.registry, {
       scriptRuntimes: ctx.workflowScripts.registry,
-    }), 'dsh-dag-workflow: core nodes')
+    }), 'agent-dag-workflow: core nodes')
   }
 
   register(definition: WorkflowNodeDefinition): WorkflowNodeDisposer {
@@ -321,7 +321,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       for (const run of runs) run.cancel('dag workflow service disposed')
       await Promise.all(runs.map(run => run.dispose()))
       this.active.clear()
-    }, 'dsh-dag-workflow: active runs')
+    }, 'agent-dag-workflow: active runs')
   }
 
   async start(request: DshDagWorkflowStartRequest): Promise<WorkflowRun> {
@@ -384,13 +384,13 @@ export class WorkflowRecoveryCoordinator {
       const controller = new AbortController()
       const task = recoverPersistedWorkflowRuns(ctx, config.recovery!, controller.signal)
       void task.catch(error => {
-        if (!controller.signal.aborted) ctx.logger.error(`dsh-dag-workflow: recovery coordinator failed: ${renderError(error)}`)
+        if (!controller.signal.aborted) ctx.logger.error(`agent-dag-workflow: recovery coordinator failed: ${renderError(error)}`)
       })
       return async () => {
         controller.abort('workflow recovery coordinator disposed')
         await task.catch(() => {})
       }
-    }, 'dsh-dag-workflow: recover persisted runs')
+    }, 'agent-dag-workflow: recover persisted runs')
   }
 }
 
@@ -407,22 +407,22 @@ export async function recoverPersistedWorkflowRuns(
       const parent = await recovery.resolve(record.execution.authorityRef, { runId: record.runId, signal })
       signal.throwIfAborted()
       if (parent === undefined) {
-        ctx.logger.warn(`dsh-dag-workflow: authority unavailable for run ${record.runId}; leaving it recoverable`)
+        ctx.logger.warn(`agent-dag-workflow: authority unavailable for run ${record.runId}; leaving it recoverable`)
         continue
       }
       if (!isDshAgentLike(parent)) {
-        ctx.logger.warn(`dsh-dag-workflow: authority returned an invalid Agent for run ${record.runId}`)
+        ctx.logger.warn(`agent-dag-workflow: authority returned an invalid Agent for run ${record.runId}`)
         continue
       }
       if (recovery.reference(parent) !== record.execution.authorityRef) {
-        ctx.logger.warn(`dsh-dag-workflow: authority reference mismatch for run ${record.runId}`)
+        ctx.logger.warn(`agent-dag-workflow: authority reference mismatch for run ${record.runId}`)
         continue
       }
       await ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, signal })
       started.push(record.runId)
     } catch (error: unknown) {
       if (signal.aborted) throw error
-      ctx.logger.warn(`dsh-dag-workflow: failed to recover run ${record.runId}: ${renderError(error)}`)
+      ctx.logger.warn(`agent-dag-workflow: failed to recover run ${record.runId}: ${renderError(error)}`)
     }
   }
   return started
@@ -435,10 +435,10 @@ function createRunObserver(
 ): (event: WorkflowEvent) => void {
   return event => {
     try { ctx.emit('dag-workflow/event', event, parent) } catch (error: unknown) {
-      ctx.logger.warn(`dsh-dag-workflow: event listener failed: ${renderError(error)}`)
+      ctx.logger.warn(`agent-dag-workflow: event listener failed: ${renderError(error)}`)
     }
     try { requestObserver?.(event) } catch (error: unknown) {
-      ctx.logger.warn(`dsh-dag-workflow: request observer failed: ${renderError(error)}`)
+      ctx.logger.warn(`agent-dag-workflow: request observer failed: ${renderError(error)}`)
     }
   }
 }
@@ -471,9 +471,9 @@ function selectCurrentAgentTarget(
   runtime: DshSubagentRuntimeLike,
   required: { readonly structuredOutput: boolean; readonly depthLimit: boolean },
 ): string {
-  const listed = [...(runtime.list?.() ?? [])]
+  const listed = [...runtime.list()]
   const compatible = listed.filter(name => {
-    const capabilities = runtime.getProvider?.(name)?.capabilities
+    const capabilities = runtime.getProvider(name)?.capabilities
     return (!required.structuredOutput || capabilities?.outputSchema !== false)
       && (!required.depthLimit || capabilities?.depthLimit !== false)
   })
@@ -482,8 +482,7 @@ function selectCurrentAgentTarget(
     if (candidates.includes(preferred)) return preferred
   }
   if (candidates[0] !== undefined) return candidates[0]
-  // Older DSH runtimes did not expose list(); spawn is their canonical child seam.
-  return 'spawn'
+  throw new WorkflowExecutionError('AGENT_TARGET_UNAVAILABLE', 'DSH has no registered subagent target compatible with this workflow node')
 }
 
 function renderError(error: unknown): string {

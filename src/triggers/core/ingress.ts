@@ -1,4 +1,5 @@
-import { isJsonObject, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonValue } from '../../core/index.js'
+import { createHash } from 'node:crypto'
+import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, type JsonObject, type JsonValue } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
 import type { WorkflowIngressRecord, WorkflowIngressStore, WorkflowInputMappingValue, WorkflowTriggerBinding, WorkflowTriggerEnvelope } from './types.js'
 
@@ -12,7 +13,7 @@ export class WorkflowTriggerIngress {
   async ingest(binding: WorkflowTriggerBinding, envelope: WorkflowTriggerEnvelope): Promise<WorkflowIngressRecord> {
     validateEnvelope(envelope)
     validateBinding(binding, envelope.source)
-    const dedupeKey = `${binding.metadata.id}@${binding.metadata.revision}\0${envelope.source}\0${envelope.sourceEventId}`
+    const dedupeKey = workflowIngressDedupeKey(binding, envelope)
     const initial: WorkflowIngressRecord = snapshotJsonValue({
       triggerId: envelope.triggerId,
       dedupeKey,
@@ -24,7 +25,7 @@ export class WorkflowTriggerIngress {
       envelope,
     }) as unknown as WorkflowIngressRecord
     const accepted = await this.store.acceptOrGet(initial)
-    if (!accepted.accepted) return { ...accepted.record, status: accepted.record.status === 'received' ? 'deduplicated' : accepted.record.status }
+    if (!accepted.accepted) return { ...accepted.record, status: 'deduplicated' }
     return this.#launch(binding, accepted.record)
   }
 
@@ -38,22 +39,27 @@ export class WorkflowTriggerIngress {
   }
 
   async #launch(binding: WorkflowTriggerBinding, record: WorkflowIngressRecord): Promise<WorkflowIngressRecord> {
-    let runId: string
+    let inputs: JsonObject
     try {
-      const inputs = mapInputs(binding.spec.inputMapping, record.envelope)
-      const handle = await this.runtime.launch({
-        target: { type: 'published', id: binding.spec.workflow.id, revision: binding.spec.workflow.revision },
-        inputs,
-        authorityRef: binding.spec.authorityRef,
-        origin: { type: 'trigger', source: record.source, sourceRef: record.sourceEventId },
-        idempotencyKey: record.dedupeKey,
-        ...(binding.spec.deliveryRef === undefined ? {} : { deliveryRef: binding.spec.deliveryRef }),
-      })
-      runId = handle.runId
+      inputs = mapInputs(binding.spec.inputMapping, record.envelope)
     } catch (error: unknown) {
       await this.store.markRejected(record.triggerId, reasonCode(error))
       return (await this.store.get(record.triggerId))!
     }
+    // Runtime/queue failures are infrastructure or deployment failures. Keep
+    // the accepted ingress pending so recoverPending can retry the same
+    // authority-scoped idempotent launch instead of misclassifying it as a
+    // permanently rejected external event.
+    const handle = await this.runtime.launch({
+      target: { type: 'published', id: binding.spec.workflow.id, revision: binding.spec.workflow.revision },
+      inputs,
+      authorityRef: binding.spec.authorityRef,
+      origin: { type: 'trigger', source: record.source, sourceRef: record.sourceEventId },
+      idempotencyKey: record.dedupeKey,
+      executionMode: 'background',
+      ...(binding.spec.deliveryRef === undefined ? {} : { deliveryRef: binding.spec.deliveryRef }),
+    })
+    const runId = handle.runId
     try {
       await this.store.markLaunched(record.triggerId, runId)
     } catch (error: unknown) {
@@ -64,6 +70,11 @@ export class WorkflowTriggerIngress {
     }
     return (await this.store.get(record.triggerId))!
   }
+}
+
+export function workflowIngressDedupeKey(binding: WorkflowTriggerBinding, envelope: WorkflowTriggerEnvelope): string {
+  const tuple = [binding.metadata.id, binding.metadata.revision, envelope.source, envelope.sourceEventId] as JsonValue
+  return createHash('sha256').update(stableJsonStringify(tuple)).digest('hex')
 }
 
 export function mapInputs(mapping: Readonly<Record<string, WorkflowInputMappingValue>>, envelope: WorkflowTriggerEnvelope): JsonObject {
@@ -88,12 +99,20 @@ function readPath(root: JsonValue, path: readonly (string | number)[]): JsonValu
 }
 
 function validateEnvelope(value: WorkflowTriggerEnvelope): void {
-  if (value.schemaVersion !== 1 || value.triggerId.length === 0 || value.source.length === 0 || value.sourceEventId.length === 0) {
+  if (value.schemaVersion !== 1
+    || value.triggerId.length === 0 || value.triggerId.length > 1024
+    || value.source.length === 0 || value.source.length > 256
+    || value.sourceEventId.length === 0 || value.sourceEventId.length > 4096
+    || !Number.isSafeInteger(value.receivedAt)
+    || (value.occurredAt !== undefined && !Number.isSafeInteger(value.occurredAt))) {
     throw new Error('invalid trusted workflow trigger envelope')
   }
 }
 function validateBinding(binding: WorkflowTriggerBinding, source: string): void {
-  if (binding.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || binding.kind !== 'WorkflowBinding' || binding.spec.enabled === false) throw new Error('workflow binding is invalid or disabled')
+  if (binding.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || binding.kind !== 'WorkflowBinding' || binding.spec.enabled === false
+    || !/^[a-z][a-z0-9-]*$/.test(binding.metadata.id) || !Number.isSafeInteger(binding.metadata.revision) || binding.metadata.revision < 1
+    || !/^[a-z][a-z0-9-]*$/.test(binding.spec.workflow.id) || !Number.isSafeInteger(binding.spec.workflow.revision) || binding.spec.workflow.revision < 1
+    || binding.spec.authorityRef.length === 0 || binding.spec.authorityRef.length > 1024) throw new Error('workflow binding is invalid or disabled')
   const expected = binding.spec.trigger.uses.split('@', 1)[0]
   if (expected !== source) throw new Error(`trigger source ${source} does not match binding ${binding.spec.trigger.uses}`)
 }
