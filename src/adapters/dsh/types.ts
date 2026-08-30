@@ -8,6 +8,8 @@ import type {
 import type { WorkflowLaunchTarget } from '../../runtime/index.js'
 
 export interface DshSessionLike {
+  readonly id?: string
+  readonly header?: { readonly id?: string }
   append(type: string, data: unknown): unknown
 }
 
@@ -116,6 +118,8 @@ export type DshDagWorkflowStartRequest = {
   readonly inputs: JsonObject
   readonly parent: object
   readonly signal?: AbortSignal
+  /** Request/transport lifetime; aborting it detaches without cancelling the durable Run. */
+  readonly interruptionSignal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 } & (
   | { readonly template: WorkflowTemplate; readonly target?: never }
@@ -125,12 +129,24 @@ export type DshDagWorkflowStartRequest = {
 export interface DshDagWorkflowEngine {
   start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun>
   resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun>
+  cancel(request: DshDagWorkflowCancelRequest): Promise<WorkflowRunResult>
+  owns(runId: string, parent: object): Promise<boolean>
+}
+
+export interface DshDagWorkflowCancelRequest {
+  readonly runId: string
+  readonly parent: object
+  readonly reason?: string
+  readonly signal?: AbortSignal
+  readonly onEvent?: (event: WorkflowEvent) => void
 }
 
 export interface DshDagWorkflowResumeRequest {
   readonly runId: string
   readonly parent: object
   readonly signal?: AbortSignal
+  /** Host/runner shutdown signal; unlike signal it must not cancel the durable Run. */
+  readonly interruptionSignal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
 }

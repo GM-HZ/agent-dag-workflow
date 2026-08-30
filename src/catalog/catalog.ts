@@ -3,6 +3,7 @@ import {
   materializeWorkflowTemplate,
   normalizeWorkflowDeploymentLimits,
   stableJsonStringify,
+  WORKFLOW_TEMPLATE_API_VERSION,
   type JsonValue,
   type WorkflowDiagnostic,
   type WorkflowDeploymentLimits,
@@ -193,10 +194,10 @@ function diffById<T extends { readonly id: string }>(left: readonly T[], right: 
 }
 
 function assertDraftEnvelope(template: WorkflowTemplate): void {
-  if (template.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || template.kind !== 'WorkflowTemplate'
+  if (template.apiVersion !== WORKFLOW_TEMPLATE_API_VERSION || template.kind !== 'WorkflowTemplate'
     || typeof template.metadata?.id !== 'string' || !/^[a-z][a-z0-9-]*$/.test(template.metadata.id)
     || typeof template.metadata.name !== 'string' || template.metadata.name.length === 0) {
-    throw new WorkflowCatalogError('CATALOG_INVALID_ENVELOPE', 'draft requires v1alpha1 envelope and valid metadata id/name')
+    throw new WorkflowCatalogError('CATALOG_INVALID_ENVELOPE', 'draft requires v1 envelope and valid metadata id/name')
   }
 }
 

@@ -108,6 +108,7 @@ export class DagWorkflowEngine {
   async start(request: WorkflowEngineStartRequest): Promise<WorkflowEngineRun> {
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
+    assertInputSize(inputs, this.#deploymentLimits.maxInputBytes)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
 
@@ -126,6 +127,7 @@ export class DagWorkflowEngine {
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'background queue requires a WorkflowRunStore')
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
+    assertInputSize(inputs, this.#deploymentLimits.maxInputBytes)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
     const id = request.runId ?? `dag-${randomUUID()}`
@@ -179,6 +181,7 @@ export class DagWorkflowEngine {
     }
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
+    assertInputSize(inputs, this.#deploymentLimits.maxInputBytes)
     const inputErrors = workflow.validateWorkflowInputs(inputs)
     if (inputErrors.length > 0) throw new WorkflowExecutionError('WORKFLOW_INPUT_INVALID', inputErrors.join('; '))
     const id = invocationRunId(request.invocationId)
@@ -196,6 +199,7 @@ export class DagWorkflowEngine {
       runId: id,
       execution: request.execution,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
     })
   }
@@ -248,6 +252,7 @@ export class DagWorkflowEngine {
       execution: request.execution,
       plan,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       ...(request.recordedNodeOutputs === undefined ? {} : { recordedNodeOutputs: request.recordedNodeOutputs }),
       checkpointMaxBytes: this.#deploymentLimits.maxCheckpointBytes,
@@ -338,6 +343,7 @@ export class DagWorkflowEngine {
       execution: record.execution,
       plan: record.plan,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
       checkpointMaxBytes: Math.max(
         this.#deploymentLimits.maxCheckpointBytes,
@@ -395,14 +401,16 @@ export class DagWorkflowEngine {
     // when an SDK consumer actually awaits `result`.
     const result = lazyPromise(async (): Promise<WorkflowRunResult> => {
       for (;;) {
-        const record = await store.loadRun(runId)
-        if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
-        if (record.checkpoint.status !== 'running') {
+        const checkpoint = await store.getCheckpoint(runId)
+        if (checkpoint === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
+        if (checkpoint.status !== 'running') {
+          const record = await store.loadRun(runId)
+          if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${runId}`)
           const workflow = compileWorkflowOrThrow(record.template, this.#registry)
           const state = restoreState(record, workflow)
           return state.status === 'completed' ? successResult(runId, state) : failureResult(runId, state)
         }
-        await new Promise(resolve => setTimeout(resolve, 20))
+        await new Promise(resolve => setTimeout(resolve, 100))
       }
     })
     return {
@@ -428,6 +436,7 @@ export class DagWorkflowEngine {
     readonly execution: Omit<import('./types.js').WorkflowExecutionContext, 'authority'>
     readonly plan: WorkflowExecutionPlanSnapshot
     readonly signal?: AbortSignal
+    readonly interruptionSignal?: AbortSignal
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
@@ -436,22 +445,34 @@ export class DagWorkflowEngine {
   }): WorkflowEngineRun {
     const controller = new AbortController()
     let cancelReason = 'cancelled'
+    let interruptionReason: string | undefined
     const abortFromCaller = () => {
       cancelReason = renderAbortReason(options.signal?.reason, 'caller cancelled')
       controller.abort(options.signal?.reason)
     }
     if (options.signal?.aborted === true) abortFromCaller()
     else options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    const abortFromInterruption = () => {
+      if (controller.signal.aborted) return
+      interruptionReason = renderAbortReason(options.interruptionSignal?.reason, 'executor interrupted')
+      controller.abort(options.interruptionSignal?.reason)
+    }
+    if (options.interruptionSignal?.aborted === true) abortFromInterruption()
+    else options.interruptionSignal?.addEventListener('abort', abortFromInterruption, { once: true })
 
     const result = this.#execute({
       ...options,
       controller,
       cancelReason: () => cancelReason,
+      interruptionReason: () => interruptionReason,
     }).catch((error: unknown): WorkflowRunFailure => {
       options.state.status = 'failed'
       options.state.error = renderError(error)
       return failureResult(options.id, options.state)
-    }).finally(() => options.signal?.removeEventListener('abort', abortFromCaller))
+    }).finally(() => {
+      options.signal?.removeEventListener('abort', abortFromCaller)
+      options.interruptionSignal?.removeEventListener('abort', abortFromInterruption)
+    })
 
     return {
       id: options.id,
@@ -461,10 +482,10 @@ export class DagWorkflowEngine {
         cancelReason = reason ?? 'cancelled'
         controller.abort(cancelReason)
       },
-      async dispose() {
+      async dispose(reason?: string) {
         if (!controller.signal.aborted) {
-          cancelReason = 'run disposed'
-          controller.abort(cancelReason)
+          interruptionReason = reason ?? 'executor detached'
+          controller.abort(interruptionReason)
         }
         await result
       },
@@ -482,6 +503,7 @@ export class DagWorkflowEngine {
     readonly plan: WorkflowExecutionPlanSnapshot
     readonly controller: AbortController
     readonly cancelReason: () => string
+    readonly interruptionReason: () => string | undefined
     readonly onEvent?: (event: WorkflowEvent) => void
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
@@ -526,6 +548,7 @@ export class DagWorkflowEngine {
     try {
       while (state.ready.length > 0 || active.size > 0) {
         if (controller.signal.aborted && active.size === 0) {
+          if (options.interruptionReason() !== undefined) return finishInterruption(options.interruptionReason()!)
           return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded)
         }
 
@@ -588,15 +611,34 @@ export class DagWorkflowEngine {
             return finishPause(completion.nodeId, completion.error.message)
           }
           if (controller.signal.aborted) {
+            if (options.interruptionReason() !== undefined) {
+              await settleActive(active)
+              return finishInterruption(options.interruptionReason()!)
+            }
             state.nodeStates.set(completion.nodeId, 'cancelled')
             const cancelled = await settleActive(active)
             return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded, [completion.nodeId, ...cancelled])
+          }
+          const failedNode = workflow.nodes.get(completion.nodeId)!
+          const maxAttempts = failedNode.template.policy?.retry?.maxAttempts ?? 1
+          const attempts = state.nodeAttempts.get(completion.nodeId) ?? 1
+          if (attempts < maxAttempts && failedNode.definition.retry !== 'never') {
+            state.nodeStates.set(completion.nodeId, 'ready')
+            if (!state.ready.includes(completion.nodeId)) state.ready.push(completion.nodeId)
+            sortReady(state.ready, workflow)
+            await commit([{ type: 'node.ready', nodeId: completion.nodeId }])
+            continue
           }
           const error = renderError(completion.error)
           state.nodeStates.set(completion.nodeId, 'failed')
           controller.abort(`node ${completion.nodeId} failed`)
           const cancelled = await settleActive(active)
           return finishFailure(error, completion.nodeId, cancelled)
+        }
+
+        if (options.interruptionReason() !== undefined) {
+          await settleActive(active)
+          return finishInterruption(options.interruptionReason()!)
         }
 
         state.nodeStates.set(completion.nodeId, 'succeeded')
@@ -663,6 +705,7 @@ export class DagWorkflowEngine {
         return failureResult(runId, state)
       }
       if (controller.signal.aborted) {
+        if (options.interruptionReason() !== undefined) return finishInterruption(options.interruptionReason()!)
         return finishCancellation(deadlineExceeded ? 'workflow duration exceeded' : options.cancelReason(), deadlineExceeded)
       }
       return finishFailure(renderError(error))
@@ -714,6 +757,13 @@ export class DagWorkflowEngine {
         ...[...cancelled].map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
         asFailure ? { type: 'run.failed', error: reason } : { type: 'run.cancelled', reason },
       ])
+      return failureResult(runId, state)
+    }
+
+    function finishInterruption(reason: string): WorkflowRunFailure {
+      // Deliberately do not commit or mutate the durable status. The latest
+      // checkpoint remains the recovery source for the next executor owner.
+      state.error = `workflow executor interrupted: ${reason}`
       return failureResult(runId, state)
     }
 
@@ -886,8 +936,8 @@ export class DagWorkflowEngine {
       const timeoutSignal = node.template.policy?.timeoutMs === undefined
         ? runSignal
         : AbortSignal.any([runSignal, AbortSignal.timeout(node.template.policy.timeoutMs)])
-      const invocationId = `${runId}:${node.template.id}:${attempt}`
-      const external = isExternalNode(node.template.uses)
+      const invocationId = `${runId}:${node.template.id}`
+      const external = node.definition.effects === 'external'
       const recorded = external ? recordedNodeOutputs?.[node.template.id] : undefined
       if (recorded !== undefined) {
         const outputs = snapshotJsonObject(recorded)
@@ -908,7 +958,7 @@ export class DagWorkflowEngine {
       }
       if (external) await commit([{ type: 'capability.requested', nodeId: node.template.id, invocationId }])
       try {
-        const rawResult = await node.definition.execute({
+        const execution = Promise.resolve(node.definition.execute({
           runId,
           nodeId: node.template.id,
           invocationId,
@@ -928,7 +978,8 @@ export class DagWorkflowEngine {
           ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
           checkpointProgress,
           authority,
-        })
+        }))
+        const rawResult = await awaitExecutionOrAbort(execution, timeoutSignal, runSignal, node.template.id)
         const outputs = snapshotJsonObject(rawResult.outputs)
         const result: WorkflowNodeExecutionResult = {
           outputs,
@@ -958,7 +1009,9 @@ export class DagWorkflowEngine {
         }
       } catch (error: unknown) {
         if (error instanceof WorkflowCommitFailure) throw error
-        if (external) await commit([{ type: 'capability.failed', nodeId: node.template.id, invocationId, error: renderError(error) }])
+        if (external && !runSignal.aborted) {
+          await commit([{ type: 'capability.failed', nodeId: node.template.id, invocationId, error: renderError(error) }])
+        }
         throw error
       }
     } catch (error: unknown) {
@@ -966,6 +1019,42 @@ export class DagWorkflowEngine {
       return { nodeId: node.template.id, ok: false, error }
     }
   }
+}
+
+/**
+ * Node providers are Host code and may fail to observe AbortSignal. The engine
+ * must still release runner ownership on cancellation, timeout, or detach.
+ * The attached rejection handler also prevents a late provider rejection from
+ * becoming an unhandled rejection after the engine has moved on.
+ */
+function awaitExecutionOrAbort<Value>(
+  execution: Promise<Value>,
+  signal: AbortSignal,
+  runSignal: AbortSignal,
+  nodeId: string,
+): Promise<Value> {
+  if (signal.aborted) return Promise.reject(abortedExecutionError(runSignal, nodeId))
+  return new Promise<Value>((resolve, reject) => {
+    let settled = false
+    const finish = (operation: () => void) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      operation()
+    }
+    const onAbort = () => finish(() => reject(abortedExecutionError(runSignal, nodeId)))
+    signal.addEventListener('abort', onAbort, { once: true })
+    execution.then(
+      value => finish(() => resolve(value)),
+      error => finish(() => reject(error)),
+    )
+  })
+}
+
+function abortedExecutionError(runSignal: AbortSignal, nodeId: string): WorkflowExecutionError {
+  return runSignal.aborted
+    ? new WorkflowExecutionError('WORKFLOW_CANCELLED', 'workflow execution was aborted', { nodeId })
+    : new WorkflowExecutionError('NODE_TIMEOUT', `node ${nodeId} exceeded its timeout`, { nodeId })
 }
 
 function lazyPromise<Value>(factory: () => Promise<Value>): Promise<Value> {
@@ -1022,11 +1111,6 @@ function scopeNodeServices(services: WorkflowNodeServices, capabilities: readonl
       ? { subworkflows: services.subworkflows }
       : {}),
   })
-}
-
-function isExternalNode(uses: string): boolean {
-  return uses === 'tool.call@1' || uses === 'agent.run@1' || uses === 'human.approval@1'
-    || uses === 'workflow.call@1' || uses === 'core.foreach@1'
 }
 
 function createInitialState(workflow: CompiledWorkflow, depth: number, subworkflowDepthLimit: number, invocationId?: string): RuntimeState {
@@ -1196,6 +1280,11 @@ function assertOutputSize(value: JsonValue, maxBytes: number, label: string): vo
   if (bytes > maxBytes) throw new WorkflowExecutionError('OUTPUT_TOO_LARGE', `${label} is ${bytes} bytes, limit is ${maxBytes}`)
 }
 
+function assertInputSize(value: JsonObject, maxBytes: number): void {
+  const bytes = Buffer.byteLength(stableJsonStringify(value), 'utf8')
+  if (bytes > maxBytes) throw new WorkflowExecutionError('WORKFLOW_INPUT_TOO_LARGE', `workflow input is ${bytes} bytes, deployment limit is ${maxBytes}`)
+}
+
 function checkpointSizeBytes(checkpoint: WorkflowRunCheckpoint): number {
   return Buffer.byteLength(stableJsonStringify(checkpoint as unknown as JsonValue), 'utf8')
 }
@@ -1237,6 +1326,11 @@ function administrativeDeploymentLimits(
 ): WorkflowDeploymentLimits {
   const authored = template.spec.policies
   return normalizeWorkflowDeploymentLimits({
+    maxTemplateBytes: Math.max(configured.maxTemplateBytes, Buffer.byteLength(stableJsonStringify(template as unknown as JsonValue), 'utf8')),
+    maxInputBytes: configured.maxInputBytes,
+    maxNodes: Math.max(configured.maxNodes, template.spec.nodes.length),
+    maxEdges: Math.max(configured.maxEdges, template.spec.edges.length),
+    maxSchemaBytes: Math.max(configured.maxSchemaBytes, ...authoredSchemaSizes(template)),
     maxConcurrentNodes: Math.max(configured.maxConcurrentNodes, authored?.maxConcurrentNodes ?? 1),
     maxNodeRuns: Math.max(configured.maxNodeRuns, authored?.maxNodeRuns ?? 1),
     maxDurationMs: Math.max(configured.maxDurationMs, authored?.maxDurationMs ?? 1),
@@ -1244,6 +1338,11 @@ function administrativeDeploymentLimits(
     maxCheckpointBytes: configured.maxCheckpointBytes,
     subworkflowMaxDepth: Math.max(configured.subworkflowMaxDepth, authored?.subworkflowMaxDepth ?? 1),
   })
+}
+
+function authoredSchemaSizes(template: WorkflowTemplate): number[] {
+  return [template.spec.inputSchema, template.spec.outputSchema, ...template.spec.nodes.flatMap(node => node.expects?.schema === undefined ? [] : [node.expects.schema])]
+    .map(schema => Buffer.byteLength(stableJsonStringify(schema as unknown as JsonValue), 'utf8'))
 }
 
 function renderAbortReason(reason: unknown, fallback: string): string {

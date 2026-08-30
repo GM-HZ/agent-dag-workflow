@@ -16,6 +16,8 @@ export interface WorkflowNodeDescriptor {
   readonly inputSchema: import('../core/index.js').JsonSchema
   readonly outputSchema: import('../core/index.js').JsonSchema
   readonly outputPorts: readonly string[]
+  readonly effects: 'deterministic' | 'external'
+  readonly retry: import('../core/index.js').NodeRetryMode
   readonly dependencyKinds?: readonly string[]
 }
 
@@ -34,7 +36,10 @@ export interface WorkflowLaunchRequest {
   readonly deliveryRef?: string
   /** Foreground executes in the caller; background persists and enqueues for a WorkflowRunWorker. */
   readonly executionMode?: 'foreground' | 'background'
+  /** Explicit business cancellation. Transport adapters should use interruptionSignal instead. */
   readonly signal?: AbortSignal
+  /** Stops only the current foreground executor and leaves the durable Run recoverable. */
+  readonly interruptionSignal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
 
@@ -47,7 +52,18 @@ export interface WorkflowRuntimeResumeRequest {
   readonly authorityRef: string
   readonly authority?: unknown
   readonly signal?: AbortSignal
+  /** Stops only the current runner ownership; it never commits run.cancelled. */
+  readonly interruptionSignal?: AbortSignal
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
+  readonly onEvent?: (event: WorkflowEvent) => void
+}
+
+export interface WorkflowRuntimeCancelRequest {
+  readonly runId: string
+  readonly authorityRef: string
+  readonly authority?: unknown
+  readonly reason?: string
+  readonly signal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
 
@@ -67,6 +83,8 @@ export interface WorkflowRunHandle {
   readonly result: Promise<WorkflowRunResult>
   live(options?: { readonly signal?: AbortSignal }): AsyncIterable<WorkflowLiveEvent>
   cancel(reason?: string): Promise<void>
+  /** Detach the current executor while keeping a durable Run recoverable. */
+  detach(reason?: string): Promise<void>
 }
 
 export interface WorkflowRunSummary {
@@ -77,6 +95,7 @@ export interface WorkflowRunSummary {
   readonly plan: WorkflowExecutionPlanSnapshot
   readonly authorityRef: string
   readonly origin: WorkflowRunOrigin
+  readonly deliveryRef?: string
   readonly createdAt: number
   readonly updatedAt: number
   readonly checkpointSeq: number
@@ -100,6 +119,8 @@ export interface WorkflowReplayRequest {
   readonly authorityRef?: string
   readonly authority?: unknown
   readonly signal?: AbortSignal
+  /** Stops only the replay executor and never commits run.cancelled. */
+  readonly interruptionSignal?: AbortSignal
 }
 
 export interface WorkflowRuntimeApi {
@@ -115,6 +136,8 @@ export interface WorkflowRuntimeApi {
   publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision>
   launch(request: WorkflowLaunchRequest): Promise<WorkflowRunHandle>
   resume(request: WorkflowRuntimeResumeRequest): Promise<WorkflowRunHandle>
+  /** Commits an authoritative terminal cancellation; safe to call after process restart. */
+  cancel(request: WorkflowRuntimeCancelRequest): Promise<WorkflowRunResult>
   getRun(runId: string): Promise<WorkflowRunSummary | undefined>
   readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<WorkflowEventPage>
   replay(request: WorkflowReplayRequest): Promise<WorkflowRunHandle>

@@ -45,6 +45,10 @@ export class WorkflowNodeRegistry {
         output: item.outputSchema,
         ports: item.outputPorts,
         capabilities: item.capabilities,
+        effects: item.effects,
+        retry: item.retry,
+        execution: item.execution ?? 'activity',
+        role: item.role ?? 'regular',
       } as unknown as JsonObject)),
       implementationDigest: item.implementationDigest ?? 'missing',
     }))
@@ -69,6 +73,9 @@ function assertDefinition(definition: WorkflowNodeDefinition): void {
   }
   if (definition.outputPorts.length === 0 || new Set(definition.outputPorts).size !== definition.outputPorts.length) {
     throw new Error(`workflow node ${nodeDefinitionKey(definition.type, definition.version)} must declare unique output ports`)
+  }
+  if (definition.effects !== 'deterministic' && definition.effects !== 'external') {
+    throw new Error(`workflow node ${nodeDefinitionKey(definition.type, definition.version)} must declare deterministic or external effects`)
   }
   for (const port of definition.requiredOutputPorts ?? []) {
     if (!definition.outputPorts.includes(port)) {

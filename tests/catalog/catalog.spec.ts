@@ -9,7 +9,7 @@ import {
 
 function template(overrides: { name?: string; layoutX?: number; endUses?: string } = {}): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'catalog-test', name: overrides.name ?? 'Catalog test' },
     spec: {
@@ -36,7 +36,7 @@ function dependencyTemplate(id: string, dependency?: { readonly id: string; read
         inputs: {},
       }]
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id, name: id },
     spec: {

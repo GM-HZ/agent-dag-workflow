@@ -19,6 +19,7 @@ import type {
 } from '../catalog/index.js'
 import type {
   CanvasCatalogSummary,
+  CanvasCancelRequest,
   CanvasListRequest,
   CanvasOperationsSnapshot,
   CanvasDraftCreateRequest,
@@ -69,14 +70,21 @@ interface WorkflowCanvasEngineHost {
     readonly target?: import('../runtime/index.js').WorkflowLaunchTarget
     readonly inputs: import('../core/index.js').JsonObject
     readonly parent: WorkflowCanvasPrincipal['agent']
-    readonly signal: AbortSignal
+    readonly interruptionSignal: AbortSignal
   }): Promise<WorkflowCanvasRun>
   resume(request: {
     readonly runId: string
     readonly parent: WorkflowCanvasPrincipal['agent']
-    readonly signal: AbortSignal
+    readonly interruptionSignal?: AbortSignal
     readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
   }): Promise<WorkflowCanvasRun>
+  cancel(request: {
+    readonly runId: string
+    readonly parent: WorkflowCanvasPrincipal['agent']
+    readonly reason?: string
+    readonly signal?: AbortSignal
+  }): Promise<WorkflowRunResult>
+  owns(runId: string, parent: WorkflowCanvasPrincipal['agent']): Promise<boolean>
 }
 
 type WorkflowCanvasHostContext = Context & {
@@ -133,6 +141,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
         ...node.capabilities.map(uses => ({ kind: 'capability', uses })),
         ...(node.defaultConfig === undefined ? [] : node.dependencies?.(node.defaultConfig) ?? []),
       ],
+      effects: node.effects,
       retry: node.retry,
     }))
     const tools = this.host.tools
@@ -165,6 +174,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
           { kind: 'capability', uses: 'gateway.tool.execute' },
           { kind: 'tool', uses: tool.name },
         ],
+        effects: 'external' as const,
         retry: 'never' as const,
       }))
     return [...nodes, ...tools]
@@ -242,7 +252,7 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       target: { type: 'published', id: request.id, revision: request.revision },
       inputs: snapshotJsonObject(request.inputs),
       parent: principal.agent,
-      signal,
+      interruptionSignal: signal,
     }))
   }
 
@@ -253,17 +263,18 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
       template: asTemplate(request.template),
       inputs: snapshotJsonObject(request.inputs),
       parent: principal.agent,
-      signal,
+      interruptionSignal: signal,
     }))
   }
 
   @Remote
   async resume(sessionId: string, request: CanvasResumeRequest, signal: AbortSignal): Promise<CanvasRunResult> {
     const principal = await this.guard(sessionId, 'run:resume', request.runId)
+    await this.assertRunOwner(request.runId, principal)
     return settle(await this.host.dagWorkflowEngine.resume({
       runId: request.runId,
       parent: principal.agent,
-      signal,
+      interruptionSignal: signal,
       ...(request.unknownNodeResolutions === undefined ? {} : {
         unknownNodeResolutions: request.unknownNodeResolutions,
       }),
@@ -271,8 +282,22 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
   }
 
   @Remote
+  async cancel(sessionId: string, request: CanvasCancelRequest, signal: AbortSignal): Promise<CanvasRunResult> {
+    const principal = await this.guard(sessionId, 'run:cancel', request.runId)
+    await this.assertRunOwner(request.runId, principal)
+    const result = await this.host.dagWorkflowEngine.cancel({
+      runId: request.runId,
+      parent: principal.agent,
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+      signal,
+    })
+    return projectResult(result)
+  }
+
+  @Remote
   async trace(sessionId: string, request: CanvasTraceRequest): Promise<CanvasTrace> {
-    await this.guard(sessionId, 'run:trace', request.runId)
+    const principal = await this.guard(sessionId, 'run:trace', request.runId)
+    await this.assertRunOwner(request.runId, principal)
     const [record, checkpoint] = await Promise.all([
       this.host.workflowRuns.getRunMetadata(request.runId),
       this.host.workflowRuns.getCheckpoint(request.runId),
@@ -336,6 +361,10 @@ export class WorkflowCanvasGateway extends TypertRemoteService {
     }
     return principal
   }
+
+  private async assertRunOwner(runId: string, principal: WorkflowCanvasPrincipal): Promise<void> {
+    if (!await this.host.dagWorkflowEngine.owns(runId, principal.agent)) throw new Error(`workflow canvas access denied for run ${runId}`)
+  }
 }
 
 async function settle(run: WorkflowCanvasRun): Promise<CanvasRunResult> {
@@ -349,6 +378,10 @@ async function settle(run: WorkflowCanvasRun): Promise<CanvasRunResult> {
     throw errors.length === 1 ? errors[0] : new AggregateError(errors, 'workflow run and disposal failed')
   }
   if (result === undefined) throw new Error('workflow result was not available')
+  return projectResult(result)
+}
+
+function projectResult(result: WorkflowRunResult): CanvasRunResult {
   return result.status === 'completed'
     ? { runId: result.runId, status: result.status, outputs: result.outputs }
     : {

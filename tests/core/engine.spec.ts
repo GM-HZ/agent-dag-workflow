@@ -3,6 +3,7 @@ import {
   DagWorkflowEngine,
   parseWorkflowTemplate,
   registerCoreNodes,
+  WORKFLOW_TEMPLATE_API_VERSION,
   WorkflowCapabilityRegistry,
   WorkflowNodeRegistry,
   type WorkflowToolRequest,
@@ -13,6 +14,12 @@ import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
 const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' }, origin: { type: 'sdk' } } as const
 
 describe('DAG workflow engine', () => {
+  it('freezes the public v1 template envelope and rejects pre-v1 input', () => {
+    expect(WORKFLOW_TEMPLATE_API_VERSION).toBe('workflow.gm-hz.dev/v1')
+    const legacy = { ...toolWorkflowTemplate(), apiVersion: 'workflow.gm-hz.dev/v1alpha1' }
+    expect(() => parseWorkflowTemplate(JSON.stringify(legacy))).toThrow(/apiVersion/)
+  })
+
   it('executes tool nodes only through the injected gateway', async () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
@@ -86,7 +93,7 @@ describe('DAG workflow engine', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+      apiVersion: 'workflow.gm-hz.dev/v1',
       kind: 'WorkflowTemplate',
       metadata: { id: 'script-transform', name: 'Script transform' },
       spec: {
@@ -177,11 +184,11 @@ describe('DAG workflow engine', () => {
       configSchema: { type: 'object', additionalProperties: false },
       inputSchema: { type: 'object' },
       outputSchema: { type: 'object', additionalProperties: false, required: ['isolated'], properties: { isolated: { type: 'boolean' } } },
-      outputPorts: ['success'], capabilities: [], retry: 'safe',
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe',
       async execute(context) { return { outputs: { isolated: context.services.tools === undefined } } },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'service-isolation', name: 'Service isolation' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -224,6 +231,7 @@ describe('DAG workflow engine', () => {
       },
       outputPorts: ['success'],
       capabilities: ['acme.jobs.execute'],
+      effects: 'external',
       dependencyKinds: ['queue'],
       dependencies(config) {
         return typeof config.queue === 'string' ? [{ kind: 'queue', uses: config.queue }] : []
@@ -235,7 +243,7 @@ describe('DAG workflow engine', () => {
       },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'custom-node', name: 'Custom node' },
       spec: {
         requires: [
@@ -249,7 +257,7 @@ describe('DAG workflow engine', () => {
         },
         nodes: [
           { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
-          { id: 'job', uses: 'acme.durable-job@1', with: { queue: 'critical' }, inputs: { value: { literal: 'payload' } } },
+          { id: 'job', uses: 'acme.durable-job@1', with: { queue: 'critical' }, inputs: { value: { literal: 'payload' } }, policy: { retry: { maxAttempts: 2 } } },
           { id: 'end', uses: 'core.end@1', with: {}, inputs: { result: { output: { nodeId: 'job', path: ['result'] } } } },
         ],
         edges: [
@@ -260,12 +268,14 @@ describe('DAG workflow engine', () => {
       },
     }
     const capabilities = new WorkflowCapabilityRegistry()
+    let calls = 0
     capabilities.register('acme.jobs.execute', {
-      async run(queue: string, value: string) { return `${queue}:${value}` },
+      async run(queue: string, value: string) { if (++calls === 1) throw new Error('transient'); return `${queue}:${value}` },
     })
 
     await expect((await new DagWorkflowEngine(registry, { capabilities }).start({ execution: testExecution, template, inputs: {} })).result)
       .resolves.toMatchObject({ status: 'completed', outputs: { result: 'critical:payload' } })
+    expect(calls).toBe(2)
   })
 
   it('applies a node-local expected output byte cap before persistence', async () => {

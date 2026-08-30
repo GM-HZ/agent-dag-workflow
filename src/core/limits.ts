@@ -4,6 +4,11 @@ import { MAX_WORKFLOW_COMMIT_BYTES } from './run-store.js'
 export const MAX_WORKFLOW_CHECKPOINT_BYTES = MAX_WORKFLOW_COMMIT_BYTES - 1024 * 1024
 
 export const DEFAULT_WORKFLOW_DEPLOYMENT_LIMITS: WorkflowDeploymentLimits = Object.freeze({
+  maxTemplateBytes: 4 * 1024 * 1024,
+  maxInputBytes: 2 * 1024 * 1024,
+  maxNodes: 1_000,
+  maxEdges: 5_000,
+  maxSchemaBytes: 1024 * 1024,
   maxConcurrentNodes: 16,
   maxNodeRuns: 1_000,
   maxDurationMs: 60 * 60_000,
@@ -28,6 +33,11 @@ export function normalizeWorkflowDeploymentLimits(
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`workflow deployment limit ${name} must be a positive safe integer`)
   }
   if (limits.maxConcurrentNodes > 64) throw new Error('workflow deployment limit maxConcurrentNodes must be at most 64')
+  if (limits.maxNodes > 10_000) throw new Error('workflow deployment limit maxNodes must be at most 10000')
+  if (limits.maxEdges > 50_000) throw new Error('workflow deployment limit maxEdges must be at most 50000')
+  if (limits.maxTemplateBytes > MAX_WORKFLOW_COMMIT_BYTES) throw new Error(`workflow deployment limit maxTemplateBytes must be at most ${MAX_WORKFLOW_COMMIT_BYTES}`)
+  if (limits.maxInputBytes > MAX_WORKFLOW_COMMIT_BYTES) throw new Error(`workflow deployment limit maxInputBytes must be at most ${MAX_WORKFLOW_COMMIT_BYTES}`)
+  if (limits.maxSchemaBytes > 4 * 1024 * 1024) throw new Error('workflow deployment limit maxSchemaBytes must be at most 4194304')
   if (limits.maxCheckpointBytes > MAX_WORKFLOW_CHECKPOINT_BYTES) {
     throw new Error(`workflow deployment limit maxCheckpointBytes must be at most ${MAX_WORKFLOW_CHECKPOINT_BYTES}`)
   }

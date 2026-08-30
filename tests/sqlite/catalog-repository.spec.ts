@@ -50,7 +50,7 @@ function dbPath(): string {
 
 function template(name = 'SQLite workflow'): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'sqlite-test', name },
     spec: {
@@ -146,7 +146,7 @@ describe('SQLite workflow catalog repository', () => {
     const left = new SqliteWorkflowBindingRepository({ path })
     const right = new SqliteWorkflowBindingRepository({ path })
     const candidate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const, kind: 'WorkflowBinding' as const, metadata: { id: 'sqlite-hook' },
+      apiVersion: 'workflow.gm-hz.dev/v1' as const, kind: 'WorkflowBinding' as const, metadata: { id: 'sqlite-hook' },
       spec: { workflow: { id: 'sqlite-test', revision: 1 }, trigger: { uses: 'webhook@1', with: {} }, inputMapping: {}, authorityRef: 'service:sqlite-hook' },
     }
     expect(await left.publish(candidate, 0, 100)).toMatchObject({ metadata: { revision: 1 } })
@@ -253,6 +253,25 @@ describe('SQLite workflow catalog repository', () => {
     expect(replay).toMatchObject({ status: 'completed', outputs: { answer: 'sqlite-run' } })
     expect((await reopened.loadRun(run.id))?.events.at(-1)).toMatchObject({ type: 'checkpoint.committed' })
     reopened.close()
+  })
+
+  it('exports, backs up, and prunes only bounded terminal run batches', async () => {
+    const path = dbPath()
+    const backup = path.replace(/\.db$/, '.backup.db')
+    const store = new SqliteWorkflowRunStore({ path })
+    const run = await new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: store })
+      .start({ execution: testExecution, template: toolTemplate(), inputs: { message: 'operations' } })
+    expect((await run.result).status).toBe('completed')
+    expect((await store.exportRun(run.id))?.events.length).toBeGreaterThan(0)
+
+    store.backupTo(backup)
+    const copied = new SqliteWorkflowRunStore({ path: backup })
+    expect((await copied.loadRun(run.id))?.checkpoint.status).toBe('completed')
+    copied.close()
+
+    expect(await store.prune({ terminalBefore: Date.now() + 1, limit: 1 })).toEqual({ runIds: [run.id] })
+    expect(await store.loadRun(run.id)).toBeUndefined()
+    store.close()
   })
 
   it('persists needs_attention across reopen before an explicit side-effect retry', async () => {

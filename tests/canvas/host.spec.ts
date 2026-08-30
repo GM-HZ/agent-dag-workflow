@@ -74,7 +74,7 @@ class Session {
 
 function workflow(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'canvas-host-test', name: 'Canvas host test' },
     spec: {
@@ -121,6 +121,10 @@ describe('workflow canvas Host gateway', () => {
     expect(firstPage.events).toHaveLength(2)
     expect(firstPage.nextAfterSeq).toBe(2)
     expect([...firstPage.events, ...trace.events].map(event => event.type)).toEqual(expect.arrayContaining(['run.started', 'node.completed', 'run.completed']))
+
+    const attacker = { id: 'other-session', session: new Session() }
+    ctx.agents.register(attacker.id, attacker)
+    await expect(ctx.workflowCanvas.trace(attacker.id, { runId: result.runId })).rejects.toThrow(/access denied/)
   })
 
   it('uses the local-profile authorization boundary when the gateway receives no config', async () => {
@@ -212,7 +216,7 @@ describe('workflow canvas Host gateway', () => {
     const agent = { id: 'operations-session', session: new Session() }
     ctx.agents.register(agent.id, agent)
     const binding = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const,
+      apiVersion: 'workflow.gm-hz.dev/v1' as const,
       kind: 'WorkflowBinding' as const,
       metadata: { id: 'dingtalk-weekly', revision: 2 },
       spec: {

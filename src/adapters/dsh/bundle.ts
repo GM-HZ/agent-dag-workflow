@@ -23,7 +23,7 @@ export interface Config {
 }
 
 export const name = 'gm-hz-agent-dag-workflow'
-export const inject = ['tools', 'subagents', 'approval', 'skills']
+export const inject = ['tools', 'subagents', 'approval', 'skills', 'agents']
 
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const path = config.databasePath ?? ':memory:'
@@ -42,7 +42,23 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (ctx.get('workflowIngress') === undefined) await ctx.plugin(SqliteWorkflowIngressRecordsService, { path })
   if (ctx.get('workflowDelivery') === undefined) await ctx.plugin(SqliteWorkflowDeliveryRecordsService, { path })
 
-  await ctx.plugin(DshWorkflow, { catalog: 'external', runStore: 'external' })
+  const agents = ctx.get('agents') as { get(id: string): unknown } | undefined
+  if (agents === undefined || typeof agents.get !== 'function') {
+    throw new Error('agent-dag-workflow durable bundle requires the DSH agents service for restart recovery')
+  }
+  await ctx.plugin(DshWorkflow, {
+    catalog: 'external',
+    runStore: 'external',
+    recovery: {
+      reference: stableDshAuthorityReference,
+      resolve: async authorityRef => {
+        const sessionId = parseDshAuthorityReference(authorityRef)
+        if (sessionId === undefined) return undefined
+        const agent = agents.get(sessionId)
+        return isDshAgent(agent) ? agent : undefined
+      },
+    },
+  })
   const bindings = ctx.get('workflowBindings')
   const ingress = ctx.get('workflowIngress')
   const delivery = ctx.get('workflowDelivery')
@@ -50,6 +66,28 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     throw new Error('agent-dag-workflow operational services failed to mount')
   }
   if (ctx.get('workflowCanvas') === undefined) await ctx.plugin(WorkflowCanvas, { bindings, ingress, delivery })
+}
+
+const DSH_AUTHORITY_PREFIX = 'dsh-session:'
+
+function stableDshAuthorityReference(agent: DshWorkflow.DshAgentLike): string {
+  const sessionId = agent.session.id ?? agent.session.header?.id
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 512) {
+    throw new Error('agent-dag-workflow durable runs require a DSH Session with a stable 1-512 character id')
+  }
+  return `${DSH_AUTHORITY_PREFIX}${sessionId}`
+}
+
+function parseDshAuthorityReference(authorityRef: string): string | undefined {
+  if (!authorityRef.startsWith(DSH_AUTHORITY_PREFIX)) return undefined
+  const sessionId = authorityRef.slice(DSH_AUTHORITY_PREFIX.length)
+  return sessionId.length > 0 && sessionId.length <= 512 ? sessionId : undefined
+}
+
+function isDshAgent(value: unknown): value is DshWorkflow.DshAgentLike {
+  if (value === null || typeof value !== 'object' || !('session' in value)) return false
+  const session = value.session
+  return session !== null && typeof session === 'object' && 'append' in session && typeof session.append === 'function'
 }
 
 export type * from './types.js'

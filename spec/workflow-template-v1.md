@@ -1,11 +1,11 @@
 # Workflow Template v1 语义
 
-状态：`v1alpha1` 已实现；未知 `apiVersion/kind` fail closed，不做静默 migration。
+状态：`v1` 已实现；未知 `apiVersion/kind` fail closed，不做静默 migration。
 
 ## Envelope
 
 ```yaml
-apiVersion: workflow.gm-hz.dev/v1alpha1
+apiVersion: workflow.gm-hz.dev/v1
 kind: WorkflowTemplate
 metadata:
   id: research-report
@@ -13,8 +13,8 @@ metadata:
   description: Research a topic and produce a structured report.
 spec:
   requires: []
-  inputSchema: {}
-  outputSchema: {}
+  inputSchema: { type: object }
+  outputSchema: { type: object }
   nodes: []
   edges: []
   outputs: {}
@@ -23,6 +23,17 @@ layout: {}
 ```
 
 `metadata.id` 是 lower-kebab-case 稳定标识。draft revision、published revision、content hash、created/updated time 由 catalog store 管理，不允许 Agent 在文档中伪造。
+
+## Workflow 数据 Schema 子集
+
+`spec.inputSchema`、`spec.outputSchema` 和 `nodes[].expects.schema` 都必须显式声明对象根 `type: object`。它们来自 Workflow 作者，因此只接受有界、非正则的 JSON Schema 子集：
+
+- 结构：`type/properties/required/additionalProperties/items`；
+- 常量与范围：`enum/const/minimum/maximum/exclusiveMinimum/exclusiveMaximum/multipleOf`；
+- 长度：`minLength/maxLength/minItems/maxItems/minProperties/maxProperties`；
+- 注解：`title/description/default/examples/readOnly/writeOnly/$comment`。
+
+`pattern`、`patternProperties`、`format`、`$ref`、组合递归关键字以及其他未列出的关键字 fail closed；Schema 深度、节点数、字节数和 enum 数量也有独立上限。这样运行时校验不会把作者提供的正则或递归引用变成 CPU/栈攻击面。Host 注册的受信任 `NodeDefinition` Schema 不受这个作者子集限制，但仍由插件作者负责安全审计。
 
 ## Requires
 
@@ -94,7 +105,10 @@ requires:
 - `with` 由节点定义的 `configSchema` 校验。
 - `inputs` 的每个值是 binding；它必须满足节点 `inputSchema`。
 - `policy` 只能收紧 deployment/NodeDefinition 上限，不能提升权限或资源额度。
+- `policy.retry.maxAttempts` 仅在 NodeDefinition 声明 `retry: safe | idempotent` 时可以大于 1；`retry: never` 会在发布时 fail closed。一次节点调用的所有 attempt 复用稳定 invocation id，Host 仍需为 idempotent 外部能力实现去重。
 - `expects.schema` 在 NodeDefinition `outputSchema` 之后校验完整节点输出，`expects.maxBytes` 只能进一步收紧 workflow 上限。校验通过前输出不能写入 checkpoint；该 Schema 也用于下游 binding 的静态 path/type 检查。
+
+NodeDefinition 还必须声明 `effects: deterministic | external`。Recorded replay 只重算 deterministic 节点；所有 external 节点（包括第三方自定义节点）必须从已提交 Artifact 恢复，不能由节点名称或实现类型猜测副作用。
 
 ## Binding
 
@@ -188,6 +202,8 @@ policies:
 
 模板值只能低于等于 Host 注入的 `WorkflowDeploymentLimits`。Catalog 发布时校验，执行器和恢复路径再次取 `min(template/default, deployment)`，防止 inline 或历史模板提升资源额度。累计持久状态的 `maxCheckpointBytes` 只由 Host 配置，不是模板 policy，避免模板用大量合法的单节点输出耗尽 Store。
 
+Host 还拥有模板不可覆盖的 `maxTemplateBytes`、`maxInputBytes`、`maxNodes`、`maxEdges` 与 `maxSchemaBytes`。它们在 durable run 创建前检查，避免先持久化再发现结构或输入超限。
+
 ## Layout
 
 ```yaml
@@ -218,7 +234,7 @@ layout:
 1. Envelope schema 与 lossless JSON 检查。
 2. ID、edge、start/end、DAG 与 container topology 检查。
 3. `uses` 精确解析与 NodeDefinition availability 检查。
-4. Node config/input/output/expectation schema 与 definition 语义检查，包括 script runtime/source availability。
+4. Workflow 数据 Schema 安全子集、Node config/input/output/expectation schema 与 definition 语义检查，包括 script runtime/source availability。
 5. NodeDefinition capability、固定 resource 与 `spec.requires` 完整性检查。
 6. Binding 必填项、workflow input、上游性、field path 与可静态判定的 JSON Schema 类型兼容检查；不确定的开放 schema 保留到运行时 validator。
 7. Branch port 完整性与每条成功路径 output 可物化检查。

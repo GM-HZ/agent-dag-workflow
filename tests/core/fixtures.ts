@@ -2,7 +2,7 @@ import type { WorkflowTemplate } from '../../src/core/index.js'
 
 export function toolWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'tool-flow', name: 'Tool flow' },
     spec: {
@@ -50,7 +50,7 @@ export function toolWorkflowTemplate(): WorkflowTemplate {
 
 export function branchingWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'branch-flow', name: 'Branch flow' },
     spec: {

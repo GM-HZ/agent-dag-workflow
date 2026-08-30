@@ -25,7 +25,7 @@ export interface CanvasWorkflowEdge {
 }
 
 export interface CanvasWorkflowTemplate {
-  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
+  readonly apiVersion: 'workflow.gm-hz.dev/v1'
   readonly kind: 'WorkflowTemplate'
   readonly metadata: { readonly id: string; readonly name: string; readonly description?: string }
   readonly spec: {
@@ -54,7 +54,7 @@ export interface CanvasWorkflowRequirement {
 export type WorkflowCanvasAction =
   | 'nodes:list' | 'templates:list'
   | 'draft:create' | 'draft:read' | 'draft:update' | 'draft:validate' | 'draft:diff' | 'draft:publish'
-  | 'run:start' | 'run:resume' | 'run:trace'
+  | 'run:start' | 'run:resume' | 'run:cancel' | 'run:trace'
   | 'bindings:list' | 'ingress:list' | 'delivery:list'
 
 /** Minimal host surface required by Canvas. It deliberately does not depend on DSH. */
@@ -100,7 +100,7 @@ export interface WorkflowCanvasConfig {
 }
 
 export interface CanvasWorkflowTriggerBinding {
-  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
+  readonly apiVersion: 'workflow.gm-hz.dev/v1'
   readonly kind: 'WorkflowBinding'
   readonly metadata: { readonly id: string; readonly revision: number }
   readonly spec: {
@@ -178,6 +178,7 @@ export interface CanvasNodeDefinition {
   readonly capabilities: readonly string[]
   readonly dependencyKinds: readonly string[]
   readonly defaultRequirements: readonly CanvasWorkflowRequirement[]
+  readonly effects: 'deterministic' | 'external'
   readonly retry: 'never' | 'safe' | 'idempotent'
 }
 
@@ -241,6 +242,7 @@ export interface CanvasResumeRequest {
   readonly runId: string
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
 }
+export interface CanvasCancelRequest { readonly runId: string; readonly reason?: string }
 export interface CanvasTraceRequest {
   readonly runId: string
   readonly afterSeq?: number

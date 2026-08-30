@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, type JsonObject, type JsonValue } from '../../core/index.js'
+import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, WORKFLOW_TEMPLATE_API_VERSION, type JsonObject, type JsonValue } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
 import type { WorkflowIngressRecord, WorkflowIngressStore, WorkflowInputMappingValue, WorkflowTriggerBinding, WorkflowTriggerEnvelope } from './types.js'
 
@@ -109,7 +109,7 @@ function validateEnvelope(value: WorkflowTriggerEnvelope): void {
   }
 }
 function validateBinding(binding: WorkflowTriggerBinding, source: string): void {
-  if (binding.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || binding.kind !== 'WorkflowBinding' || binding.spec.enabled === false
+  if (binding.apiVersion !== WORKFLOW_TEMPLATE_API_VERSION || binding.kind !== 'WorkflowBinding' || binding.spec.enabled === false
     || !/^[a-z][a-z0-9-]*$/.test(binding.metadata.id) || !Number.isSafeInteger(binding.metadata.revision) || binding.metadata.revision < 1
     || !/^[a-z][a-z0-9-]*$/.test(binding.spec.workflow.id) || !Number.isSafeInteger(binding.spec.workflow.revision) || binding.spec.workflow.revision < 1
     || binding.spec.authorityRef.length === 0 || binding.spec.authorityRef.length > 1024) throw new Error('workflow binding is invalid or disabled')

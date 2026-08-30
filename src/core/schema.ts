@@ -2,6 +2,7 @@ import { Ajv, type ErrorObject, type ValidateFunction } from 'ajv'
 import { parse } from 'yaml'
 import { snapshotJsonValue } from './json.js'
 import type { JsonSchema, WorkflowDiagnostic, WorkflowTemplate } from './types.js'
+import { WORKFLOW_TEMPLATE_API_VERSION } from './version.js'
 
 const bindingSchema = {
   oneOf: [
@@ -58,7 +59,7 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
   additionalProperties: false,
   required: ['apiVersion', 'kind', 'metadata', 'spec'],
   properties: {
-    apiVersion: { const: 'workflow.gm-hz.dev/v1alpha1' },
+    apiVersion: { const: WORKFLOW_TEMPLATE_API_VERSION },
     kind: { const: 'WorkflowTemplate' },
     metadata: {
       type: 'object',
@@ -109,7 +110,7 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
                     type: 'object',
                     additionalProperties: false,
                     required: ['maxAttempts'],
-                    properties: { maxAttempts: { type: 'integer', minimum: 1 } },
+                    properties: { maxAttempts: { type: 'integer', minimum: 1, maximum: 10 } },
                   },
                 },
               },
@@ -150,6 +151,92 @@ export const WORKFLOW_TEMPLATE_SCHEMA = {
 
 const ajv = new Ajv({ allErrors: true, strict: false })
 const validateTemplateSchema = ajv.compile(WORKFLOW_TEMPLATE_SCHEMA)
+
+const AUTHORED_SCHEMA_KEYWORDS = new Set([
+  'type', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const',
+  'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+  'minLength', 'maxLength', 'minItems', 'maxItems', 'minProperties', 'maxProperties',
+  'title', 'description', 'default', 'examples', 'readOnly', 'writeOnly', '$comment',
+])
+const MAX_AUTHORED_SCHEMA_DEPTH = 64
+const MAX_AUTHORED_SCHEMA_NODES = 4_096
+const MAX_AUTHORED_ENUM_VALUES = 256
+
+export interface AuthoredSchemaDiagnostic {
+  readonly message: string
+  readonly path: readonly (string | number)[]
+}
+
+/**
+ * Validates the deliberately small, non-regex JSON Schema dialect accepted
+ * from workflow authors. NodeDefinition schemas remain Host-trusted and may
+ * use the full Ajv dialect.
+ */
+export function validateAuthoredDataSchema(schema: JsonSchema, requireObjectRoot = true): readonly AuthoredSchemaDiagnostic[] {
+  const diagnostics: AuthoredSchemaDiagnostic[] = []
+  if (requireObjectRoot && schema.type !== 'object') {
+    diagnostics.push({ message: "root schema must declare type: 'object'", path: ['type'] })
+  }
+  const pending: { readonly schema: JsonSchema; readonly path: readonly (string | number)[]; readonly depth: number }[] = [
+    { schema, path: [], depth: 0 },
+  ]
+  let nodes = 0
+  while (pending.length > 0) {
+    const current = pending.pop()!
+    nodes++
+    if (nodes > MAX_AUTHORED_SCHEMA_NODES) {
+      diagnostics.push({ message: `schema exceeds ${MAX_AUTHORED_SCHEMA_NODES} schema nodes`, path: current.path })
+      break
+    }
+    if (current.depth > MAX_AUTHORED_SCHEMA_DEPTH) {
+      diagnostics.push({ message: `schema exceeds nesting depth ${MAX_AUTHORED_SCHEMA_DEPTH}`, path: current.path })
+      continue
+    }
+    for (const keyword of Object.keys(current.schema)) {
+      if (!AUTHORED_SCHEMA_KEYWORDS.has(keyword)) {
+        diagnostics.push({ message: `unsupported or unsafe authored schema keyword: ${keyword}`, path: [...current.path, keyword] })
+      }
+    }
+    const properties = current.schema.properties
+    if (properties !== undefined) {
+      if (!isPlainRecord(properties)) {
+        diagnostics.push({ message: 'properties must be an object of schemas', path: [...current.path, 'properties'] })
+      } else {
+        for (const [name, child] of Object.entries(properties)) {
+          enqueueAuthoredSchema(pending, diagnostics, child, [...current.path, 'properties', name], current.depth + 1)
+        }
+      }
+    }
+    const items = current.schema.items
+    if (items !== undefined) enqueueAuthoredSchema(pending, diagnostics, items, [...current.path, 'items'], current.depth + 1)
+    const additional = current.schema.additionalProperties
+    if (additional !== undefined && typeof additional !== 'boolean') {
+      enqueueAuthoredSchema(pending, diagnostics, additional, [...current.path, 'additionalProperties'], current.depth + 1)
+    }
+    if (Array.isArray(current.schema.enum) && current.schema.enum.length > MAX_AUTHORED_ENUM_VALUES) {
+      diagnostics.push({ message: `enum must contain at most ${MAX_AUTHORED_ENUM_VALUES} values`, path: [...current.path, 'enum'] })
+    }
+  }
+  return diagnostics
+}
+
+function enqueueAuthoredSchema(
+  pending: { schema: JsonSchema; path: readonly (string | number)[]; depth: number }[],
+  diagnostics: AuthoredSchemaDiagnostic[],
+  value: unknown,
+  path: readonly (string | number)[],
+  depth: number,
+): void {
+  if (!isPlainRecord(value)) {
+    diagnostics.push({ message: 'expected a JSON Schema object', path })
+    return
+  }
+  pending.push({ schema: value, path, depth })
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
 
 export function parseWorkflowTemplate(source: string): WorkflowTemplate {
   const parsed: unknown = parse(source)

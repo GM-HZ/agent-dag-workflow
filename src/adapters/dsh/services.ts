@@ -19,6 +19,7 @@ import {
   type WorkflowRunCheckpoint,
   type WorkflowRunRecord,
   type WorkflowRunMetadata,
+  type WorkflowRunResult,
   type WorkflowRunStore,
   type WorkflowEngineServices,
 } from '../../core/index.js'
@@ -221,6 +222,8 @@ export abstract class DagWorkflowEngineService extends Service {
 
   abstract start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun>
   abstract resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun>
+  abstract cancel(request: import('./types.js').DshDagWorkflowCancelRequest): Promise<WorkflowRunResult>
+  abstract owns(runId: string, parent: object): Promise<boolean>
 }
 
 export abstract class WorkflowRunsService extends Service implements WorkflowRunStore {
@@ -401,7 +404,6 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     })
     ctx.effect(() => async () => {
       const runs = [...this.active.values()]
-      for (const run of runs) run.cancel('dag workflow service disposed')
       await Promise.all(runs.map(run => run.dispose()))
       this.active.clear()
     }, 'agent-dag-workflow: active runs')
@@ -419,6 +421,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       authority: parent,
       origin: { type: 'host', source: 'dsh' },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       onEvent: observe,
     })
     const run = adaptRunHandle(handle)
@@ -432,13 +435,18 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
     const record = await this.ctx.workflowRuns.loadRun(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
+    const authorityRef = this.authorityReference(parent)
+    if (record.execution.authorityRef !== authorityRef) {
+      throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'resume owner does not match the persisted run authority')
+    }
     if (this.active.has(request.runId)) throw new WorkflowExecutionError('RUN_ACTIVE', `workflow run is already active: ${request.runId}`)
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
     const handle = await this.runtime.resume({
       runId: request.runId,
-      authorityRef: record.execution.authorityRef,
+      authorityRef,
       authority: parent,
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
       onEvent: observe,
     })
@@ -446,6 +454,26 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     this.active.set(run.id, run)
     void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
     return run
+  }
+
+  async cancel(request: import('./types.js').DshDagWorkflowCancelRequest): Promise<WorkflowRunResult> {
+    const parent = request.parent
+    if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
+    const authorityRef = this.authorityReference(parent)
+    return this.runtime.cancel({
+      runId: request.runId,
+      authorityRef,
+      authority: parent,
+      ...(request.reason === undefined ? {} : { reason: request.reason }),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+    })
+  }
+
+  async owns(runId: string, parent: object): Promise<boolean> {
+    if (!isDshAgentLike(parent)) return false
+    const metadata = await this.ctx.workflowRuns.getRunMetadata(runId)
+    return metadata !== undefined && metadata.execution.authorityRef === this.authorityReference(parent)
   }
 
   private authorityReference(parent: DshAgentLike): string {
@@ -501,7 +529,7 @@ export async function recoverPersistedWorkflowRuns(
         ctx.logger.warn(`agent-dag-workflow: authority reference mismatch for run ${record.runId}`)
         continue
       }
-      await ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, signal })
+      await ctx.dagWorkflowEngine.resume({ runId: record.runId, parent, interruptionSignal: signal })
       started.push(record.runId)
     } catch (error: unknown) {
       if (signal.aborted) throw error
@@ -527,11 +555,15 @@ function createRunObserver(
 }
 
 function adaptRunHandle(handle: WorkflowRunHandle): DshWorkflowRun {
+  const result = handle.result
   return {
     id: handle.runId,
-    result: handle.result,
+    result,
     cancel: reason => handle.cancel(reason),
-    async dispose() { await handle.result },
+    async dispose() {
+      await handle.detach('DSH executor detached')
+      await result
+    },
   }
 }
 

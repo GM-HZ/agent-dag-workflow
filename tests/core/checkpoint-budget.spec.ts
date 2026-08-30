@@ -13,6 +13,14 @@ import { toolWorkflowTemplate } from './fixtures.js'
 const execution = { authorityRef: 'test:checkpoint-budget', authority: { test: true }, origin: { type: 'sdk' } } as const
 
 describe('workflow checkpoint budget', () => {
+  it('rejects oversized launch inputs before creating a durable run', async () => {
+    const store = new InMemoryWorkflowRunStore()
+    const engine = new DagWorkflowEngine(registry(), {}, { runStore: store, deploymentLimits: { maxInputBytes: 32 } })
+    await expect(engine.start({ execution, template: toolWorkflowTemplate(), inputs: { message: 'x'.repeat(64) } }))
+      .rejects.toMatchObject({ code: 'WORKFLOW_INPUT_TOO_LARGE' })
+    expect(await store.listRecoverableRuns()).toEqual([])
+  })
+
   it('rejects a deployment budget that leaves insufficient commit headroom', () => {
     expect(() => new DagWorkflowEngine(registry(), {}, {
       deploymentLimits: { maxCheckpointBytes: 15 * 1024 * 1024 + 1 },
@@ -52,7 +60,7 @@ describe('workflow checkpoint budget', () => {
   it('does not duplicate an oversized assembled result into the terminal checkpoint', async () => {
     const value = 'x'.repeat(1_200)
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'checkpoint-result', name: 'Checkpoint result budget' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -98,14 +106,14 @@ describe('workflow checkpoint budget', () => {
       type: 'test.large-progress', version: 1, title: 'Large progress', description: 'Checkpoint budget test.',
       configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' },
       outputSchema: { type: 'object', additionalProperties: false }, outputPorts: ['success'],
-      capabilities: [], retry: 'safe', implementationDigest: 'test-large-progress-v1',
+      capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-large-progress-v1',
       async execute(context) {
         await context.checkpointProgress({ padding: 'x'.repeat(4_000) })
         return { outputs: {} }
       },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'checkpoint-progress', name: 'Checkpoint progress budget' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -145,11 +153,11 @@ describe('workflow checkpoint budget', () => {
       outputSchema: {
         type: 'object', additionalProperties: false, required: ['padding'], properties: { padding: { type: 'string' } },
       },
-      outputPorts: ['success'], capabilities: [], retry: 'safe', implementationDigest: 'test-large-output-v1',
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-large-output-v1',
       async execute() { return { outputs: { padding: 'x'.repeat(3_000) } } },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'checkpoint-recovery-floor', name: 'Checkpoint recovery floor' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },

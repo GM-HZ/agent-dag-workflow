@@ -1,4 +1,4 @@
-# 1.0.0 重构实现状态
+# 1.0.0 正式版实现状态
 
 状态以当前 `main` 工作树和自动化门禁为准。`完成` 表示已有公开入口和测试；reference adapter 不等于对应平台的生产级连接器。
 
@@ -8,7 +8,7 @@
 | 中立 Template/Binding/Node 协议 | 完成 | `src/core`、新 API Version、无旧 Parser/节点别名、离线 migrator | 无 |
 | 编译、DAG、Condition、Foreach、Subworkflow | 完成 | Core compiler/engine/catalog 测试 | 无界 loop 明确不做 |
 | 两级扩展与依赖门禁 | 完成 | Tool Gateway、自定义 Node Capability projection、`spec.requires` fail-closed 测试 | 无 Provider 层 |
-| Async Runtime/Catalog/Store | 完成 | `WorkflowRuntime`、Memory/SQLite、published/inline execution plan；DSH/Canvas 复用同一 Runtime | 无 |
+| Async Runtime/Catalog/Store | 完成 | `WorkflowRuntime`、Memory/SQLite、published/inline execution plan；非协作 Host 节点的 timeout/cancel/detach 有界收敛；DSH/Canvas 复用同一 Runtime | 无 |
 | Execution Plan 与版本锁 | 完成 | canonical template、dependency closure、Engine/NodeDefinition set hash、实现摘要漂移拒绝测试 | 无 digest 的自定义 Node 只能 inline non-replayable，不能发布 |
 | Event Envelope、Checkpoint、分页 Journal | 完成 | Envelope v1、CAS 原子 commit、16 MiB commit 上限、Store 原生分页、故障注入 | OTel projection 属于后续 Adapter |
 | Live Event | 完成（协议） | checkpoint progress 同时投影 Live/Journal、有界缓冲、`liveSeq`、慢消费者丢弃旧 delta、取消/终态关闭；CLI `trace --follow --format jsonl` 可见投影 | 各 Host 的 token transport 按需实现 |
@@ -18,13 +18,14 @@
 | Trigger Envelope/Binding/Ingress | 完成 | Binding 发布时校验固定 published target、Trigger config、Input Mapping 与 Authority；SQLite v11 持久化不可变 Binding；server-derived dedupe、后台 queue 和 launch gap recovery | 生产 HTTP server/消息平台不是 Core |
 | Cron/Webhook/钉钉 reference adapter | 完成（reference） | 时区与 misfire、HMAC、钉钉签名/身份、命令/受限自然语言路由、回执关联 | 不宣称覆盖所有平台协议/回调形态 |
 | Worker claim/lease | 完成（reference） | Memory/SQLite coordinator、租约过期、heartbeat、两个 SQLite Worker 竞态与单次执行 | 分布式 Store 仍需服务端 lease fencing；不宣称 exactly-once |
-| Result Delivery | 完成（reference） | SQLite durable record、稳定 invocationId、immutable binding、并发合并、unknown attempt、幂等 retry | 生产 Channel 自行实现加密凭据与告警 |
+| Result Delivery | 完成（reference） | Worker 根据 `deliveryRef` 自动投递终态；SQLite durable record、稳定 invocationId、immutable binding、并发合并、unknown attempt、幂等 retry | 生产 Channel 自行实现加密凭据与告警 |
 | Agent Access Plane | 完成 | `WorkflowAgentAccess`、有界 search/describe/run/trace projection、稳定错误码；Adapter 不直接访问 Store | 无 Provider 层 |
-| CLI-native | 完成 | v1 JSON/JSONL Envelope、stdin、search/describe/draft/diff/publish/run/run-get/trace/replay/resume、background worker、SQLite 跨进程与显式 Host module | 交互式 UI 不属于 CLI |
+| CLI-native | 完成 | v1 JSON/JSONL Envelope、stdin、search/describe/draft/diff/publish/run/run-get/trace/replay/resume/cancel、background worker、SQLite 跨进程与显式 Host module | 交互式 UI 不属于 CLI |
 | Host Adapter DX | 完成 | `defineWorkflowCliHost`、加载时契约检查、最小 Tool Host、Authority 示例、CLI 错误/运行 next-action hints | 无 Provider 层 |
 | Skill / Codex Plugin | 完成 | CLI-first/MCP-fallback Skill、同步门禁、官方 Skill/Plugin validator、随包本地 marketplace、wrapper→CLI 进程烟测 | 新会话负责重新发现已安装 Skill |
-| 固定 MCP Gateway | 完成 | 5 个 invoke / 11 个 author Tool、1000 Workflow 上下文预算测试、官方 SDK 内存与真实 stdio 进程测试 | 不提供逐 Workflow Tool 投影 |
-| DSH Adapter 与 Canvas | 完成 | DSH `dagWorkflowEngine`、Binding/Ingress/Delivery durable services 使用统一 Runtime/SQLite；Canvas 编辑同一模板，Trace 按 Journal cursor 分页；旧暗黑样式层已删除 | UI 产品体验可继续独立迭代 |
+| 固定 MCP Gateway | 完成 | 6 个 invoke / 12 个 author Tool、descriptor 与运行时入参共用 Schema 校验、1000 Workflow 上下文预算测试、官方 SDK 内存与真实 stdio 进程测试 | 不提供逐 Workflow Tool 投影 |
+| DSH Adapter 与 Canvas | 完成 | DSH `dagWorkflowEngine`、Binding/Ingress/Delivery durable services 使用统一 Runtime/SQLite；默认 bundle 用稳定 DSH Session id 跨重启恢复；Canvas 编辑同一模板，Transport 断开只 detach，显式 cancel 才写终态 | UI 产品体验可继续独立迭代 |
+| 资源与运行运维 | 完成 | Template/Input/Node/Edge/Schema/Output/Checkpoint ceiling；作者 Schema 使用非正则有界子集；JSON nesting、Webhook 配置与 MCP 入参 fail closed；SQLite export/prune/backup | 自动 retention/备份调度由部署层配置 |
 | Migration | 完成 | Store schema v1-v11 fixture、重复重开、旧 Template 离线转换；不支持的 in-flight run 显式隔离为 paused/operator attention | 不静默猜测旧 checkpoint 语义 |
 | 复杂纵向 Case | 完成 | 同一 21 节点 AI 模型周报经 SDK/MCP/CLI/DSH 执行；比较 plan hash、NodeDefinition set hash、输出与 Journal 契约 | 真实联网结果不作为确定性 CI fixture |
 | 文档一致性 | 完成 | README、Architecture、重构方案、体验与子入口 README 描述同一 1.0.0 事实模型 | 发布后按协议变更维护 |
@@ -39,6 +40,6 @@
 4. CLI 跨进程 trace/recorded replay 通过；
 5. DSH 本机复杂 Workflow 与 Canvas 回归通过；
 6. 同一复杂模板的 Host conformance 与真实 DSH 回归收口；
-7. 最终代码审查无 P0/P1 问题后再合并；不在本分支中途发布 npm 或 DSH Market。
+7. 最终代码审查无 P0/P1 问题；以一个正式版本提交进入首次 npm bootstrap，不创建 RC 或候选 tag。
 
 `pnpm verify:pack` 在本机使用隔离消费者和当前锁定依赖做离线烟测；CI 中自动切换为全新 npm cache 的真实网络安装。两条路径都解包同一个 `npm pack` tarball，并在移除/省略 DSH peer 后导入根入口、Runtime、SQLite、MCP、Trigger 和 CLI。

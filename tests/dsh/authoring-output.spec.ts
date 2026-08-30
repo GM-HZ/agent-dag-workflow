@@ -6,7 +6,7 @@ describe('workflow authoring handoff output', () => {
     const rendered = renderWorkflowToolOutput('workflow_draft_create', {
       id: 'weekly-ai-model-news', revision: 4, contentHash: 'content', semanticHash: 'semantic', createdAt: 1, updatedAt: 2,
       template: {
-        apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+        apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
         metadata: { id: 'weekly-ai-model-news', name: 'AI 模型周报' },
         spec: { nodes: [{ id: 'large-node-that-must-not-be-rendered' }], edges: [] },
       },

@@ -9,7 +9,7 @@ import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../.
 import { WorkflowRuntime } from '../../src/runtime/index.js'
 
 const binding: WorkflowTriggerBinding = {
-  apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'hook', revision: 1 },
+  apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowBinding', metadata: { id: 'hook', revision: 1 },
   spec: {
     workflow: { id: 'target', revision: 3 }, trigger: { uses: 'webhook@1', with: {} },
     inputMapping: { message: { payload: { path: ['text'] } } }, authorityRef: 'service:hook',
@@ -35,7 +35,7 @@ describe('workflow binding catalog', () => {
     return new WorkflowBindingCatalog(new InMemoryWorkflowBindingRepository(), target, triggers, { now: () => 123 })
   }
   const candidate = {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1' as const,
+    apiVersion: 'workflow.gm-hz.dev/v1' as const,
     kind: 'WorkflowBinding' as const,
     metadata: { id: 'hook' },
     spec: {
@@ -105,6 +105,9 @@ describe('trigger ingress', () => {
   })
 
   it('validates HMAC webhooks and timezone cron schedules', () => {
+    expect(() => new WebhookTriggerAdapter({ secret: '' })).toThrow(/secret/)
+    expect(() => new WebhookTriggerAdapter({ secret: 'secret', maxBodyBytes: 0 })).toThrow(/maxBodyBytes/)
+    expect(() => new WebhookTriggerAdapter({ secret: 'secret', toleranceMs: -1 })).toThrow(/toleranceMs/)
     const now = 1_800_000_000_000
     const body = new TextEncoder().encode('{"text":"hello"}')
     const timestamp = String(now)
@@ -256,7 +259,7 @@ describe('trigger ingress', () => {
       resolveAuthority: (sender, conversation) => sender === 'user-1' && conversation === 'group-1' ? 'principal:ding-user-1' : undefined,
     })
     const dingBinding: WorkflowTriggerBinding = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'weekly-ding', revision: 1 },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowBinding', metadata: { id: 'weekly-ding', revision: 1 },
       spec: {
         workflow: { id: 'weekly-ai', revision: 3 }, trigger: { uses: 'dingtalk@1', with: {} },
         inputMapping: {
@@ -287,8 +290,8 @@ describe('trigger ingress', () => {
     expect(externalDeliver).toHaveBeenCalledTimes(1)
 
     const completed = { status: 'completed' as const, runId: 'run-ding', outputs: { items: [] }, nodeStates: {}, edgeStates: {}, events: [] }
-    await channel.deliverTerminal(dingBinding, completed)
-    await channel.deliverTerminal(dingBinding, completed)
+    await delivery.deliver({ runId: completed.runId, deliveryRef: dingBinding.spec.deliveryRef!, phase: 'terminal', payload: { status: completed.status, outputs: completed.outputs } })
+    await delivery.retryAttention()
     expect(externalDeliver).toHaveBeenCalledTimes(2)
     expect(await ingressStore.get((await ingressStore.list())[0]!.triggerId)).toMatchObject({ duplicateCount: 1 })
 
@@ -328,7 +331,7 @@ describe('trigger ingress', () => {
       authorityResolver: { async resolve(ref) { return { ref } } },
     })
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'approve-flow', name: 'Approve flow' },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'approve-flow', name: 'Approve flow' },
       spec: {
         requires: [{ kind: 'capability', uses: 'gateway.approval.request' }, { kind: 'approval-action', uses: 'release' }],
         inputSchema: { type: 'object' }, outputSchema: { type: 'object', required: ['approved'], properties: { approved: { type: 'boolean' } } },
@@ -347,24 +350,24 @@ describe('trigger ingress', () => {
     }
     const draft = await catalog.createDraft(template); await catalog.publish(draft.id, draft.revision)
     const dingBinding: WorkflowTriggerBinding = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'approve-ding', revision: 1 },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowBinding', metadata: { id: 'approve-ding', revision: 1 },
       spec: { workflow: { id: 'approve-flow', revision: 1 }, trigger: { uses: 'dingtalk@1', with: {} }, inputMapping: {}, authorityRef: 'principal:approver', deliveryRef: 'ding:approval' },
     }
     const adapter = new DingTalkTriggerAdapter({ appSecret: 'approval-secret', now: () => now, resolveAuthority: () => 'principal:approver' })
     const ingress = new WorkflowTriggerIngress(runtime, new InMemoryWorkflowIngressStore(), async () => dingBinding)
     const deliver = vi.fn(async (_request: import('../../src/triggers/core/index.js').WorkflowDeliveryRequest & { readonly invocationId: string }) => {})
+    const delivery = new WorkflowResultDeliveryService({ deliver }, new InMemoryWorkflowDeliveryStore(), () => now)
     const channel = new DingTalkWorkflowChannel(
       adapter, new DingTalkWorkflowRouter([{ binding: dingBinding.metadata, command: '/approve' }]), ingress, async () => dingBinding,
-      new WorkflowResultDeliveryService({ deliver }, new InMemoryWorkflowDeliveryStore(), () => now),
+      delivery,
     )
     const timestamp = String(now)
     const sign = createHmac('sha256', 'approval-secret').update(`${timestamp}\napproval-secret`).digest('base64')
     const accepted = await channel.receive({ timestamp, sign, body: {
       senderStaffId: 'operator', conversationId: 'release-room', msgId: 'approval-message', text: { content: '/approve' },
     } })
-    const result = await new WorkflowRunWorker(runtime, queue).runOnce({ workerId: 'approval-worker', leaseMs: 1_000 })
+    const result = await new WorkflowRunWorker(runtime, queue, delivery).runOnce({ workerId: 'approval-worker', leaseMs: 1_000 })
     if (result === undefined) throw new Error('approval run was not claimed')
-    await channel.deliverTerminal(dingBinding, result)
     expect(accepted).toMatchObject({ status: 'launched', runId: result.runId })
     expect(result).toMatchObject({ status: 'completed', outputs: { approved: true } })
     expect(approvals).toHaveBeenCalledTimes(1)

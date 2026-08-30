@@ -12,7 +12,7 @@ const definitions: CanvasNodeDefinition[] = [
 ]
 
 const template: CanvasWorkflowTemplate = {
-  apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+  apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
   metadata: { id: 'research-signal', name: 'Research quality signal', description: 'Visual fixture' },
   spec: {
     inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, outputs: {},
@@ -37,15 +37,34 @@ const template: CanvasWorkflowTemplate = {
 }
 
 const ok = <T,>(value: T) => Promise.resolve({ ok: true as const, value })
+const completedTrace = {
+  runId: 'visual-run-1', templateId: template.metadata.id, semanticHash: 'visual-fixture', createdAt: Date.now(),
+  status: 'completed' as const, checkpointSeq: 5,
+  nodeStates: { start: 'succeeded', research: 'succeeded', quality: 'succeeded', approve: 'skipped', end: 'succeeded' },
+  edgeStates: { 's-r': 'taken', 'r-q': 'taken', 'q-a': 'skipped', 'q-e': 'taken', 'a-e': 'skipped' },
+  nodeOutputs: {}, nodeProgress: {},
+  events: [
+    { seq: 1, type: 'run.started', runId: 'visual-run-1' },
+    { seq: 2, type: 'node.completed', runId: 'visual-run-1', nodeId: 'research' },
+    { seq: 3, type: 'edge.taken', runId: 'visual-run-1', edgeId: 'q-e' },
+    { seq: 4, type: 'node.completed', runId: 'visual-run-1', nodeId: 'end' },
+    { seq: 5, type: 'run.completed', runId: 'visual-run-1' },
+  ],
+}
 const api = {
   remote: {
     nodes: () => ok(definitions), templates: () => ok([]),
+    operations: () => ok({ bindings: [], ingress: [], deliveryAttention: [] }),
+    validate: () => ok({ diagnostics: [] }),
+    runDraft: () => ok({ runId: 'visual-run-1', status: 'completed', outputs: { quality: 'verified' } }),
+    trace: () => ok(completedTrace),
   },
   unwrap: <T,>(_operation: string, result: { readonly ok: true; readonly value: T }) => result.value,
+  request: async <T,>(_operation: string, invoke: () => Promise<{ readonly ok: true; readonly value: T }>) => (await invoke()).value,
 } as unknown as WorkflowCanvasClientApi
 
 createRoot(document.getElementById('root')!).render(<WorkflowStudio api={api} sessionId="visual-session" initialTemplate={template} />)
 
 function node(uses: string, title: string, role: CanvasNodeDefinition['role'], outputPorts: string[]): CanvasNodeDefinition {
-  return { catalogId: uses, kind: 'node', uses, title, role, outputPorts, description: title, configSchema: {}, inputSchema: {}, outputSchema: {}, requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], retry: 'safe' }
+  return { catalogId: uses, kind: 'node', uses, title, role, outputPorts, description: title, configSchema: {}, inputSchema: {}, outputSchema: {}, requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], effects: 'deterministic', retry: 'safe' }
 }

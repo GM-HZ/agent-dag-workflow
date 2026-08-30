@@ -146,7 +146,7 @@ export function removeEdge(template: CanvasWorkflowTemplate, edgeId: string): Ca
 
 export function blankTemplate(seed = Date.now()): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: `workflow-${seed}`, name: '未命名工作流' },
     spec: {

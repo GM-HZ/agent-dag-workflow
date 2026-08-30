@@ -1,6 +1,6 @@
 # @gm-hz/agent-dag-workflow/canvas
 
-Host-scoped Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1alpha1.
+Host-scoped Remote gateway and DSH `shell.overlay` visual studio for `WorkflowTemplate` v1.
 
 Every RPC first resolves `sessionId` through DSH's live Host Agent registry and accepts only an attached, top-level Agent. Multi-user and multi-tenant deployments must layer a user/workspace/action policy after that lookup:
 

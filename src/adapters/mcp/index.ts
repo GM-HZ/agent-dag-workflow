@@ -4,7 +4,7 @@ import {
   type AgentAccessContext,
   type WorkflowAgentAccessApi,
 } from '../../access/index.js'
-import { isJsonObject, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonSchema, type JsonValue, type WorkflowTemplate } from '../../core/index.js'
+import { compileJsonValidator, isJsonObject, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonSchema, type JsonValue, type WorkflowTemplate } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
 
 export type WorkflowMcpProfile = 'invoke' | 'author'
@@ -40,6 +40,8 @@ export class WorkflowMcpGateway {
     const descriptor = this.listTools().find(tool => tool.name === name)
     if (descriptor === undefined) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `unknown or unavailable workflow MCP tool: ${name}`)
     const args = snapshotJsonObject(rawArgs)
+    const errors = MCP_INPUT_VALIDATORS.get(name)?.(args) ?? ['MCP input schema is unavailable']
+    if (errors.length > 0) throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', errors.join('; '))
     const accessContext: AgentAccessContext = {
       authorityRef: context.authorityRef,
       ...(context.authority === undefined ? {} : { authority: context.authority }),
@@ -63,6 +65,9 @@ export class WorkflowMcpGateway {
         ...(args.idempotencyKey === undefined ? {} : { idempotencyKey: text(args.idempotencyKey, 'idempotencyKey') }),
       }, accessContext) as unknown as JsonValue)
       case 'workflow_run_get': return snapshotJsonValue(await this.access.getRun(text(args.runId, 'runId'), accessContext) as unknown as JsonValue)
+      case 'workflow_cancel': return snapshotJsonValue(await this.access.cancel(
+        text(args.runId, 'runId'), accessContext, args.reason === undefined ? undefined : text(args.reason, 'reason'),
+      ) as unknown as JsonValue)
       case 'workflow_trace': return snapshotJsonValue(await this.access.trace({
         runId: text(args.runId, 'runId'),
         ...(args.view === undefined ? {} : { view: traceView(args.view) }),
@@ -117,6 +122,10 @@ const INVOKE_TOOLS: readonly WorkflowMcpToolDescriptor[] = Object.freeze([
   descriptor('workflow_run_get', 'Read a compact persisted workflow run projection without returning its template or execution plan.', 'invoke', {
     runId: { type: 'string', minLength: 1, maxLength: 1024 },
   }, ['runId']),
+  descriptor('workflow_cancel', 'Durably cancel a run owned by the calling authority. This is an explicit business operation, not a transport disconnect.', 'invoke', {
+    runId: { type: 'string', minLength: 1, maxLength: 1024 },
+    reason: { type: 'string', minLength: 1, maxLength: 4096 },
+  }, ['runId']),
   descriptor('workflow_trace', 'Read a compact run summary or one bounded page of authoritative Journal events.', 'invoke', {
     runId: { type: 'string', minLength: 1, maxLength: 1024 },
     view: { type: 'string', enum: ['summary', 'events'], default: 'summary' },
@@ -145,6 +154,13 @@ const AUTHOR_TOOLS: readonly WorkflowMcpToolDescriptor[] = Object.freeze([
     id: workflowId, expectedDraftRevision: positiveInteger,
   }, ['id', 'expectedDraftRevision']),
 ])
+
+const MCP_INPUT_VALIDATORS = new Map(
+  [...INVOKE_TOOLS, ...AUTHOR_TOOLS].map(tool => [
+    tool.name,
+    compileJsonValidator(tool.inputSchema, `${tool.name} MCP input`),
+  ] as const),
+)
 
 function descriptor(
   name: string,

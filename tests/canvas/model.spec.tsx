@@ -20,12 +20,13 @@ const definition: CanvasNodeDefinition = {
   capabilities: ['acme.work.execute'],
   dependencyKinds: ['acme-resource'],
   defaultRequirements: [{ kind: 'capability', uses: 'acme.work.execute' }],
+  effects: 'deterministic',
   retry: 'safe',
 }
 
 function template(): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'canvas-test', name: 'Canvas test' },
     spec: { inputSchema: {}, outputSchema: {}, nodes: [], edges: [], outputs: {} },
@@ -74,6 +75,7 @@ describe('canvas template projection', () => {
         { kind: 'capability', uses: 'gateway.tool.execute' },
         { kind: 'tool', uses: 'dms.query' },
       ],
+      effects: 'external',
       retry: 'never',
     }
 

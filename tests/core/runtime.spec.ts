@@ -61,12 +61,12 @@ describe('host-neutral WorkflowRuntime', () => {
     const progressNode: WorkflowNodeDefinition = {
       type: 'test.progress', version: 1, title: 'Progress', description: 'Checkpoint progress',
       configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
-      outputPorts: ['success'], capabilities: [], retry: 'safe', implementationDigest: 'test-progress-v1',
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-progress-v1',
       async execute(context) { await gate; await context.checkpointProgress({ percent: 50 }); return { outputs: { done: true } } },
     }
     nodes.register(progressNode)
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'live-progress', name: 'Live progress' },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'live-progress', name: 'Live progress' },
       spec: {
         inputSchema: { type: 'object' }, outputSchema: { type: 'object', required: ['done'], properties: { done: { type: 'boolean' } } },
         nodes: [
@@ -104,7 +104,7 @@ describe('host-neutral WorkflowRuntime', () => {
     const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
     const runs = new InMemoryWorkflowRunStore()
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'digest-lock', name: 'Digest lock' },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'digest-lock', name: 'Digest lock' },
       spec: { inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, nodes: [
         { id: 'start', uses: 'core.start@1', with: {}, inputs: {} }, { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
       ], edges: [{ id: 'edge', source: 'start', target: 'end' }], outputs: {} },
@@ -160,6 +160,43 @@ describe('host-neutral WorkflowRuntime', () => {
     const live = await runtime.replay({ runId: handle.runId, mode: 'live', authorityRef: 'user:1' })
     expect(await live.result).toMatchObject({ status: 'completed' })
     expect(execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses explicit effects metadata to record and replay custom external nodes', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    let effects = 0
+    nodes.register({
+      type: 'custom.external', version: 1, title: 'External', description: 'Custom external effect',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'external', retry: 'never', implementationDigest: 'custom-external-v1',
+      async execute() { effects++; return { outputs: { value: `effect-${effects}` } } },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'custom-external', name: 'Custom external' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string' } } },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'external', uses: 'custom.external@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'external', path: ['value'] } } } },
+        ],
+        edges: [{ id: 'a', source: 'start', target: 'external' }, { id: 'b', source: 'external', target: 'end' }],
+        outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
+      },
+    }
+    const runtime = new WorkflowRuntime({
+      nodes,
+      catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes),
+      runStore: new InMemoryWorkflowRunStore(),
+      artifactStore: new InMemoryWorkflowArtifactStore(),
+      capturePolicy: { mode: 'replayable', maxArtifactBytes: 4096 },
+    })
+    const source = await runtime.launch({ target: { type: 'inline', template }, inputs: {}, authorityRef: 'test:external', authority: {}, origin: { type: 'sdk' } })
+    expect(await source.result).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' } })
+    const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    expect(await replay.result).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' } })
+    expect(effects).toBe(1)
   })
 
   it('deduplicates concurrent SDK launches within one runtime authority scope', async () => {
@@ -256,6 +293,37 @@ describe('host-neutral WorkflowRuntime', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
+  it('durably cancels an active noncooperative Host node without waiting for it', async () => {
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    nodes.register({
+      type: 'test.never', version: 1, title: 'Never', description: 'Never settles',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'external', retry: 'never', implementationDigest: 'test-never-v1',
+      async execute() { return new Promise(() => {}) },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'runtime-never', name: 'Runtime never' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'work', uses: 'test.never@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+        ], edges: [{ id: 'a', source: 'start', target: 'work' }, { id: 'b', source: 'work', target: 'end' }], outputs: {},
+      },
+    }
+    const runs = new InMemoryWorkflowRunStore()
+    const runtime = new WorkflowRuntime({ nodes, catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes), runStore: runs })
+    const handle = await runtime.launch({ target: { type: 'inline', template }, inputs: {}, authorityRef: 'test:cancel', authority: {}, origin: { type: 'sdk' } })
+    await vi.waitFor(async () => expect((await runs.loadRun(handle.runId))?.checkpoint.nodeStates.work).toBe('running'))
+    await expect(Promise.race([
+      handle.cancel('operator cancelled'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('cancel hung')), 250)),
+    ])).resolves.toBeUndefined()
+    await expect(handle.result).resolves.toMatchObject({ status: 'cancelled', error: 'operator cancelled' })
+    expect((await runs.loadRun(handle.runId))?.checkpoint.status).toBe('cancelled')
+  })
+
   it('recreates the locked subworkflow gateway when resuming a crashed parent', async () => {
     class OneShotFailingStore extends InMemoryWorkflowRunStore {
       armed = true
@@ -268,7 +336,7 @@ describe('host-neutral WorkflowRuntime', () => {
       }
     }
     const child: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'runtime-child', name: 'Runtime child' },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'runtime-child', name: 'Runtime child' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
         outputSchema: { type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'string' } } },
@@ -281,7 +349,7 @@ describe('host-neutral WorkflowRuntime', () => {
       },
     }
     const parent: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate', metadata: { id: 'runtime-parent', name: 'Runtime parent' },
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'runtime-parent', name: 'Runtime parent' },
       spec: {
         requires: [{ kind: 'capability', uses: 'gateway.workflow.call' }, { kind: 'workflow', uses: 'runtime-child@1' }],
         inputSchema: { type: 'object', additionalProperties: false },

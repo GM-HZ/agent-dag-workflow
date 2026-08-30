@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { WorkflowRunResult } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
+import type { WorkflowResultDeliveryService } from './delivery.js'
 
 export interface WorkflowRunClaim { readonly runId: string; readonly workerId: string; readonly leaseToken: string; readonly expiresAt: number }
 export interface WorkflowRunCoordinator {
@@ -40,6 +41,7 @@ export class WorkflowRunWorker {
   constructor(
     private readonly runtime: WorkflowRuntimeApi,
     private readonly coordinator: WorkflowRunCoordinator,
+    private readonly delivery?: WorkflowResultDeliveryService,
   ) {}
 
   async runOnce(request: { readonly workerId: string; readonly leaseMs: number; readonly signal?: AbortSignal }): Promise<WorkflowRunResult | undefined> {
@@ -64,8 +66,23 @@ export class WorkflowRunWorker {
         .finally(() => { heartbeatBusy = false })
     }, intervalMs)
     try {
-      const handle = await this.runtime.resume({ runId: claim.runId, authorityRef: summary.authorityRef, signal })
-      return await handle.result
+      const handle = await this.runtime.resume({
+        runId: claim.runId,
+        authorityRef: summary.authorityRef,
+        interruptionSignal: signal,
+      })
+      const result = await handle.result
+      if (summary.deliveryRef !== undefined && this.delivery !== undefined && result.status !== 'paused') {
+        await this.delivery.deliver({
+          runId: result.runId,
+          deliveryRef: summary.deliveryRef,
+          phase: 'terminal',
+          payload: result.status === 'completed'
+            ? { status: result.status, outputs: result.outputs }
+            : { status: result.status, error: result.error, ...(result.needsAttention === undefined ? {} : { needsAttention: result.needsAttention }) },
+        })
+      }
+      return result
     } finally {
       clearInterval(heartbeat)
       await this.coordinator.release({ runId: claim.runId, leaseToken: claim.leaseToken })

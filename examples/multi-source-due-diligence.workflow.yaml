@@ -1,4 +1,4 @@
-apiVersion: workflow.gm-hz.dev/v1alpha1
+apiVersion: workflow.gm-hz.dev/v1
 kind: WorkflowTemplate
 metadata:
   id: multi-source-due-diligence

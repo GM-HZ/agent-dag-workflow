@@ -76,7 +76,7 @@ function verificationRegistry(): WorkflowNodeRegistry {
     outputSchema: {
       type: 'object', additionalProperties: false, required: ['value'], properties: { value: {} },
     },
-    outputPorts: ['success'], capabilities: [], retry: 'safe', implementationDigest: 'verification-step-v1',
+    outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'verification-step-v1',
     async execute(context) {
       const value = context.inputs.value
       if (value === undefined) throw new Error('generated verification step is missing value')
@@ -166,7 +166,7 @@ function generateDag(seed: number): GeneratedDag {
   )
 
   const template: WorkflowTemplate = {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+    apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
     metadata: { id: `generated-${seed}`, name: `Generated ${seed}` },
     spec: {
       inputSchema: {

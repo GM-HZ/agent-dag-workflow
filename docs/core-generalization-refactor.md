@@ -2,7 +2,7 @@
 
 > 状态：Accepted · implementation complete · local gates passed
 >
-> 目标分支：本地 `main` 候选（通过全部门禁后才允许推送/发布）
+> 目标分支：`main` 正式版（全部 1.0.0 门禁已通过）
 >
 > 基线：`main@4e4f40a`
 >
@@ -237,7 +237,7 @@ Draft 的 revision、Published Workflow revision、Binding revision、Event seq 
 
 ```json
 {
-  "apiVersion": "workflow.gm-hz.dev/v1alpha1",
+  "apiVersion": "workflow.gm-hz.dev/v1",
   "kind": "WorkflowTemplate",
   "metadata": {
     "id": "weekly-ai-news",
@@ -685,7 +685,7 @@ Trigger 使用独立的 `WorkflowBinding`，避免同一个流程为了不同入
 
 ```json
 {
-  "apiVersion": "workflow.gm-hz.dev/v1alpha1",
+  "apiVersion": "workflow.gm-hz.dev/v1",
   "kind": "WorkflowBinding",
   "metadata": { "id": "weekly-ai-cron", "revision": 2 },
   "spec": {
@@ -894,7 +894,7 @@ Canvas 仍然是 WorkflowTemplate 和 Trace 的投影：
 
 ### 12.1 分支与发布
 
-当前实现已经收敛到本地 `main` 候选，不维护第二条兼容实现线。在 1.0.0 达到全部验收门禁前，不推送远端、不发布 npm、不修改 DSH Market 稳定条目。
+当前实现已经收敛为 `main` 上的 1.0.0 正式实现，不维护第二条兼容实现线。发布严格使用版本提交、首次 npm bootstrap、Trusted Publisher 和不可变 tag 流程，不修改既有 0.x 产物。
 
 ### 12.2 不保留双轨兼容
 
@@ -1166,7 +1166,7 @@ Launch/Trigger 协议 + Migration 契约
 | Replay 被误认为确定性重跑 | 明确区分 inspect、recorded 和 live |
 | Trigger 重复副作用 | source event 幂等键、固定发布修订、原子 launch |
 | 重构范围太大难定位 | 机械单包收敛与语义重构分阶段进行 |
-| DSH 用户受影响 | main/0.2.x 保持稳定，1.0.0 门禁通过后再切换 |
+| DSH 用户受影响 | 0.2.x 保持不可变；1.0.0 作为新的正式 major 发布，由用户显式升级 |
 
 ## 18. 完成定义
 
@@ -1247,7 +1247,7 @@ Launch/Trigger 协议 + Migration 契约
 协议替换必须成组完成：
 
 ```text
-dsh.workflow/v1alpha1     → workflow.gm-hz.dev/v1alpha1
+dsh.workflow/v1alpha1     → workflow.gm-hz.dev/v1
 core.subworkflow@1        → workflow.call@1
 dsh.tool@1                → tool.call@1
 dsh.agent@1               → agent.run@1

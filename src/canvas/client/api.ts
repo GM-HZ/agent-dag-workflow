@@ -1,5 +1,6 @@
 import type {
   CanvasCatalogSummary,
+  CanvasCancelRequest,
   CanvasListRequest,
   CanvasOperationsSnapshot,
   CanvasDraftCreateRequest,
@@ -54,6 +55,7 @@ export interface WorkflowCanvasRemoteNamespace {
   run(sessionId: string, request: CanvasRunRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   runDraft(sessionId: string, request: CanvasDraftRunRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   resume(sessionId: string, request: CanvasResumeRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
+  cancel(sessionId: string, request: CanvasCancelRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   trace(sessionId: string, request: CanvasTraceRequest): Promise<RemoteResult<CanvasTrace>>
 }
 

@@ -48,6 +48,12 @@ try {
     if (required.some(value => typeof value !== 'function')) throw new Error('one or more host-neutral package exports are unavailable')
   `)
   command(process.execPath, [join(workspace, 'smoke.mjs')], workspace)
+  const cliOutput = command(process.execPath, [
+    join(packageDirectory, 'lib', 'cli.js'), 'search', '--db', join(workspace, 'workflow.db'),
+  ], workspace)
+  const cliEnvelope = JSON.parse(cliOutput)
+  if (cliEnvelope.protocolVersion !== 'agent-workflow.cli/v1' || cliEnvelope.ok !== true
+    || !Array.isArray(cliEnvelope.data?.items)) throw new Error('packed CLI did not return a valid v1 search envelope')
   process.stdout.write(`verified ${networkInstall ? 'clean network' : 'isolated local'} tarball install: ${filename}\n`)
 } finally {
   await rm(workspace, { recursive: true, force: true })

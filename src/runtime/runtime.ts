@@ -35,6 +35,7 @@ import type {
   WorkflowRunSummary,
   WorkflowRunQueue,
   WorkflowRuntimeApi,
+  WorkflowRuntimeCancelRequest,
 } from './types.js'
 
 export interface WorkflowRuntimeOptions {
@@ -65,6 +66,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   readonly #queue: WorkflowRunQueue | undefined
   readonly #deploymentLimits: WorkflowDeploymentLimits
   readonly #idempotent = new Map<string, { readonly fingerprint: string; readonly handle: Promise<WorkflowRunHandle> }>()
+  readonly #active = new Map<string, WorkflowEngineRun>()
 
   constructor(options: WorkflowRuntimeOptions) {
     this.#nodes = options.nodes
@@ -103,6 +105,8 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       inputSchema: definition.inputSchema,
       outputSchema: definition.outputSchema,
       outputPorts: definition.outputPorts,
+      effects: definition.effects,
+      retry: definition.retry,
       ...(definition.dependencyKinds === undefined ? {} : { dependencyKinds: definition.dependencyKinds }),
     }) as unknown as import('./types.js').WorkflowNodeDescriptor)
   }
@@ -151,7 +155,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     const executionMode = request.executionMode ?? 'foreground'
     if (executionMode === 'background' && this.#queue === undefined) throw new Error('background workflow launch requires a WorkflowRunQueue')
     if (executionMode === 'background' && this.#authorityResolver === undefined) throw new Error('background workflow launch requires a WorkflowAuthorityResolver for worker recovery')
-    const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.signal)
+    const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.interruptionSignal ?? request.signal)
     const root = request.target.type === 'published'
       ? await this.#publishedEntry(request.target.id, request.target.revision)
       : this.#inlineEntry(request.target.template)
@@ -188,6 +192,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
         ...(request.deliveryRef === undefined ? {} : { deliveryRef: request.deliveryRef }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
         onEvent: emit,
       }
       run = executionMode === 'background'
@@ -202,23 +207,41 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       if (executionMode === 'background' && existing.checkpoint.status === 'running') await this.#queue!.enqueue(existing.runId)
       return this.#persistedHandle(existing)
     }
-    return this.#handle(run)
+    if (executionMode === 'background') {
+      const persisted = await this.#runStore.loadRun(run.id)
+      if (persisted === undefined) throw new Error(`workflow run disappeared after queueing: ${run.id}`)
+      return this.#persistedHandle(persisted)
+    }
+    return this.#handle(run, request.authorityRef, authority)
   }
 
   async resume(request: import('./types.js').WorkflowRuntimeResumeRequest): Promise<WorkflowRunHandle> {
     const record = await this.#runStore.loadRun(request.runId)
     if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
-    const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.signal)
+    const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.interruptionSignal ?? request.signal)
     const emit = (event: WorkflowEvent) => { this.#projectLive(event); request.onEvent?.(event) }
     const engine = this.#createEngine(record.plan, request.authorityRef, authority, emit)
     const run = await engine.resume({
       runId: request.runId,
       execution: { authorityRef: request.authorityRef, authority, origin: { type: 'sdk', source: 'resume' } },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
       onEvent: emit,
     })
-    return this.#handle(run)
+    return this.#handle(run, request.authorityRef, authority)
+  }
+
+  async cancel(request: WorkflowRuntimeCancelRequest): Promise<WorkflowRunResult> {
+    const record = await this.#runStore.loadRun(request.runId)
+    if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
+    if (record.execution.authorityRef !== request.authorityRef) throw new Error('cancel authorityRef does not match the persisted run authority')
+    await this.#resolveAuthority(request.authorityRef, request.authority, request.signal)
+    const active = this.#active.get(request.runId)
+    if (active !== undefined) {
+      await active.cancel(request.reason)
+    }
+    return this.#cancelPersisted(request.runId, request.authorityRef, request.authority, request.reason, request.onEvent)
   }
 
   async getRun(runId: string): Promise<WorkflowRunSummary | undefined> {
@@ -239,6 +262,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       plan: metadata.plan,
       authorityRef: metadata.execution.authorityRef,
       origin: metadata.execution.origin,
+      ...(metadata.launch.deliveryRef === undefined ? {} : { deliveryRef: metadata.launch.deliveryRef }),
       createdAt: metadata.createdAt,
       updatedAt: checkpoint.updatedAt,
       checkpointSeq: checkpoint.seq,
@@ -267,10 +291,10 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       if (!record.plan.replayable) throw new Error('recorded replay requires implementation digests for every node definition')
       if (record.checkpoint.status !== 'completed') throw new Error('recorded replay requires a completed source run')
       const missing = record.template.spec.nodes
-        .filter(node => isExternalUses(node.uses) && record.checkpoint.nodeOutputs[node.id] === undefined)
+        .filter(node => this.#isExternalNode(node.uses) && record.checkpoint.nodeOutputs[node.id] === undefined)
         .map(node => node.id)
       if (missing.length > 0) throw new Error(`recorded replay is missing committed external outputs: ${missing.join(', ')}`)
-      if (this.#capturePolicy.mode === 'replayable') await verifyReplayArtifacts(record, this.#artifactStore)
+      if (this.#capturePolicy.mode === 'replayable') await verifyReplayArtifacts(record, this.#artifactStore, this.#nodes)
       const engine = new DagWorkflowEngine(this.#nodes, this.#services, {
         runStore: this.#runStore,
         capture: this.#capture,
@@ -287,9 +311,10 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         },
         recordedNodeOutputs: record.checkpoint.nodeOutputs,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
         onEvent: event => this.#projectLive(event),
       })
-      return this.#handle(run)
+      return this.#handle(run, record.execution.authorityRef, request.authority)
     }
     return this.launch({
       target: record.plan.root.revision === undefined
@@ -300,6 +325,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       ...(request.authority === undefined ? {} : { authority: request.authority }),
       origin: { type: 'replay', source: 'live', sourceRef: request.runId },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
     })
   }
 
@@ -388,17 +414,40 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     return resolved
   }
 
-  #handle(run: WorkflowEngineRun): WorkflowRunHandle {
+  #handle(run: WorkflowEngineRun, authorityRef: string, authority: unknown): WorkflowRunHandle {
+    this.#active.set(run.id, run)
+    void run.result.finally(() => { if (this.#active.get(run.id) === run) this.#active.delete(run.id) })
     let observedResult: Promise<WorkflowRunResult> | undefined
     const live = this.#live
+    const store = this.#runStore
     return {
       runId: run.id,
       get result() {
-        observedResult ??= run.result.finally(() => live.close(run.id))
+        observedResult ??= run.result.then(async localResult => {
+          const durable = await storeResult(run.id)
+          return durable ?? localResult
+        }).finally(() => live.close(run.id))
         return observedResult
       },
       live: options => this.#live.subscribe(run.id, options?.signal),
-      cancel: reason => run.cancel(reason),
+      cancel: async reason => {
+        await this.cancel({ runId: run.id, authorityRef, authority, ...(reason === undefined ? {} : { reason }) })
+      },
+      detach: reason => run.dispose(reason),
+    }
+
+    async function storeResult(runId: string): Promise<WorkflowRunResult | undefined> {
+      try {
+        const record = await store.loadRun(runId)
+        return record !== undefined && isTerminal(record.checkpoint.status)
+          ? historicalHandle(record).result
+          : undefined
+      } catch {
+        // A Host may close its Store immediately after detach. Durable result
+        // reconciliation is best-effort here; the local interruption result
+        // remains valid and the checkpoint is recovered after restart.
+        return undefined
+      }
     }
   }
 
@@ -406,7 +455,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     if (isTerminal(record.checkpoint.status)) return historicalHandle(record)
     const runId = record.runId
     const store = this.#runStore
-    const cancel = (reason?: string) => this.#cancelPersisted(runId, record.execution.authorityRef, reason)
+    const cancel = async (reason?: string) => { await this.#cancelPersisted(runId, record.execution.authorityRef, undefined, reason) }
     let observedResult: Promise<WorkflowRunResult> | undefined
     return {
       runId,
@@ -416,28 +465,35 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       },
       live: options => this.#live.subscribe(runId, options?.signal),
       cancel,
+      async detach() {},
     }
   }
 
-  async #cancelPersisted(runId: string, authorityRef: string, reason?: string): Promise<void> {
+  async #cancelPersisted(
+    runId: string,
+    authorityRef: string,
+    authority?: unknown,
+    reason?: string,
+    onEvent?: (event: WorkflowEvent) => void,
+  ): Promise<WorkflowRunResult> {
     for (let attempt = 0; attempt < 3; attempt++) {
       const record = await this.#runStore.loadRun(runId)
       if (record === undefined) throw new Error(`workflow run not found: ${runId}`)
-      if (isTerminal(record.checkpoint.status)) return
-      const emit = (event: WorkflowEvent) => this.#projectLive(event)
-      const engine = this.#createEngine(record.plan, authorityRef, undefined, emit)
+      if (isTerminal(record.checkpoint.status)) return historicalHandle(record).result
+      const emit = (event: WorkflowEvent) => { this.#projectLive(event); onEvent?.(event) }
+      const engine = this.#createEngine(record.plan, authorityRef, authority, emit)
       try {
-        await (await engine.cancel({
+        return await (await engine.cancel({
           runId,
-          execution: { authorityRef, authority: undefined, origin: { type: 'sdk', source: 'cancel' } },
+          execution: { authorityRef, authority, origin: { type: 'sdk', source: 'cancel' } },
           ...(reason === undefined ? {} : { reason }),
           onEvent: emit,
         })).result
-        return
       } catch (error: unknown) {
         if (!isRunSequenceConflict(error) || attempt === 2) throw error
       }
     }
+    throw new Error(`workflow cancellation retry exhausted: ${runId}`)
   }
 
   #projectLive(event: WorkflowEvent): void {
@@ -452,15 +508,20 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
       data: event.payload,
     })
   }
+
+  #isExternalNode(uses: string): boolean {
+    return this.#nodes.resolve(uses)?.effects === 'external'
+  }
 }
 
 async function verifyReplayArtifacts(
   record: WorkflowRunRecord,
   store: WorkflowArtifactStore | undefined,
+  nodes: WorkflowNodeRegistry,
 ): Promise<void> {
   if (store === undefined) throw new Error('recorded replay requires the configured artifact store')
   const decoder = new TextDecoder()
-  for (const node of record.template.spec.nodes.filter(item => isExternalUses(item.uses))) {
+  for (const node of record.template.spec.nodes.filter(item => nodes.resolve(item.uses)?.effects === 'external')) {
     const event = record.events.findLast(item => item.type === 'capability.completed' && item.node?.id === node.id)
     const rawRef = event?.payload.artifact
     if (!isArtifactRef(rawRef)) throw new Error(`recorded replay is missing replayable artifact for external node: ${node.id}`)
@@ -498,11 +559,6 @@ function createCaptureGateway(
       return { dataHash, artifact }
     },
   }
-}
-
-function isExternalUses(uses: string): boolean {
-  return uses === 'tool.call@1' || uses === 'agent.run@1' || uses === 'human.approval@1'
-    || uses === 'workflow.call@1' || uses === 'core.foreach@1'
 }
 
 function idempotentRunId(authorityRef: string, key: string): string {
@@ -554,10 +610,14 @@ function isTerminal(status: WorkflowRunRecord['checkpoint']['status']): boolean 
 
 async function waitForPersistedResult(store: WorkflowRunStore, runId: string): Promise<WorkflowRunResult> {
   for (;;) {
-    const record = await store.loadRun(runId)
-    if (record === undefined) throw new Error(`workflow run disappeared while awaiting idempotent result: ${runId}`)
-    if (isTerminal(record.checkpoint.status) || record.checkpoint.status === 'paused') return resultOf(record)
-    await new Promise(resolve => setTimeout(resolve, 20))
+    const checkpoint = await store.getCheckpoint(runId)
+    if (checkpoint === undefined) throw new Error(`workflow run disappeared while awaiting idempotent result: ${runId}`)
+    if (isTerminal(checkpoint.status) || checkpoint.status === 'paused') {
+      const record = await store.loadRun(runId)
+      if (record === undefined) throw new Error(`workflow run disappeared while reading terminal result: ${runId}`)
+      return resultOf(record)
+    }
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
 }
 
@@ -606,6 +666,7 @@ function historicalHandle(record: WorkflowRunRecord): WorkflowRunHandle {
     result,
     async *live() {},
     async cancel() {},
+    async detach() {},
   }
 }
 

@@ -61,6 +61,14 @@ export class WorkflowResultDeliveryService {
     try { return await delivery } finally { if (this.#inflight.get(invocationId) === delivery) this.#inflight.delete(invocationId) }
   }
 
+  async retryAttention(query: { readonly limit?: number } = {}): Promise<readonly WorkflowDeliveryRecord[]> {
+    const results: WorkflowDeliveryRecord[] = []
+    for (const record of await this.store.listAttention(query)) {
+      results.push(await this.deliver({ runId: record.runId, deliveryRef: record.deliveryRef, phase: record.phase, payload: record.payload }))
+    }
+    return results
+  }
+
   async #deliver(request: WorkflowDeliveryRequest, invocationId: string): Promise<WorkflowDeliveryRecord> {
     const current = await this.store.get(invocationId)
     if (current !== undefined && (current.runId !== request.runId || current.deliveryRef !== request.deliveryRef

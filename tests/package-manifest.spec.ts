@@ -54,6 +54,14 @@ describe('published root package manifest', () => {
     expect(Object.keys(manifest.dependencies ?? {})).not.toContainEqual(expect.stringMatching(/^@gm-hz\/dsh-dag-workflow/))
   })
 
+  it('keeps the default root import free of the experimental SQLite adapter', () => {
+    const result = spawnSync(process.execPath, ['--trace-warnings', '--input-type=module', '--eval', "await import('./lib/index.js')"], {
+      cwd: new URL('..', import.meta.url), encoding: 'utf8',
+    })
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain('ExperimentalWarning')
+  })
+
   it('ships a Codex Plugin whose on-demand wrapper reaches the package CLI', () => {
     const workspace = mkdtempSync(join(tmpdir(), 'agent-dag-codex-plugin-'))
     try {

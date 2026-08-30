@@ -132,6 +132,14 @@ describe('agent-workflow CLI protocol', () => {
     expect(data(lines.pop()!)).toMatchObject({ runId: accepted.runId, status: 'completed' })
     expect(await runWorkflowCli(['run-get', accepted.runId, '--db', database, '--host', host], line => lines.push(line))).toBe(0)
     expect(data(lines.pop()!)).toMatchObject({ status: 'completed', outputs: { customer: 'DETACHED' } })
+
+    await runWorkflowCli([
+      'run', 'script-transform-demo@1', '--input-json', JSON.stringify({ customer: ' cancel ', orders: [] }),
+      '--detach', '--idempotency-key', 'background-cancel', '--db', database, '--host', host,
+    ], line => lines.push(line))
+    const cancellable = data(lines.pop()!) as { readonly runId: string }
+    expect(await runWorkflowCli(['cancel', cancellable.runId, '--reason', 'operator stop', '--db', database, '--host', host], line => lines.push(line))).toBe(5)
+    expect(data(lines.pop()!)).toMatchObject({ status: 'cancelled', error: 'operator stop' })
   })
 
   it('projects live progress as bounded JSONL while Journal remains the authoritative recovery source', async () => {

@@ -30,6 +30,13 @@ describe('lossless JSON boundary', () => {
     expect(() => snapshotJsonValue(accessor)).toThrow(/accessor properties/)
   })
 
+  it('rejects excessive nesting with a domain error instead of overflowing the stack', () => {
+    let value: unknown = null
+    for (let index = 0; index < 1_000; index++) value = { child: value }
+    expect(() => snapshotJsonValue(value)).toThrow(LosslessJsonError)
+    expect(() => snapshotJsonValue(value)).toThrow(/nesting exceeds/)
+  })
+
   it('materializes an immutable detached snapshot', () => {
     const source = { nested: { values: [1, 2] } }
     const snapshot = snapshotJsonValue(source)

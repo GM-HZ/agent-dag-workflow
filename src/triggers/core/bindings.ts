@@ -1,6 +1,7 @@
 import {
   compileJsonValidator,
   snapshotJsonValue,
+  WORKFLOW_TEMPLATE_API_VERSION,
   type JsonObject,
   type JsonSchema,
   type JsonValue,
@@ -134,8 +135,8 @@ function validateCandidateEnvelope(candidate: WorkflowTriggerBindingCandidate, e
     || !isRecord(candidate.spec.trigger.with) || !isRecord(candidate.spec.inputMapping)) {
     throw new WorkflowBindingError('BINDING_INVALID', 'workflow binding envelope is malformed')
   }
-  if (candidate.apiVersion !== 'workflow.gm-hz.dev/v1alpha1' || candidate.kind !== 'WorkflowBinding') {
-    throw new WorkflowBindingError('BINDING_INVALID', 'workflow binding requires the v1alpha1 WorkflowBinding envelope')
+  if (candidate.apiVersion !== WORKFLOW_TEMPLATE_API_VERSION || candidate.kind !== 'WorkflowBinding') {
+    throw new WorkflowBindingError('BINDING_INVALID', 'workflow binding requires the v1 WorkflowBinding envelope')
   }
   if (typeof candidate.metadata.id !== 'string' || typeof candidate.spec.workflow.id !== 'string'
     || typeof candidate.spec.trigger.uses !== 'string' || typeof candidate.spec.authorityRef !== 'string') {

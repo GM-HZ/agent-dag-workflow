@@ -1,6 +1,5 @@
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto'
 import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, type JsonObject } from '../../core/index.js'
-import type { WorkflowRunResult } from '../../core/index.js'
 import type {
   WorkflowIngressRecord,
   WorkflowResultDeliveryService,
@@ -134,17 +133,6 @@ export class DingTalkWorkflowChannel {
     return record
   }
 
-  async deliverTerminal(binding: WorkflowTriggerBinding, result: WorkflowRunResult): Promise<void> {
-    if (binding.spec.deliveryRef === undefined || this.delivery === undefined) return
-    await this.delivery.deliver({
-      runId: result.runId,
-      deliveryRef: binding.spec.deliveryRef,
-      phase: 'terminal',
-      payload: result.status === 'completed'
-        ? { status: result.status, outputs: result.outputs }
-        : { status: result.status, error: result.error, ...(result.needsAttention === undefined ? {} : { needsAttention: result.needsAttention }) },
-    })
-  }
 }
 
 function withRouteMetadata(envelope: WorkflowTriggerEnvelope, route: JsonObject): WorkflowTriggerEnvelope {

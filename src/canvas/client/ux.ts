@@ -233,7 +233,7 @@ function stringArray(value: CanvasJsonObject[string] | undefined): readonly stri
 
 export function starterTemplate(seed = Date.now()): CanvasWorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+    apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
     metadata: { id: `hello-workflow-${seed}`, name: '第一个工作流', description: '接收一段文本，并通过可审计 DAG 原样输出。' },
     spec: {
       inputSchema: {
@@ -289,7 +289,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isTemplate(value: unknown): value is CanvasWorkflowTemplate {
-  return isRecord(value) && value.apiVersion === 'workflow.gm-hz.dev/v1alpha1' && value.kind === 'WorkflowTemplate'
+  return isRecord(value) && value.apiVersion === 'workflow.gm-hz.dev/v1' && value.kind === 'WorkflowTemplate'
     && isRecord(value.metadata) && typeof value.metadata.id === 'string' && typeof value.metadata.name === 'string'
     && isRecord(value.spec) && Array.isArray(value.spec.nodes) && Array.isArray(value.spec.edges)
 }

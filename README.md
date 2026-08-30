@@ -1,5 +1,7 @@
 # Agent DAG Workflow
 
+当前版本：`1.0.0` 正式版。Core、CLI、MCP、Skill、DSH、Trigger、Canvas、SQLite、恢复与发布门禁均已收口；不再以 RC/候选协议维护。
+
 `@gm-hz/agent-dag-workflow` 是一个可嵌入任意 Agent Host 的持久化 DAG Workflow 内核。它把 Agent、Tool、Skill、MCP 和受控本地能力编排成同一份可保存、校验、发布、恢复、审计和重放的 `WorkflowTemplate` JSON。
 
 它不是另一个 Coze/Dify 平台，也不内建模型 Provider、凭据中心或 Tool 市场。Host 继续负责已有的 Agent/Tool/Skill/MCP 生态；本项目只负责把离散能力变成稳定流程。
@@ -87,7 +89,7 @@ const runtime = new WorkflowRuntime({
 })
 
 const template = {
-  apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+  apiVersion: 'workflow.gm-hz.dev/v1',
   kind: 'WorkflowTemplate',
   metadata: { id: 'hello', name: 'Hello' },
   spec: {
@@ -223,6 +225,7 @@ agent-workflow trace <runId> --events --db workflows.db
 agent-workflow trace <runId> --follow --format jsonl --db workflows.db
 agent-workflow replay <runId> --mode recorded --db workflows.db
 agent-workflow resume <runId> --db workflows.db
+agent-workflow cancel <runId> --reason "operator stop" --db workflows.db
 agent-workflow migrate-template old.json --output workflow-v1.json
 ```
 
@@ -252,7 +255,7 @@ agent-workflow-mcp --db workflows.db --profile invoke
 agent-workflow-mcp --db workflows.db --profile author
 ```
 
-`invoke` profile 永远只有 `workflow_search`、`workflow_describe`、`workflow_run`、`workflow_run_get` 和 `workflow_trace` 五个 Tool。`author` 额外提供有界的节点、校验、草稿、diff 和发布 Tool。Catalog 中有多少 Workflow 都不会改变 Tool 数量；Agent 只按需读取被选中 Workflow 的 Schema。搜索由 Repository 在已发布 revision 上有界执行，不会读取未发布 Draft 元数据。
+`invoke` profile 永远只有 `workflow_search`、`workflow_describe`、`workflow_run`、`workflow_run_get`、`workflow_cancel` 和 `workflow_trace` 六个 Tool。`author` 额外提供六个有界的节点、校验、草稿、diff 和发布 Tool。Catalog 中有多少 Workflow 都不会改变 Tool 数量；Agent 只按需读取被选中 Workflow 的 Schema。搜索由 Repository 在已发布 revision 上有界执行，不会读取未发布 Draft 元数据。
 
 ## DSH 与 Canvas
 
@@ -274,6 +277,8 @@ dsh web
 插件向 DSH 注册 `workflow-builder` Skill，以及查询节点、创建/更新/校验 draft、发布和运行的受保护工具。Canvas 编辑的是同一份 `WorkflowTemplate`，Trace 来自同一份 Journal。
 Canvas 的“触发与投递”页面还能查看 Binding、重复 Ingress、run 关联和状态不确定的 Delivery，并从入口直接打开权威 Trace。
 
+根 bundle 会把持久 Run 的 `authorityRef` 绑定到稳定的 DSH `Session.id`，并通过 `agents` 服务在重启后恢复当前 Agent；它不会把 Agent object 或凭据写进 SQLite。外部 Tool 在未知副作用边界上恢复时仍会进入 `paused`，需要操作者显式选择 retry/fail。
+
 ## Trigger
 
 Trigger 通过不可变 Binding 把可信入口映射到固定发布修订：
@@ -284,6 +289,8 @@ Trigger 通过不可变 Binding 把可信入口映射到固定发布修订：
 ```
 
 外部 payload 不能指定最终 Authority、幂等键或 Workflow revision。Cron、Webhook 和钉钉只提供 reference adapter；生产部署仍需按平台协议实现可靠 HTTP/消息接收、加密凭据、持久队列和运维告警。
+
+后台 Worker 在 Run 进入终态后会按 `deliveryRef` 自动调用 Result Delivery。投递与 Workflow 终态分离：失败或状态未知不会把已完成 Workflow 改成失败，而是写入可重试的 delivery attention；运维方法与 SQLite 备份、导出和清理见 [运行与存储运维](docs/operations.md)。
 
 Trigger Adapter 只需注册自己的 `uses` 与配置 Schema；通用 Binding Catalog 负责目标、映射和 CAS，不需要 Provider 层：
 
@@ -307,7 +314,7 @@ const bindings = new WorkflowBindingCatalog(
 )
 
 await bindings.publish({
-  apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+  apiVersion: 'workflow.gm-hz.dev/v1',
   kind: 'WorkflowBinding',
   metadata: { id: 'weekly-from-acme' },
   spec: {
@@ -343,4 +350,4 @@ pnpm example:weekly
 
 `pnpm example:weekly` 会在本地持久化数据库中真实执行 21 节点的“AI 模型周报”模板：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。默认使用离线确定性 Host；替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
 
-项目使用 MIT License。发布、兼容性和实现门禁以 [重构方案](docs/core-generalization-refactor.md) 的完成定义为准。
+项目使用 MIT License。发布、兼容性和实现门禁以 [重构方案](docs/core-generalization-refactor.md) 的完成定义为准；首次 npm bootstrap 与后续 OIDC tag 发布见 [1.0 发布流程](docs/release.md)。

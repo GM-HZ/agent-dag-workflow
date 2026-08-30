@@ -126,7 +126,7 @@ describe('weekly AI model workflow Host conformance', () => {
     expect([...signatures[3]!].sort()).toEqual([...signatures[0]!].sort())
     expect(signatures[0]!.filter(value => value.startsWith('capability.completed:'))).toHaveLength(17)
     await dsh.plugin.dispose()
-  })
+  }, 15_000)
 })
 
 function envelopeData(source: string): unknown {

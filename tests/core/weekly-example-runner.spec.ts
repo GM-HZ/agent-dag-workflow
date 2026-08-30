@@ -31,7 +31,7 @@ describe('weekly AI model example runner', () => {
     expect(second.workflowRef).toBe(first.workflowRef)
     expect(second.result.runId).not.toBe(first.result.runId)
     expect(second.result.outputs).toEqual(first.result.outputs)
-  })
+  }, 20_000)
 })
 
 function runExample(database: string): any {

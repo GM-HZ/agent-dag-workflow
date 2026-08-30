@@ -3,6 +3,7 @@ import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../.
 import { InMemoryWorkflowRunStore, WorkflowNodeRegistry, materializeWorkflowTemplate, registerCoreNodes, type JsonObject, type JsonValue } from '../../src/core/index.js'
 import { createMcpGateway } from '../../src/adapters/mcp/index.js'
 import { WorkflowRuntime } from '../../src/runtime/index.js'
+import { InMemoryWorkflowRunCoordinator } from '../../src/triggers/core/index.js'
 import { toolWorkflowTemplate } from './fixtures.js'
 
 describe('workflow MCP gateway', () => {
@@ -11,12 +12,12 @@ describe('workflow MCP gateway', () => {
     const invoke = createMcpGateway(runtime)
     const context = { authorityRef: 'mcp:user', authority: {} }
     expect(invoke.listTools().map(item => item.name)).toEqual([
-      'workflow_search', 'workflow_describe', 'workflow_run', 'workflow_run_get', 'workflow_trace',
+      'workflow_search', 'workflow_describe', 'workflow_run', 'workflow_run_get', 'workflow_cancel', 'workflow_trace',
     ])
     const beforeSize = JSON.stringify(invoke.listTools()).length
     const draft = await runtime.createDraft(toolWorkflowTemplate())
     await runtime.publish(draft.id, draft.revision)
-    expect(invoke.listTools()).toHaveLength(5)
+    expect(invoke.listTools()).toHaveLength(6)
     expect(JSON.stringify(invoke.listTools())).toHaveLength(beforeSize)
 
     const search = await invoke.callTool('workflow_search', { query: 'Tool' }, context) as JsonObject
@@ -38,8 +39,8 @@ describe('workflow MCP gateway', () => {
     const invoke = createMcpGateway(runtime)
     const author = createMcpGateway(runtime, { profile: 'author' })
     const context = { authorityRef: 'mcp:author', authority: {} }
-    expect(invoke.listTools()).toHaveLength(5)
-    expect(author.listTools()).toHaveLength(11)
+    expect(invoke.listTools()).toHaveLength(6)
+    expect(author.listTools()).toHaveLength(12)
     await expect(invoke.callTool('workflow_validate', { template: toolWorkflowTemplate() as unknown as JsonValue }, context))
       .rejects.toMatchObject({ code: 'WORKFLOW_REQUEST_INVALID' })
     const nodes = await author.callTool('workflow_nodes_list', { query: 'tool.call' }, context) as JsonObject
@@ -48,6 +49,36 @@ describe('workflow MCP gateway', () => {
     expect(draft).toMatchObject({ id: 'tool-flow', revision: 1 })
     const published = await author.callTool('workflow_publish', { id: 'tool-flow', expectedDraftRevision: 1 }, context)
     expect(published).toMatchObject({ ref: 'tool-flow@1' })
+  })
+
+  it('enforces advertised MCP schemas at the runtime boundary', async () => {
+    const gateway = createMcpGateway(fixtureRuntime())
+    const context = { authorityRef: 'mcp:test', authority: {} }
+    await expect(gateway.callTool('workflow_search', { unexpected: true }, context))
+      .rejects.toMatchObject({ code: 'WORKFLOW_REQUEST_INVALID' })
+    await expect(gateway.callTool('workflow_trace', { runId: 'run', limit: 1001 }, context))
+      .rejects.toMatchObject({ code: 'WORKFLOW_REQUEST_INVALID' })
+    await expect(gateway.callTool('workflow_describe', { ref: 'not-an-exact-ref' }, context))
+      .rejects.toMatchObject({ code: 'WORKFLOW_REQUEST_INVALID' })
+  })
+
+  it('durably cancels background runs within the same authority scope', async () => {
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: new InMemoryWorkflowRunStore(), queue: new InMemoryWorkflowRunCoordinator(),
+      authorityResolver: { async resolve(ref) { return { ref } } },
+    })
+    const draft = await catalog.createDraft(toolWorkflowTemplate()); await catalog.publish(draft.id, draft.revision)
+    const gateway = createMcpGateway(runtime)
+    const context = { authorityRef: 'mcp:owner', authority: {} }
+    const accepted = await gateway.callTool('workflow_run', {
+      ref: 'tool-flow@1', inputs: { message: 'cancel' }, mode: 'background', idempotencyKey: 'cancel-1',
+    }, context) as JsonObject
+    expect(await gateway.callTool('workflow_cancel', { runId: accepted.runId!, reason: 'operator stop' }, context))
+      .toMatchObject({ status: 'cancelled', error: 'operator stop' })
+    await expect(gateway.callTool('workflow_cancel', { runId: accepted.runId! }, { authorityRef: 'mcp:other', authority: {} }))
+      .rejects.toMatchObject({ code: 'WORKFLOW_AUTHORITY_DENIED' })
   })
 
   it('keeps tool count and serialized schema size constant with one thousand published workflows', async () => {
@@ -65,7 +96,7 @@ describe('workflow MCP gateway', () => {
       await repository.createDraft(materializeWorkflowTemplate(template), index)
       await repository.publishDraft(id, 1, index)
     }
-    expect(gateway.listTools()).toHaveLength(5)
+    expect(gateway.listTools()).toHaveLength(6)
     expect(JSON.stringify(gateway.listTools())).toBe(baseline)
     const result = await gateway.callTool('workflow_search', { query: 'Flow', limit: 10 }, { authorityRef: 'mcp:test', authority: {} }) as JsonObject
     expect(result.items).toHaveLength(10)

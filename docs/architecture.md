@@ -70,7 +70,7 @@ Draft revision、Published revision、Binding revision、Event seq、Store schem
 
 ## 3. 模板与节点边界
 
-模板使用 `workflow.gm-hz.dev/v1alpha1`，标准节点为：
+模板使用 `workflow.gm-hz.dev/v1`，标准节点为：
 
 | 节点 | 职责 |
 | --- | --- |

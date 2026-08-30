@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context, Service } from '@deepseek-ai/cordis'
 import type { WorkflowTemplate } from '../src/core/index.js'
+import { toolWorkflowTemplate } from './core/fixtures.js'
 import type {
   DshApprovalRuntimeLike,
   DshSkillRuntimeLike,
@@ -11,7 +12,7 @@ import type {
   DshToolRuntimeResult,
   DshWorkflowToolDefinition,
 } from '../src/adapters/dsh/index.js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 // The DSH bundle patch loads the built package root. Keep the specifier
 // indirect so clean source typechecking does not depend on pre-existing lib/.
 const builtPackageRoot = '../lib/index.js'
@@ -22,13 +23,15 @@ declare module '@deepseek-ai/cordis' {
     subagents: StubSubagents
     approval: StubApproval
     skills: StubSkills
+    agents: StubAgents
   }
 }
 
 class StubTools extends Service {
   private readonly definitions = new Map<string, DshWorkflowToolDefinition>()
+  handler: (input: DshToolRuntimeInput) => Promise<DshToolRuntimeResult> = async () => ({ isError: false, value: null })
   constructor(ctx: Context) { super(ctx, 'tools') }
-  async execute(_input: DshToolRuntimeInput): Promise<DshToolRuntimeResult> { return { isError: false, value: null } }
+  async execute(input: DshToolRuntimeInput): Promise<DshToolRuntimeResult> { return this.handler(input) }
   register(definition: DshWorkflowToolDefinition): () => void {
     this.definitions.set(definition.name, definition)
     return () => { this.definitions.delete(definition.name) }
@@ -57,7 +60,15 @@ class StubSkills extends Service implements DshSkillRuntimeLike {
   register(_skill: Parameters<DshSkillRuntimeLike['register']>[0]): () => void { return () => {} }
 }
 
+class StubAgents extends Service {
+  private readonly values = new Map<string, unknown>()
+  constructor(ctx: Context) { super(ctx, 'agents') }
+  get(id: string): unknown { return this.values.get(id) }
+  register(id: string, agent: unknown): void { this.values.set(id, agent) }
+}
+
 class StubSession {
+  constructor(readonly id: string) {}
   append(_type: string, _data: unknown): void {}
 }
 
@@ -67,12 +78,13 @@ async function host(): Promise<Context> {
   await ctx.plugin(StubSubagents)
   await ctx.plugin(StubApproval)
   await ctx.plugin(StubSkills)
+  await ctx.plugin(StubAgents)
   return ctx
 }
 
 function template(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'bundle-smoke', name: 'Bundle smoke' },
     spec: {
@@ -121,7 +133,7 @@ describe('installable DSH workflow package', () => {
         },
       })
       const binding = await first.workflowBindings.publish({
-        apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowBinding', metadata: { id: 'bundle-nightly' },
+        apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowBinding', metadata: { id: 'bundle-nightly' },
         spec: {
           workflow: { id: draft.id, revision: published.revision },
           trigger: { uses: 'cron@1', with: { expression: '0 9 * * 1' } },
@@ -129,10 +141,12 @@ describe('installable DSH workflow package', () => {
           authorityRef: 'service:bundle-cron',
         },
       }, 0)
+      const agent = { session: new StubSession('bundle-owner') }
+      first.agents.register(agent.session.id, agent)
       const run = await first.dagWorkflowEngine.start({
         template: draft.template,
         inputs: { value: 'persisted' },
-        parent: { session: new StubSession() },
+        parent: agent,
       })
       expect(await run.result).toMatchObject({ status: 'completed', outputs: { value: 'persisted' } })
       await run.dispose()
@@ -146,6 +160,44 @@ describe('installable DSH workflow package', () => {
       expect(await second.workflowTemplates.readDraft('bundle-smoke')).toMatchObject({ revision: 1 })
       expect((await second.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('completed')
       expect(await second.workflowBindings.get(binding.metadata.id)).toEqual(binding)
+      await secondPlugin.dispose()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('recovers an interrupted durable run through the stable DSH Session identity', async () => {
+    const Workflow = await import(builtPackageRoot)
+    const directory = mkdtempSync(join(tmpdir(), 'agent-dag-workflow-recovery-'))
+    const databasePath = join(directory, 'workflows.db')
+    try {
+      const first = await host()
+      const firstAgent = { session: new StubSession('restart-owner') }
+      first.agents.register(firstAgent.session.id, firstAgent)
+      let entered!: () => void
+      const executing = new Promise<void>(resolve => { entered = resolve })
+      first.tools.handler = async () => { entered(); return new Promise(() => {}) }
+      const firstPlugin = await first.plugin(Workflow, { databasePath })
+      const draft = await first.workflowTemplates.createDraft(toolWorkflowTemplate())
+      await first.workflowTemplates.publish(draft.id, draft.revision)
+      const run = await first.dagWorkflowEngine.start({ template: draft.template, inputs: { message: 'recover' }, parent: firstAgent })
+      await executing
+      await firstPlugin.dispose()
+
+      const second = await host()
+      const secondAgent = { session: new StubSession('restart-owner') }
+      second.agents.register(secondAgent.session.id, secondAgent)
+      second.tools.handler = async input => ({ isError: false, value: { echo: input.arguments.message ?? null } })
+      const secondPlugin = await second.plugin(Workflow, { databasePath })
+      await vi.waitFor(async () => expect((await second.workflowRuns.loadRun(run.id))?.checkpoint.status).toBe('paused'))
+      const resumed = await second.dagWorkflowEngine.resume({
+        runId: run.id,
+        parent: secondAgent,
+        unknownNodeResolutions: { call: 'retry' },
+      })
+      await expect(resumed.result).resolves.toMatchObject({ status: 'completed', outputs: { answer: 'recover' } })
+      expect((await second.workflowRuns.loadRun(run.id))?.checkpoint.resultOutputs).toEqual({ answer: 'recover' })
+      expect((await second.workflowRuns.loadRun(run.id))?.execution.authorityRef).toBe('dsh-session:restart-owner')
       await secondPlugin.dispose()
     } finally {
       rmSync(directory, { recursive: true, force: true })

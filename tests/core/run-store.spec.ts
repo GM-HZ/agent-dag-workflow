@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   DagWorkflowEngine,
   InMemoryWorkflowRunStore,
@@ -39,10 +39,10 @@ function registry(): WorkflowNodeRegistry {
   return result
 }
 
-function tools(onCall?: () => void) {
+function tools(onCall?: (request: WorkflowToolRequest) => void) {
   return {
     async execute(request: WorkflowToolRequest): Promise<JsonValue> {
-      onCall?.()
+      onCall?.(request)
       return { echo: request.inputs.message ?? null }
     },
   }
@@ -50,7 +50,7 @@ function tools(onCall?: () => void) {
 
 function approvalWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'approval-flow', name: 'Approval flow' },
     spec: {
@@ -92,7 +92,7 @@ function approvalWorkflowTemplate(): WorkflowTemplate {
 
 function foreachWorkflowTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-flow', name: 'For each flow' },
     spec: {
@@ -133,7 +133,7 @@ function foreachWorkflowTemplate(): WorkflowTemplate {
 
 function subworkflowParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'subworkflow-parent', name: 'Subworkflow parent' },
     spec: {
@@ -231,13 +231,15 @@ describe('workflow run store and recovery', () => {
   it('pauses an unknown side-effect node until an operator explicitly retries it', async () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'node.completed' && event.nodeId === 'call'))
     let sideEffects = 0
-    const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
+    const invocationIds: string[] = []
+    const recordCall = (request: WorkflowToolRequest) => { sideEffects++; invocationIds.push(request.invocationId) }
+    const firstEngine = new DagWorkflowEngine(registry(), { tools: tools(recordCall) }, { runStore: store })
     const first = await firstEngine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'side-effect' } })
     expect((await first.result).status).toBe('failed')
     expect(sideEffects).toBe(1)
     expect((await store.loadRun(first.id))?.checkpoint.nodeStates.call).toBe('running')
 
-    const recoveryEngine = new DagWorkflowEngine(registry(), { tools: tools(() => { sideEffects++ }) }, { runStore: store })
+    const recoveryEngine = new DagWorkflowEngine(registry(), { tools: tools(recordCall) }, { runStore: store })
     const paused = await (await recoveryEngine.resume({ execution: testExecution, runId: first.id })).result
     expect(paused).toMatchObject({ status: 'paused', needsAttention: ['call'] })
     expect(sideEffects).toBe(1)
@@ -249,6 +251,91 @@ describe('workflow run store and recovery', () => {
     })).result
     expect(retried.status).toBe('completed')
     expect(sideEffects).toBe(2)
+    expect(invocationIds).toEqual([`${first.id}:call`, `${first.id}:call`])
+  })
+
+  it('detaches an executor without durably cancelling the recoverable run', async () => {
+    const nodes = registry()
+    let started!: () => void
+    const entered = new Promise<void>(resolve => { started = resolve })
+    let executions = 0
+    nodes.register({
+      type: 'test.interruptible', version: 1, title: 'Interruptible', description: 'Executor interruption fixture',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-interruptible-v1',
+      async execute(context) {
+        executions++
+        if (executions > 1) return { outputs: { recovered: true } }
+        started()
+        await new Promise<void>((_resolve, reject) => {
+          context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+        })
+        return { outputs: {} }
+      },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'interruptible', name: 'Interruptible' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'work', uses: 'test.interruptible@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+        ],
+        edges: [{ id: 'a', source: 'start', target: 'work' }, { id: 'b', source: 'work', target: 'end' }], outputs: {},
+      },
+    }
+    const store = new InMemoryWorkflowRunStore()
+    const engine = new DagWorkflowEngine(nodes, {}, { runStore: store })
+    const run = await engine.start({ execution: testExecution, template, inputs: {} })
+    await entered
+    await run.dispose('worker lease lost')
+
+    const interrupted = await store.loadRun(run.id)
+    expect(interrupted?.checkpoint).toMatchObject({ status: 'running', nodeStates: { work: 'running' } })
+    expect(interrupted?.events.some(event => event.type === 'run.cancelled')).toBe(false)
+
+    const resumed = await new DagWorkflowEngine(nodes, {}, { runStore: store }).resume({ execution: testExecution, runId: run.id })
+    expect(await resumed.result).toMatchObject({ status: 'completed' })
+    expect(executions).toBe(2)
+  })
+
+  it('bounds detach and maxDuration even when Host code ignores AbortSignal', async () => {
+    const nodes = registry()
+    nodes.register({
+      type: 'test.noncooperative', version: 1, title: 'Noncooperative', description: 'Ignores cancellation',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-noncooperative-v1',
+      async execute() { return new Promise(() => {}) },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'noncooperative', name: 'Noncooperative' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' }, policies: { maxDurationMs: 30 },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'work', uses: 'test.noncooperative@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+        ],
+        edges: [{ id: 'a', source: 'start', target: 'work' }, { id: 'b', source: 'work', target: 'end' }], outputs: {},
+      },
+    }
+    const store = new InMemoryWorkflowRunStore()
+    const deadlineRun = await new DagWorkflowEngine(nodes, {}, { runStore: store }).start({ execution: testExecution, template, inputs: {} })
+    await expect(Promise.race([
+      deadlineRun.result,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('deadline hung')), 250)),
+    ])).resolves.toMatchObject({ status: 'failed', error: 'workflow duration exceeded' })
+
+    const detachedTemplate = { ...template, metadata: { id: 'noncooperative-detach', name: 'Noncooperative detach' }, spec: { ...template.spec, policies: { maxDurationMs: 5_000 } } }
+    const detached = await new DagWorkflowEngine(nodes, {}, { runStore: store }).start({ execution: testExecution, template: detachedTemplate, inputs: {} })
+    await vi.waitFor(async () => expect((await store.loadRun(detached.id))?.checkpoint.nodeStates.work).toBe('running'))
+    await expect(Promise.race([
+      detached.dispose('runner stopped'),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('detach hung')), 250)),
+    ])).resolves.toBeUndefined()
+    expect((await store.loadRun(detached.id))?.checkpoint.status).toBe('running')
+    expect((await store.loadRun(detached.id))?.events.some(event => event.type === 'run.cancelled')).toBe(false)
   })
 
   it('does not reset the total duration budget when a run is resumed', async () => {
@@ -394,7 +481,7 @@ describe('workflow run store and recovery', () => {
   it('persists a terminal failure when the assembled Workflow result exceeds its limit', async () => {
     const value = 'x'.repeat(35)
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'terminal-size', name: 'Terminal size' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },

@@ -82,7 +82,7 @@ describe('Canvas experience model', () => {
     const definition = {
       catalogId: 'tool:inventory.lookup', kind: 'tool' as const, uses: 'tool.call@1', toolName: 'inventory.lookup', title: 'inventory.lookup', description: '', role: 'regular' as const,
       configSchema: {}, inputSchema: {}, outputSchema: {}, outputPorts: ['success'], requiredOutputPorts: [], capabilities: ['gateway.tool.execute'], dependencyKinds: ['tool'],
-      defaultRequirements: [{ kind: 'capability', uses: 'gateway.tool.execute' }, { kind: 'tool', uses: 'inventory.lookup' }], retry: 'never' as const,
+      defaultRequirements: [{ kind: 'capability', uses: 'gateway.tool.execute' }, { kind: 'tool', uses: 'inventory.lookup' }], effects: 'external' as const, retry: 'never' as const,
     }
     expect(nodeRequirementPresentation(
       { id: 'query', uses: 'tool.call@1', with: { uses: 'inventory.lookup' }, inputs: {} }, definition,
@@ -100,7 +100,7 @@ describe('Canvas experience model', () => {
   it('localizes built-in nodes without renaming external DSH Tools', () => {
     const start = {
       catalogId: 'core.start@1', kind: 'node' as const, uses: 'core.start@1', title: 'Start', description: 'English', role: 'start' as const,
-      configSchema: {}, inputSchema: {}, outputSchema: {}, outputPorts: ['success'], requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], retry: 'safe' as const,
+      configSchema: {}, inputSchema: {}, outputSchema: {}, outputPorts: ['success'], requiredOutputPorts: [], capabilities: [], dependencyKinds: [], defaultRequirements: [], effects: 'deterministic' as const, retry: 'safe' as const,
     }
     const tool = { ...start, catalogId: 'tool:web_search', kind: 'tool' as const, uses: 'tool.call@1', title: 'web_search', description: 'Search the web.', role: 'regular' as const }
     expect(definitionDisplayTitle(start)).toBe('开始')

@@ -90,7 +90,7 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
         origin: context.origin,
         executionMode: mode,
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        ...(context.signal === undefined || mode === 'background' ? {} : { interruptionSignal: context.signal }),
       })
       if (mode === 'background') return { runId: handle.runId, status: 'accepted' }
       const result = await handle.result
@@ -131,7 +131,7 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
         mode,
         authorityRef: context.authorityRef,
         ...(context.authority === undefined ? {} : { authority: context.authority }),
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        ...(context.signal === undefined ? {} : { interruptionSignal: context.signal }),
       })
       return snapshotJsonValue(await handle.result as unknown as import('../core/index.js').JsonValue) as unknown as import('../core/index.js').WorkflowRunResult
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
@@ -145,9 +145,22 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
         authorityRef: context.authorityRef,
         ...(context.authority === undefined ? {} : { authority: context.authority }),
         ...(unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions }),
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        ...(context.signal === undefined ? {} : { interruptionSignal: context.signal }),
       })
       return snapshotJsonValue(await handle.result as unknown as import('../core/index.js').JsonValue) as unknown as import('../core/index.js').WorkflowRunResult
+    } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
+  }
+
+  async cancel(runId: string, context: AgentAccessContext, reason?: string) {
+    try {
+      await this.#authorizedRun('cancel', runId, context)
+      return snapshotJsonValue(await this.runtime.cancel({
+        runId: assertNonEmpty(runId, 'runId'),
+        authorityRef: context.authorityRef,
+        ...(context.authority === undefined ? {} : { authority: context.authority }),
+        ...(reason === undefined ? {} : { reason: assertNonEmpty(reason, 'reason') }),
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+      }) as unknown as import('../core/index.js').JsonValue) as unknown as import('../core/index.js').WorkflowRunResult
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
 
@@ -215,7 +228,7 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
 
-  async #authorizedRun(operation: Extract<WorkflowAccessOperation, 'run.get' | 'trace' | 'replay' | 'resume'>, runId: string, context: AgentAccessContext) {
+  async #authorizedRun(operation: Extract<WorkflowAccessOperation, 'run.get' | 'trace' | 'replay' | 'resume' | 'cancel'>, runId: string, context: AgentAccessContext) {
     const normalizedRunId = assertNonEmpty(runId, 'runId')
     const run = await this.runtime.getRun(normalizedRunId)
     if (run === undefined) throw new WorkflowAccessError('WORKFLOW_RUN_NOT_FOUND', `workflow run not found: ${normalizedRunId}`)

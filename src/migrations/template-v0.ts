@@ -1,4 +1,4 @@
-import { snapshotJsonObject, type JsonObject, type JsonValue, type WorkflowTemplate } from '../core/index.js'
+import { snapshotJsonObject, WORKFLOW_TEMPLATE_API_VERSION, type JsonObject, type JsonValue, type WorkflowTemplate } from '../core/index.js'
 
 const NODE_USES: Readonly<Record<string, string>> = {
   'dsh.tool@1': 'tool.call@1',
@@ -10,7 +10,7 @@ const NODE_USES: Readonly<Record<string, string>> = {
 /** Explicit offline 0.2 -> 1.0 conversion. It is never called by the runtime parser. */
 export function migrateLegacyWorkflowTemplate(candidate: JsonObject): WorkflowTemplate {
   const copy = structuredClone(candidate) as JsonObject
-  copy.apiVersion = 'workflow.gm-hz.dev/v1alpha1'
+  copy.apiVersion = WORKFLOW_TEMPLATE_API_VERSION
   const spec = object(copy.spec, 'spec')
   const nodes = array(spec.nodes, 'spec.nodes')
   for (const item of nodes) {

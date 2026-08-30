@@ -319,6 +319,17 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
     })
   }, [api, execute, runResult, sessionId])
 
+  const cancelRun = useCallback(async () => {
+    const runId = runResult?.runId ?? trace?.runId
+    if (runId === undefined) return
+    await execute('取消运行', async () => {
+      const result = await api.request('workflowCanvas.cancel', () => api.remote.cancel(sessionId, { runId, reason: 'cancelled from Canvas' }))
+      setRunResult(result)
+      setTrace(await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId }), { retries: 1 }))
+      return result
+    })
+  }, [api, execute, runResult?.runId, sessionId, trace?.runId])
+
   const mutate = useCallback((next: CanvasWorkflowTemplate) => {
     setTemplate(next)
     setDocumentState(draft === undefined ? 'unsaved' : 'dirty')
@@ -447,7 +458,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
           onClick={() => mutate(addNode(template, definition, { x: 140 + index % 2 * 280, y: 100 + index * 42 }))}
         ><span>{nodeGlyph(definition)}</span><b>{definitionDisplayTitle(definition)}</b><small>{definitionDisplayDescription(definition)}</small><em>{definition.kind === 'tool' ? '通过 Host 权限边界执行' : definition.uses}</em></button>)}
       </div>
-      <div className="wf-palette-foot"><span>显示 {filteredDefinitions.length} 项</span><span>模板 v1alpha1</span></div>
+      <div className="wf-palette-foot"><span>显示 {filteredDefinitions.length} 项</span><span>模板 v1</span></div>
     </aside>
 
     <main className="wf-canvas">
@@ -480,6 +491,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
         <textarea value={inputsText} onChange={event => setInputsText(event.target.value)} aria-label="运行输入 JSON" title="运行输入 JSON" />
         <button className="wf-run" onClick={() => void runDraft()} disabled={busy}>▶ 试运行</button>
         <button onClick={() => void refreshTrace()} disabled={busy || trace === undefined} title={trace === undefined ? '还没有可刷新的运行轨迹' : '读取已持久化的最新轨迹'}>刷新</button>
+        {trace?.status === 'running' ? <button onClick={() => void cancelRun()} disabled={busy}>停止运行</button> : null}
         {runResult?.status === 'paused' && (runResult.needsAttention?.length ?? 0) === 0 ? <button onClick={() => void resumeRun()} disabled={busy}>▶ 继续运行</button> : null}
         {(runResult?.needsAttention?.length ?? 0) > 0 ? <><button onClick={() => void resumeRun('retry')} disabled={busy}>↻ 重试未确认节点</button><button onClick={() => void resumeRun('fail')} disabled={busy}>× 标记失败</button></> : null}
         {trace === undefined ? null : <><button className="wf-subtle" onClick={() => setShowInfrastructureEvents(value => !value)}>{showInfrastructureEvents ? '隐藏底层事件' : '显示底层事件'}</button><button className="wf-copy-run" onClick={() => void navigator.clipboard.writeText(trace.runId)} title={trace.runId}>复制运行 ID</button></>}

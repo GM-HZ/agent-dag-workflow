@@ -1,3 +1,5 @@
+import type { WORKFLOW_TEMPLATE_API_VERSION } from './version.js'
+
 export type JsonPrimitive = string | number | boolean | null
 export type JsonValue = JsonPrimitive | JsonObject | readonly JsonValue[]
 export interface JsonObject { [key: string]: JsonValue }
@@ -51,6 +53,14 @@ export interface WorkflowPolicies {
 
 /** Host-owned ceilings. A WorkflowTemplate may only reduce these values. */
 export interface WorkflowDeploymentLimits {
+  /** Maximum serialized immutable template accepted by compiler/runtime. */
+  readonly maxTemplateBytes: number
+  /** Maximum serialized launch or nested-workflow input. */
+  readonly maxInputBytes: number
+  readonly maxNodes: number
+  readonly maxEdges: number
+  /** Maximum serialized size of each author-supplied JSON Schema. */
+  readonly maxSchemaBytes: number
   readonly maxConcurrentNodes: number
   readonly maxNodeRuns: number
   readonly maxDurationMs: number
@@ -61,7 +71,7 @@ export interface WorkflowDeploymentLimits {
 }
 
 export interface WorkflowTemplate {
-  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
+  readonly apiVersion: typeof WORKFLOW_TEMPLATE_API_VERSION
   readonly kind: 'WorkflowTemplate'
   readonly metadata: {
     readonly id: string
@@ -268,6 +278,13 @@ export interface WorkflowNodeDefinition {
   readonly outputPorts: readonly string[]
   readonly requiredOutputPorts?: readonly string[]
   readonly capabilities: readonly string[]
+  /**
+   * Declares whether executing this definition can observe or mutate state
+   * outside the deterministic Workflow JSON data plane. Recorded replay
+   * recomputes deterministic nodes and restores external nodes from their
+   * committed Artifact instead of executing them again.
+   */
+  readonly effects: 'deterministic' | 'external'
   /** Resource kinds that authoring clients should expect this definition to declare. */
   readonly dependencyKinds?: readonly string[]
   readonly retry: NodeRetryMode
@@ -423,7 +440,8 @@ export interface WorkflowEngineRun {
   readonly id: string
   readonly result: Promise<WorkflowRunResult>
   cancel(reason?: string): Promise<void>
-  dispose(): Promise<void>
+  /** Stops this executor without changing the durable Workflow business state. */
+  dispose(reason?: string): Promise<void>
 }
 
 export interface WorkflowExecutionPlanEntry {
@@ -453,6 +471,8 @@ export interface WorkflowEngineStartRequest {
   /** Internal recorded-replay source. External nodes are satisfied from these committed outputs. */
   readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
   readonly signal?: AbortSignal
+  /** Executor ownership signal. Aborting it leaves the durable Run recoverable. */
+  readonly interruptionSignal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
 }
 
@@ -460,6 +480,8 @@ export interface WorkflowResumeRequest {
   readonly runId: string
   readonly execution: WorkflowExecutionContext
   readonly signal?: AbortSignal
+  /** Executor ownership signal. Aborting it leaves the durable Run recoverable. */
+  readonly interruptionSignal?: AbortSignal
   readonly onEvent?: (event: WorkflowEvent) => void
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
 }

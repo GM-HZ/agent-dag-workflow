@@ -15,6 +15,8 @@ import {
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
 export type SqliteWorkflowRunStoreOptions = SqliteWorkflowOptions
+export interface WorkflowRunPruneRequest { readonly terminalBefore: number; readonly limit?: number }
+export interface WorkflowRunPruneResult { readonly runIds: readonly string[] }
 
 export class SqliteWorkflowRunStore implements WorkflowRunStore {
   private readonly db: DatabaseSync
@@ -69,12 +71,42 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
   }
 
   async loadRun(runId: string): Promise<WorkflowRunRecord | undefined> {
+    return this.#loadRun(runId, true)
+  }
+
+  async exportRun(runId: string): Promise<WorkflowRunRecord | undefined> {
+    return this.#loadRun(runId, true)
+  }
+
+  async prune(request: WorkflowRunPruneRequest): Promise<WorkflowRunPruneResult> {
+    if (!Number.isSafeInteger(request.terminalBefore) || request.terminalBefore < 0) throw new Error('terminalBefore must be a non-negative safe integer')
+    const limit = request.limit ?? 100
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) throw new Error('prune limit must be between 1 and 10000')
+    return transaction(this.db, () => {
+      const runIds = this.db.prepare(`SELECT run_id FROM workflow_runs
+        WHERE status IN ('completed', 'failed', 'cancelled') AND updated_at < ?
+        ORDER BY updated_at, run_id LIMIT ?`).all(request.terminalBefore, limit)
+        .map(row => stringColumn(rowRecord(row), 'run_id'))
+      const remove = this.db.prepare('DELETE FROM workflow_runs WHERE run_id = ?')
+      for (const id of runIds) remove.run(id)
+      return { runIds }
+    })
+  }
+
+  backupTo(path: string): void {
+    if (typeof path !== 'string' || path.length === 0 || path === ':memory:') throw new Error('backup path must be a non-empty filesystem path')
+    this.db.exec(`VACUUM INTO '${path.replaceAll("'", "''")}'`)
+  }
+
+  #loadRun(runId: string, includeEvents: boolean): WorkflowRunRecord | undefined {
     const row = this.db.prepare(`SELECT run_id, template_json, semantic_hash, plan_json, inputs_json, execution_json, launch_json, created_at, checkpoint_json
       FROM workflow_runs WHERE run_id = ?`).get(runId)
     if (row === undefined) return undefined
     const record = rowRecord(row)
-    const events = this.db.prepare('SELECT event_json FROM workflow_run_events WHERE run_id = ? ORDER BY seq').all(runId)
-      .map(value => decode(stringColumn(rowRecord(value), 'event_json')) as unknown as WorkflowEvent)
+    const events = includeEvents
+      ? this.db.prepare('SELECT event_json FROM workflow_run_events WHERE run_id = ? ORDER BY seq').all(runId)
+          .map(value => decode(stringColumn(rowRecord(value), 'event_json')) as unknown as WorkflowEvent)
+      : []
     const result: WorkflowRunRecord = {
       runId: stringColumn(record, 'run_id'),
       template: parseWorkflowTemplate(stringColumn(record, 'template_json')),
@@ -91,8 +123,8 @@ export class SqliteWorkflowRunStore implements WorkflowRunStore {
   }
 
   async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> {
-    const records = await Promise.all(this.db.prepare(`SELECT run_id FROM workflow_runs WHERE status IN ('running', 'paused') ORDER BY created_at, run_id`).all()
-      .map(row => this.loadRun(stringColumn(rowRecord(row), 'run_id'))))
+    const records = this.db.prepare(`SELECT run_id FROM workflow_runs WHERE status IN ('running', 'paused') ORDER BY created_at, run_id`).all()
+      .map(row => this.#loadRun(stringColumn(rowRecord(row), 'run_id'), false))
     return records.filter((record): record is WorkflowRunRecord => record !== undefined)
   }
 

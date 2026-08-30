@@ -45,7 +45,7 @@ First clarify the goal, inputs, outputs, external side effects, approval points,
 
 1. Query registered nodes and Host Tools. Use `agent-workflow nodes search` or `workflow_nodes_list`.
 2. Plan stable kebab-case template/node ids, static edges, explicit start/end nodes, branch ports, and fixed subworkflow revisions.
-3. Produce exactly one `workflow.gm-hz.dev/v1alpha1` `WorkflowTemplate` JSON/YAML file.
+3. Produce exactly one `workflow.gm-hz.dev/v1` `WorkflowTemplate` JSON/YAML file.
 4. Declare every dependency in `spec.requires`. A declaration is an allowlist entry, never a permission grant.
 5. Use `core.script@1` only for deterministic pure JSON transformation. Keep network, files, credentials and external effects in Host Tool/Agent nodes.
 6. Use `core.foreach@1` when each item performs an external call or needs checkpoint/recovery. Pure array mapping/filtering/sorting stays in Script.

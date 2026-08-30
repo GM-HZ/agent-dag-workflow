@@ -25,7 +25,7 @@ type AuthoringContext = Context & {
 }
 
 const objectOutput = { type: 'object' } as const
-const templateProperty = { type: 'object', description: 'A complete WorkflowTemplate v1alpha1 JSON object.' } as const
+const templateProperty = { type: 'object', description: 'A complete WorkflowTemplate v1 JSON object.' } as const
 const idProperty = { type: 'string', pattern: '^[a-z][a-z0-9-]*$' } as const
 const revisionProperty = { type: 'integer', minimum: 1 } as const
 const DSH_STRUCTURED_OUTPUT_SCHEMA = Object.freeze({
@@ -160,7 +160,7 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       const target = hasId
         ? { type: 'published' as const, id: stringArg(args, 'id'), revision: integerArg(args, 'revision') }
         : { type: 'inline' as const, template: templateArg(args, 'template') }
-      const run = await ctx.dagWorkflowEngine.start({ target, inputs: input, parent, signal: execution.signal })
+      const run = await ctx.dagWorkflowEngine.start({ target, inputs: input, parent, interruptionSignal: execution.signal })
       const result = await settleRun(run)
       return snapshotJsonValue({
         runId: result.runId,

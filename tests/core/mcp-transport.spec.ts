@@ -34,7 +34,7 @@ describe('workflow MCP transports', () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
     try {
       expect((await client.listTools()).tools.map(tool => tool.name)).toEqual([
-        'workflow_search', 'workflow_describe', 'workflow_run', 'workflow_run_get', 'workflow_trace',
+        'workflow_search', 'workflow_describe', 'workflow_run', 'workflow_run_get', 'workflow_cancel', 'workflow_trace',
       ])
       const search = await client.callTool({ name: 'workflow_search', arguments: { query: 'Tool' } })
       expect(search.structuredContent).toMatchObject({ items: [{ ref: 'tool-flow@1' }] })
@@ -58,7 +58,7 @@ describe('workflow MCP transports', () => {
     const client = new Client({ name: 'workflow-stdio-test', version: '1.0.0' })
     await client.connect(transport)
     try {
-      expect((await client.listTools()).tools).toHaveLength(5)
+      expect((await client.listTools()).tools).toHaveLength(6)
       const result = await client.callTool({ name: 'workflow_search', arguments: {} })
       expect(result.isError).not.toBe(true)
       expect(result.structuredContent).toEqual({ items: [] })

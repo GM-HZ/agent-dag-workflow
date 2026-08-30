@@ -3,6 +3,7 @@ export type { CompiledWorkflow, CompiledWorkflowNode, WorkflowCompileOptions, Wo
 export { createScopedWorkflowCapabilityResolver, WorkflowCapabilityRegistry } from './capabilities.js'
 export { validateStructuredObjectSchema } from './structured-output-schema.js'
 export { DagWorkflowEngine, WORKFLOW_ENGINE_VERSION } from './engine.js'
+export { WORKFLOW_TEMPLATE_API_VERSION } from './version.js'
 export { WorkflowCompileError, WorkflowExecutionError, WorkflowPauseError } from './errors.js'
 export {
   evaluateWorkflowExpression,

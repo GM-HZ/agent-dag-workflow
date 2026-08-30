@@ -1,6 +1,6 @@
 import type { WorkflowNodeRegistry } from './registry.js'
-import { compileJsonValidator, structuralDiagnostics } from './schema.js'
-import { snapshotJsonValue } from './json.js'
+import { compileJsonValidator, structuralDiagnostics, validateAuthoredDataSchema } from './schema.js'
+import { snapshotJsonValue, stableJsonStringify } from './json.js'
 import { materializeWorkflowTemplate } from './hash.js'
 import type {
   WorkflowBinding,
@@ -55,9 +55,32 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
   } catch (error: unknown) {
     return { diagnostics: [diagnostic('TEMPLATE_NOT_LOSSLESS_JSON', renderError(error))] }
   }
+  const deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
+  const templateBytes = Buffer.byteLength(stableJsonStringify(template as unknown as import('./types.js').JsonValue), 'utf8')
+  if (templateBytes > deploymentLimits.maxTemplateBytes) {
+    return { diagnostics: [diagnostic('WORKFLOW_TEMPLATE_TOO_LARGE', `workflow template is ${templateBytes} bytes, deployment limit is ${deploymentLimits.maxTemplateBytes}`)] }
+  }
   const diagnostics = structuralDiagnostics(template)
   if (diagnostics.length > 0) return { diagnostics }
-  const deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
+  if (template.spec.nodes.length > deploymentLimits.maxNodes) diagnostics.push(diagnostic(
+    'WORKFLOW_NODE_LIMIT_EXCEEDED', `workflow has ${template.spec.nodes.length} nodes, deployment limit is ${deploymentLimits.maxNodes}`, undefined, ['spec', 'nodes'],
+  ))
+  if (template.spec.edges.length > deploymentLimits.maxEdges) diagnostics.push(diagnostic(
+    'WORKFLOW_EDGE_LIMIT_EXCEEDED', `workflow has ${template.spec.edges.length} edges, deployment limit is ${deploymentLimits.maxEdges}`, undefined, ['spec', 'edges'],
+  ))
+  for (const [schema, path] of authoredSchemas(template)) {
+    const bytes = Buffer.byteLength(stableJsonStringify(schema as unknown as import('./types.js').JsonValue), 'utf8')
+    if (bytes > deploymentLimits.maxSchemaBytes) diagnostics.push(diagnostic(
+      'WORKFLOW_SCHEMA_TOO_LARGE', `workflow schema is ${bytes} bytes, deployment limit is ${deploymentLimits.maxSchemaBytes}`, undefined, path,
+    ))
+    for (const issue of validateAuthoredDataSchema(schema)) {
+      diagnostics.push(diagnostic('WORKFLOW_SCHEMA_UNSAFE', issue.message, undefined, [...path, ...issue.path]))
+    }
+  }
+  // Never hand an unsafe author-controlled schema to Ajv or to binding
+  // validation. In particular, this rejects regex and recursive references
+  // before they can consume runtime CPU.
+  if (diagnostics.some(item => item.code === 'WORKFLOW_SCHEMA_UNSAFE')) return { diagnostics }
   for (const [name, value] of Object.entries(template.spec.policies ?? {})) {
     const ceiling = deploymentLimits[name as keyof WorkflowDeploymentLimits]
     if (value !== undefined && value > ceiling) {
@@ -97,8 +120,8 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
     }
     definitions.set(node.id, definition)
     outputSchemas.set(node.id, node.expects?.schema ?? definition.outputSchema)
-    if ((node.policy?.retry?.maxAttempts ?? 1) > 1) {
-      diagnostics.push(diagnostic('RETRY_UNSUPPORTED', 'the current engine executes every node at most once; maxAttempts must be 1', node.id, ['spec', 'nodes', index, 'policy', 'retry']))
+    if ((node.policy?.retry?.maxAttempts ?? 1) > 1 && definition.retry === 'never') {
+      diagnostics.push(diagnostic('NODE_RETRY_UNSAFE', `node ${node.uses} does not permit automatic retry`, node.id, ['spec', 'nodes', index, 'policy', 'retry']))
     }
     let configValid = false
     try {
@@ -295,6 +318,16 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       validateWorkflowOutputs,
     },
   }
+}
+
+function authoredSchemas(template: WorkflowTemplate): readonly [JsonSchema, readonly (string | number)[]][] {
+  return [
+    [template.spec.inputSchema, ['spec', 'inputSchema']],
+    [template.spec.outputSchema, ['spec', 'outputSchema']],
+    ...template.spec.nodes.flatMap((node, index): readonly [JsonSchema, readonly (string | number)[]][] => node.expects === undefined
+      ? []
+      : [[node.expects.schema, ['spec', 'nodes', index, 'expects', 'schema']]]),
+  ]
 }
 
 export function compileWorkflowOrThrow(template: WorkflowTemplate, registry: WorkflowNodeRegistry, options: WorkflowCompileOptions = {}): CompiledWorkflow {

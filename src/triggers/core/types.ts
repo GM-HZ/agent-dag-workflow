@@ -1,4 +1,4 @@
-import type { JsonObject, JsonSchema, JsonValue } from '../../core/index.js'
+import type { JsonObject, JsonSchema, JsonValue, WORKFLOW_TEMPLATE_API_VERSION } from '../../core/index.js'
 
 export interface WorkflowTriggerEnvelope {
   readonly schemaVersion: 1
@@ -17,7 +17,7 @@ export type WorkflowInputMappingValue =
   | { readonly metadata: { readonly path: readonly (string | number)[] } }
 
 export interface WorkflowTriggerBinding {
-  readonly apiVersion: 'workflow.gm-hz.dev/v1alpha1'
+  readonly apiVersion: typeof WORKFLOW_TEMPLATE_API_VERSION
   readonly kind: 'WorkflowBinding'
   readonly metadata: { readonly id: string; readonly revision: number }
   readonly spec: {

@@ -117,6 +117,49 @@ describe('workflow compiler', () => {
       .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_POLICY_LIMIT_EXCEEDED', path: ['spec', 'policies', 'maxOutputBytes'] }))
   })
 
+  it('rejects templates, graphs, and authored schemas above Host-owned ceilings', () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    expect(compileWorkflow(base, registry, { deploymentLimits: { maxTemplateBytes: 32 } }).diagnostics)
+      .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_TEMPLATE_TOO_LARGE' }))
+    expect(compileWorkflow(base, registry, { deploymentLimits: { maxNodes: 2 } }).diagnostics)
+      .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_NODE_LIMIT_EXCEEDED' }))
+    expect(compileWorkflow(base, registry, { deploymentLimits: { maxEdges: 1 } }).diagnostics)
+      .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_EDGE_LIMIT_EXCEEDED' }))
+    const schemaHeavy = {
+      ...base,
+      spec: { ...base.spec, inputSchema: { ...base.spec.inputSchema, description: 'x'.repeat(256) } },
+    }
+    expect(compileWorkflow(schemaHeavy, registry, { deploymentLimits: { maxSchemaBytes: 64 } }).diagnostics)
+      .toContainEqual(expect.objectContaining({ code: 'WORKFLOW_SCHEMA_TOO_LARGE', path: ['spec', 'inputSchema'] }))
+  })
+
+  it('rejects unsafe authored schema features before Ajv compilation', () => {
+    const registry = new WorkflowNodeRegistry(); registerCoreNodes(registry)
+    const base = toolWorkflowTemplate()
+    const unsafe = {
+      ...base,
+      spec: {
+        ...base.spec,
+        inputSchema: { type: 'object', properties: { value: { type: 'string', pattern: '^(a+)+$' } } },
+        outputSchema: { type: 'string' },
+      },
+    } as unknown as WorkflowTemplate
+    const diagnostics = compileWorkflow(unsafe, registry).diagnostics
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'WORKFLOW_SCHEMA_UNSAFE', path: ['spec', 'inputSchema', 'properties', 'value', 'pattern'],
+    }))
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'WORKFLOW_SCHEMA_UNSAFE', path: ['spec', 'outputSchema', 'type'],
+    }))
+
+    const recursive = { ...base, spec: { ...base.spec, inputSchema: { type: 'object', properties: { child: { $ref: '#' } } } } } as unknown as WorkflowTemplate
+    expect(compileWorkflow(recursive, registry).diagnostics).toContainEqual(expect.objectContaining({
+      code: 'WORKFLOW_SCHEMA_UNSAFE', path: ['spec', 'inputSchema', 'properties', 'child', '$ref'],
+    }))
+  })
+
   it('rejects ordinary cycles', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
@@ -169,7 +212,7 @@ describe('workflow compiler', () => {
       type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'number' } },
     }))
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'type-mismatch', name: 'Type mismatch' },
       spec: {
         inputSchema: { type: 'object', additionalProperties: false },
@@ -231,7 +274,7 @@ describe('workflow compiler', () => {
     const registry = new WorkflowNodeRegistry()
     registerCoreNodes(registry)
     const template: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'current-agent', name: 'Current Agent' },
       spec: {
         requires: [{ kind: 'capability', uses: 'gateway.agent.execute' }],
@@ -287,7 +330,7 @@ function testNode(type: string, inputSchema: Record<string, unknown>, outputSche
   return {
     type, version: 1, title: type, description: type,
     configSchema: { type: 'object', additionalProperties: false },
-    inputSchema, outputSchema, outputPorts: ['success'], capabilities: [], retry: 'safe',
+    inputSchema, outputSchema, outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe',
     async execute(context) { return { outputs: context.inputs } },
   }
 }

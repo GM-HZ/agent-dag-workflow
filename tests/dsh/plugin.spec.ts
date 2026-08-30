@@ -115,7 +115,7 @@ class StubSession {
 
 function template(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'dsh-plugin-test', name: 'DSH plugin test' },
     spec: {
@@ -151,7 +151,7 @@ function template(): WorkflowTemplate {
 
 function agentApprovalTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'agent-approval-test', name: 'Agent approval test' },
     spec: {
@@ -210,7 +210,7 @@ function agentApprovalTemplate(): WorkflowTemplate {
 
 function childTemplate(id: string, foreach = false): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id, name: `${id} child` },
     spec: {
@@ -250,7 +250,7 @@ function childTemplate(id: string, foreach = false): WorkflowTemplate {
 
 function nestedParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'nested-parent', name: 'Nested parent' },
     spec: {
@@ -291,7 +291,7 @@ function nestedParentTemplate(): WorkflowTemplate {
 
 function foreachParentTemplate(): WorkflowTemplate {
   return {
-    apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+    apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
     metadata: { id: 'foreach-parent', name: 'For each parent' },
     spec: {
@@ -411,7 +411,7 @@ describe('DSH Cordis plugin', () => {
       configSchema: { type: 'object', additionalProperties: false },
     })
     const binding = await ctx.workflowBindings.publish({
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1',
+      apiVersion: 'workflow.gm-hz.dev/v1',
       kind: 'WorkflowBinding',
       metadata: { id: 'dsh-webhook' },
       spec: {
@@ -622,6 +622,7 @@ describe('DSH Cordis plugin', () => {
       },
       outputPorts: ['success'],
       capabilities: ['acme.jobs.execute'],
+      effects: 'external',
       retry: 'idempotent',
       async execute(execution) {
         const jobs = execution.capabilities.require<{ execute(value: string): Promise<string> }>('acme.jobs.execute')
@@ -629,7 +630,7 @@ describe('DSH Cordis plugin', () => {
       },
     })
     const customTemplate: WorkflowTemplate = {
-      apiVersion: 'workflow.gm-hz.dev/v1alpha1', kind: 'WorkflowTemplate',
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate',
       metadata: { id: 'custom-node-dsh', name: 'Custom Node in DSH' },
       spec: {
         requires: [{ kind: 'capability', uses: 'acme.jobs.execute' }],
@@ -685,7 +686,7 @@ describe('DSH Cordis plugin', () => {
     expect(warn.mock.calls.some(call => String(call[0]).includes('request observer failed'))).toBe(true)
   })
 
-  it('cancels and drains active runs when the plugin is disposed', async () => {
+  it('detaches active runs without business cancellation when the plugin is disposed', async () => {
     const ctx = new Context()
     await mountRuntime(ctx)
     const tools = ctx.tools
@@ -693,14 +694,17 @@ describe('DSH Cordis plugin', () => {
       input.signal.addEventListener('abort', () => { reject(new Error(String(input.signal.reason))) }, { once: true })
     }).then(value => ({ isError: false as const, value }))
     const plugin = await ctx.plugin(DshWorkflowPlugin)
+    const runStore = ctx.workflowRuns
     const run = await ctx.dagWorkflowEngine.start({ template: template(), inputs: { message: 'wait' }, parent: { session: new StubSession() } })
     await vi.waitFor(() => { expect(tools.requests).toHaveLength(1) })
 
     await plugin.dispose()
     const result = await run.result
 
-    expect(result.status).toBe('cancelled')
-    expect(result).toMatchObject({ error: 'dag workflow service disposed' })
+    expect(result.status).toBe('failed')
+    expect(result).toMatchObject({ error: 'workflow executor interrupted: DSH executor detached' })
+    expect((await runStore.loadRun(run.id))?.checkpoint.status).toBe('running')
+    expect((await runStore.readEvents(run.id)).some(event => event.type === 'run.cancelled')).toBe(false)
   })
 
   it('routes agent and approval nodes through their DSH capability seams', async () => {
@@ -725,7 +729,7 @@ describe('DSH Cordis plugin', () => {
     expect(ctx.approval.requests[0]).toEqual(expect.objectContaining({
       agent: parent,
       toolName: 'publish-report',
-      callId: expect.stringMatching(/:approve:\d+$/),
+      callId: expect.stringMatching(/:approve$/),
       reason: expect.stringContaining('child answer'),
     }))
     const record = await ctx.workflowRuns.loadRun(result.runId)

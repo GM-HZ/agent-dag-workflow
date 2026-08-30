@@ -18,7 +18,7 @@ export interface AgentAccessContext {
 }
 
 export type WorkflowAccessOperation =
-  | 'search' | 'describe' | 'run' | 'run.get' | 'trace' | 'replay' | 'resume'
+  | 'search' | 'describe' | 'run' | 'run.get' | 'trace' | 'replay' | 'resume' | 'cancel'
   | 'nodes.list' | 'validate' | 'draft.get' | 'draft.put' | 'diff' | 'publish'
 
 export interface WorkflowAccessAuthorizationRequest {
@@ -138,6 +138,8 @@ export interface WorkflowNodeSearchResult {
     readonly inputSchema: JsonSchema
     readonly outputSchema: JsonSchema
     readonly outputPorts: readonly string[]
+    readonly effects: 'deterministic' | 'external'
+    readonly retry: import('../core/index.js').NodeRetryMode
     readonly dependencyKinds?: readonly string[]
   }[]
 }
@@ -178,6 +180,7 @@ export interface WorkflowAgentAccessApi {
   trace(request: WorkflowTraceRequest, context: AgentAccessContext): Promise<WorkflowTraceProjection>
   replay(runId: string, mode: 'inspect' | 'recorded' | 'live', context: AgentAccessContext): Promise<WorkflowRunResult>
   resume(runId: string, context: AgentAccessContext, unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>): Promise<WorkflowRunResult>
+  cancel(runId: string, context: AgentAccessContext, reason?: string): Promise<WorkflowRunResult>
   listNodes(request: WorkflowNodeSearchRequest, context: AgentAccessContext): Promise<WorkflowNodeSearchResult>
   validate(template: WorkflowTemplate, context: AgentAccessContext): Promise<WorkflowValidationResult>
   getDraft(id: string, context: AgentAccessContext, includeTemplate?: boolean): Promise<WorkflowDraftProjection>

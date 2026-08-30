@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { WorkflowAgentAccess } from '../../src/access/index.js'
 import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import { InMemoryWorkflowRunStore, WorkflowNodeRegistry, registerCoreNodes } from '../../src/core/index.js'
@@ -76,5 +76,27 @@ describe('WorkflowAgentAccess', () => {
     })
     await expect(operatorAccess.getRun(result.runId, { ...stranger, authorityRef: 'operator:root' }))
       .resolves.toMatchObject({ status: 'completed', outputs: { answer: 'private' } })
+  })
+
+  it('treats request disconnect as executor interruption instead of business cancellation', async () => {
+    const nodes = new WorkflowNodeRegistry(); registerCoreNodes(nodes)
+    const runs = new InMemoryWorkflowRunStore()
+    const runtime = new WorkflowRuntime({
+      nodes,
+      catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes),
+      runStore: runs,
+      services: { tools: { async execute() { return new Promise(() => {}) } } },
+    })
+    const access = new WorkflowAgentAccess(runtime)
+    const owner = { authorityRef: 'agent:transport', authority: {}, origin: { type: 'mcp' as const, source: 'test' } }
+    const draft = await access.putDraft(toolWorkflowTemplate(), owner); await access.publish(draft.id, draft.revision, owner)
+    const controller = new AbortController()
+    const pending = access.run({ ref: 'tool-flow@1', inputs: { message: 'disconnect' } }, { ...owner, signal: controller.signal })
+    await vi.waitFor(async () => expect((await runs.listRecoverableRuns()).length).toBe(1))
+    controller.abort('client disconnected')
+    await expect(pending).resolves.toMatchObject({ status: 'failed', error: 'workflow executor interrupted: client disconnected' })
+    const record = (await runs.listRecoverableRuns())[0]!
+    expect(record.checkpoint.status).toBe('running')
+    expect(record.events.some(event => event.type === 'run.cancelled')).toBe(false)
   })
 })

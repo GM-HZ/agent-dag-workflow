@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - name: Install OIDC-capable npm CLI
+        run: npm install --global npm@11.7.0
+      - run: pnpm install --frozen-lockfile
+      - name: Verify immutable release identity
+        run: node -e "const p=require('./package.json');if(process.env.GITHUB_REF_NAME!=='v'+p.version)throw new Error('tag '+process.env.GITHUB_REF_NAME+' does not match package '+p.version)"
+      - run: pnpm check
+      - run: pnpm verify:pack
+        env:
+          AGENT_DAG_VERIFY_NETWORK_INSTALL: '1'
+      - run: pnpm --registry=https://registry.npmjs.org audit --prod --audit-level high
+      - name: Check whether this immutable version already exists
+        id: registry
+        run: |
+          PACKAGE_SPEC=$(node -p "const p=require('./package.json'); p.name+'@'+p.version")
+          if npm view "$PACKAGE_SPEC" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish immutable package
+        if: steps.registry.outputs.already_published != 'true'
+        run: npm publish --access public --provenance

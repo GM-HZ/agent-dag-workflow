@@ -95,6 +95,9 @@ async function executeCommand(
       const result = await access.resume(requiredPositional(args, 0, 'resume requires runId'), context, await readResolutions(option(args, '--resolutions'), io))
       return workflowResult(result)
     }
+    case 'cancel': return workflowResult(await access.cancel(
+      requiredPositional(args, 0, 'cancel requires runId'), context, option(args, '--reason'),
+    ))
     case 'nodes': {
       if (positional(args, 0) !== 'search') invalid('nodes requires the search subcommand')
       const query = positional(args, 1)
@@ -276,6 +279,7 @@ function validateCommandArguments(command: string | undefined, args: readonly st
     case 'trace': assertArguments(args, ['--view', '--format', '--after', '--limit'], ['--follow', '--events'], 1, 1); return
     case 'replay': assertArguments(args, ['--mode'], [], 1, 1); return
     case 'resume': assertArguments(args, ['--resolutions'], [], 1, 1); return
+    case 'cancel': assertArguments(args, ['--reason'], [], 1, 1); return
     case 'nodes': {
       const positionals = assertArguments(args, ['--limit'], [], 1, 2)
       if (positionals[0] !== 'search') invalid('nodes requires the search subcommand')
@@ -404,5 +408,5 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function usage(): string {
-  return 'Usage: agent-workflow search|describe|run|run-get|trace|replay|resume|nodes search|validate|draft get|draft put|diff|publish|worker --once|migrate-template ... [--db path] [--host module.mjs] [--config file]'
+  return 'Usage: agent-workflow search|describe|run|run-get|trace|replay|resume|cancel|nodes search|validate|draft get|draft put|diff|publish|worker --once|migrate-template ... [--db path] [--host module.mjs] [--config file]'
 }

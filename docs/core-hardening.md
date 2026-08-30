@@ -10,6 +10,10 @@ The default ceilings are intentionally separate from the normal execution defaul
 
 | Limit | Normal default | Deployment ceiling |
 | --- | ---: | ---: |
+| Serialized template | — | 4 MiB |
+| Launch/nested input | — | 2 MiB |
+| Nodes / edges | — | 1,000 / 5,000 |
+| Each authored Schema | — | 1 MiB |
 | Concurrent nodes | 4 | 16 |
 | Node runs | 100 | 1,000 |
 | Duration | 10 minutes | 60 minutes |
@@ -65,9 +69,22 @@ An active handle obtained from a persisted idempotent run must not acknowledge a
 - appends node cancellation events and `run.cancelled`;
 - prevents late worker output from overwriting the terminal checkpoint.
 
-Cancellation remains cooperative for code already executing outside the process. Host Gateways must observe `AbortSignal` and make stable `invocationId` idempotent; Core guarantees that late data cannot become the committed Workflow result after cancellation wins the checkpoint race.
+The control plane does not wait for Host code to cooperate: node execution is raced against timeout/cancellation/interruption, so cancel, maxDuration and detach converge even if a Tool/Agent ignores `AbortSignal`. The external operation itself may still continue outside the process, so Host Gateways must observe `AbortSignal` and make stable `invocationId` idempotent. Core ignores late settlement and guarantees that late data cannot overwrite a terminal checkpoint.
 
-## 6. Verification gates
+Runner interruption is deliberately different. A process shutdown, lost worker lease, transport disconnect, or `handle.detach()` stops only the current executor and leaves the last durable checkpoint in `running`/`paused`, so another authorized runner can recover it. Only the explicit Runtime/Access/CLI/MCP/DSH/Canvas cancel operation may commit `run.cancelled`.
+
+## 6. Effects, retry, and replay
+
+Every `WorkflowNodeDefinition` declares `effects: deterministic | external` and `retry: never | safe | idempotent`. These are executable contracts, not UI metadata:
+
+- recorded replay restores every external node from its committed Artifact and recomputes deterministic nodes;
+- a retry policy above one attempt is rejected unless the definition declares `safe` or `idempotent`;
+- all attempts of one node use the same `${runId}:${nodeId}` capability `invocationId`, so a Host can deduplicate an idempotent side effect;
+- retry-never nodes that crash across an unknown side-effect boundary pause for an explicit operator decision.
+
+Built-in Tool, Agent, approval, foreach, and subworkflow nodes are external. Start, End, Condition, and the pure JSON Script node are deterministic.
+
+## 7. Verification gates
 
 Every Core change must retain tests for:
 
@@ -76,6 +93,12 @@ Every Core change must retain tests for:
 - invalid external output never being captured or marked completed;
 - terminal assembly failures becoming durable failures;
 - persisted idempotent handle cancellation;
+- runner interruption without durable cancellation;
+- custom external-node recorded replay and stable invocation identity across safe retry;
+- template/input/node/edge/schema size ceiling rejection;
+- unsafe authored Schema keyword/root/depth rejection before Ajv compilation;
+- non-cooperative Host execution under timeout, durable cancel, and detach;
+- transport interruption never producing `run.cancelled`;
 - crash recovery at commit boundaries and RunStore CAS conflict rejection.
 
-The generated DAG/path tests and systematic commit failpoint matrix are defined in [Core Verification Harness](core-verification-harness.md). Distributed Worker/lease testing is intentionally not part of Core: it belongs to an optional Host runner if deployment needs it. Retries and compensation are separate features and must not be added by weakening the unknown-side-effect recovery rules.
+The generated DAG/path tests and systematic commit failpoint matrix are defined in [Core Verification Harness](core-verification-harness.md). Distributed Worker/lease testing is intentionally not part of Core: it belongs to an optional Host runner if deployment needs it. Compensation remains a separate feature and must not be approximated by weakening the unknown-side-effect recovery rules.
