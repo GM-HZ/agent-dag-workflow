@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.json",
+  "include": [
+    "../../../src/core/**/*.ts",
+    "../../../src/catalog/**/*.ts",
+    "../../../src/adapters/dsh/**/*.ts",
+    "../../../src/canvas/**/*.ts",
+    "../../../src/canvas/**/*.tsx",
+    "../../../tests/canvas/**/*.ts",
+    "../../../tests/canvas/**/*.tsx"
+  ]
+}

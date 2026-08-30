@@ -23,7 +23,7 @@ export default defineConfig({
       { text: 'Examples', link: '/examples/' },
       { text: '架构', link: '/architecture' },
       {
-        text: 'v1.0.0',
+        text: '资源',
         items: [
           { text: 'Template v1 协议', link: 'https://github.com/GM-HZ/agent-dag-workflow/blob/main/spec/workflow-template-v1.md' },
           { text: '发布流程', link: '/release' },

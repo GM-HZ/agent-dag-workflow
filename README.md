@@ -1,8 +1,6 @@
 # Agent DAG Workflow
 
-当前版本：`1.0.0`。Core、CLI、MCP、Skill、DSH、Trigger、Canvas、SQLite、恢复与发布门禁使用同一套 v1 契约。
-
-`@gm-hz/agent-dag-workflow` 是一个可嵌入任意 Agent Host 的持久化 DAG Workflow 内核。它把 Agent、Tool、Skill、MCP 和受控本地能力编排成同一份可保存、校验、发布、恢复、审计和重放的 `WorkflowTemplate` JSON。
+`@gm-hz/agent-dag-workflow` 是一个轻量、Host-neutral 的 DAG Workflow Runtime。它让 Codex、DSH 或其他 Agent 直接复用已有的 Tool、Skill 与 MCP，把离散调用组织成可保存、校验、恢复、审计和重放的 `WorkflowTemplate` JSON。
 
 它不是另一个 Coze/Dify 平台，也不内建模型 Provider、凭据中心或 Tool 市场。Host 继续负责已有的 Agent/Tool/Skill/MCP 生态；本项目只负责把离散能力变成稳定流程。
 

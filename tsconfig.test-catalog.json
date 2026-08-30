@@ -1,4 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "include": ["src/core/**/*.ts", "src/catalog/**/*.ts", "tests/catalog/**/*.ts"]
-}

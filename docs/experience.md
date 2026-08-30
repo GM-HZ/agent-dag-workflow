@@ -1,6 +1,6 @@
 # 工作流体验与故障恢复
 
-本文定义 `1.0.0` 安装后的创作、运行与排障体验。界面和 Agent 不引入 Provider、第二套 DSL 或 Canvas 数据模型；唯一真源始终是 `WorkflowTemplate`。
+本文定义稳定版的创作、运行与排障体验。界面和 Agent 不引入 Provider、第二套 DSL 或 Canvas 数据模型；唯一真源始终是 `WorkflowTemplate`。
 
 ## 黄金路径
 

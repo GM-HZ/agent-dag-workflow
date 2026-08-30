@@ -1,9 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "include": [
-    "src/core/**/*.ts",
-    "src/catalog/**/*.ts",
-    "src/adapters/dsh/**/*.ts",
-    "tests/dsh/**/*.ts"
-  ]
-}

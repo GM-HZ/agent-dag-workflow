@@ -9,7 +9,7 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "pnpm sync:codex-plugin && pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
+    "build": "pnpm sync:codex-plugin && pnpm clean && pnpm generate:typert && tsc -p config/typescript/build.json && tsdown --config config/canvas.tsdown.ts",
     "check": "pnpm typecheck && pnpm test && pnpm run docs:build",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
     "example:weekly": "pnpm build && node examples/run-weekly-ai-model-news.mjs",
@@ -21,9 +21,9 @@
     "showcase:install": "pnpm build && node examples/install-showcases.mjs",
     "sync:codex-plugin": "node scripts/sync-codex-plugin.mjs",
     "prepare": "pnpm build",
-    "test": "pnpm build && vitest run",
-    "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test-core.json --noEmit && tsc -p tsconfig.test-catalog.json --noEmit && tsc -p tsconfig.test-dsh.json --noEmit && tsc -p tsconfig.test-sqlite.json --noEmit && tsc -p tsconfig.test-canvas.json --noEmit && tsc -p tsconfig.test-verification.json --noEmit",
-    "verify:core": "pnpm generate:typert && tsc -p tsconfig.test-verification.json --noEmit && vitest run tests/verification",
+    "test": "pnpm build && vitest --config config/vitest.ts run",
+    "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p config/typescript/tests/core.json --noEmit && tsc -p config/typescript/tests/catalog.json --noEmit && tsc -p config/typescript/tests/dsh.json --noEmit && tsc -p config/typescript/tests/sqlite.json --noEmit && tsc -p config/typescript/tests/canvas.json --noEmit && tsc -p config/typescript/tests/verification.json --noEmit",
+    "verify:core": "pnpm generate:typert && tsc -p config/typescript/tests/verification.json --noEmit && vitest --config config/vitest.ts run tests/verification",
     "verify:pack": "pnpm build && node scripts/verify-packed-install.mjs"
   },
   "main": "lib/index.js",

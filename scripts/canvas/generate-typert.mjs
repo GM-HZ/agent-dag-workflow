@@ -9,7 +9,7 @@ try {
   mkdirSync(packageRoot, { recursive: true })
   cpSync(resolve(root, 'src'), resolve(packageRoot, 'src'), { recursive: true })
   cpSync(resolve(root, 'types/typert-protocol.d.ts'), resolve(workRoot, 'typert-protocol.d.ts'))
-  cpSync(resolve(root, 'tsconfig.base.json'), resolve(workRoot, 'tsconfig.base.json'))
+  cpSync(resolve(root, 'config/typescript/base.json'), resolve(workRoot, 'tsconfig.base.json'))
   const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
   manifest.exports = {
     '.': manifest.exports['./canvas'],

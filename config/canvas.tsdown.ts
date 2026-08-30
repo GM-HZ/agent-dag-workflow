@@ -19,8 +19,8 @@ const sharedModules = new Set([
 
 export default defineConfig({
   name: `${PACKAGE_ID}/client`,
-  entry: { client: 'lib/canvas/client/index.js' },
-  outDir: 'lib/canvas',
+  entry: { client: '../lib/canvas/client/index.js' },
+  outDir: '../lib/canvas',
   format: 'cjs',
   platform: 'browser',
   target: 'es2023',
