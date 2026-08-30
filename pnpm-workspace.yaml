@@ -1,0 +1,3 @@
+allowBuilds:
+  # VitePress uses this pinned, transitive esbuild release for the docs bundle.
+  esbuild: true

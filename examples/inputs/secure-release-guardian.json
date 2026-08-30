@@ -1,0 +1,5 @@
+{
+  "releaseId": "release-1.0.0",
+  "changeSummary": "Introduce a durable Host-neutral workflow runtime with explicit Tool and Agent gateways.",
+  "approvalThreshold": 70
+}

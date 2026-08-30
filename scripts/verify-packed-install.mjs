@@ -30,8 +30,20 @@ try {
     }
   }
   const packageDirectory = join(workspace, 'node_modules', '@gm-hz', 'agent-dag-workflow')
-  await mkdir(packageDirectory, { recursive: true })
-  command('tar', ['-xzf', tarball, '--strip-components=1', '-C', packageDirectory], workspace)
+  if (!networkInstall) {
+    await mkdir(packageDirectory, { recursive: true })
+    command('tar', ['-xzf', tarball, '--strip-components=1', '-C', packageDirectory], workspace)
+  }
+  const packedManifest = JSON.parse(await readFile(join(packageDirectory, 'package.json'), 'utf8'))
+  if (packedManifest.bin?.adw !== 'lib/cli.js' || packedManifest.bin?.['agent-workflow'] !== 'lib/cli.js') {
+    throw new Error('packed manifest does not expose equivalent adw and agent-workflow CLI entries')
+  }
+  if (!(await readFile(join(packageDirectory, 'lib', 'cli.js'), 'utf8')).startsWith('#!/usr/bin/env node\n')) {
+    throw new Error('packed CLI entry is missing its Node shebang')
+  }
+  if (existsSync(join(packageDirectory, 'docs', '.vitepress'))) {
+    throw new Error('packed artifact contains VitePress cache, build output, or site-only sources')
+  }
   if (existsSync(join(workspace, 'node_modules', '@deepseek-ai'))) throw new Error('clean consumer unexpectedly installed a DSH/Cordis peer')
   await writeFile(join(workspace, 'smoke.mjs'), `
     import * as root from '@gm-hz/agent-dag-workflow'
@@ -54,6 +66,14 @@ try {
   const cliEnvelope = JSON.parse(cliOutput)
   if (cliEnvelope.protocolVersion !== 'agent-workflow.cli/v1' || cliEnvelope.ok !== true
     || !Array.isArray(cliEnvelope.data?.items)) throw new Error('packed CLI did not return a valid v1 search envelope')
+  if (networkInstall) {
+    const aliasOutput = command(join(workspace, 'node_modules', '.bin', 'adw'), [
+      'search', '--db', join(workspace, 'workflow-alias.db'),
+    ], workspace)
+    const aliasEnvelope = JSON.parse(aliasOutput)
+    if (aliasEnvelope.protocolVersion !== 'agent-workflow.cli/v1' || aliasEnvelope.ok !== true
+      || !Array.isArray(aliasEnvelope.data?.items)) throw new Error('installed adw alias did not return a valid v1 search envelope')
+  }
   process.stdout.write(`verified ${networkInstall ? 'clean network' : 'isolated local'} tarball install: ${filename}\n`)
 } finally {
   await rm(workspace, { recursive: true, force: true })

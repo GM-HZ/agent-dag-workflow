@@ -1,0 +1,11 @@
+{
+  "item": {
+    "id": "clause-standalone",
+    "text": "Liability is unlimited for all indirect losses."
+  },
+  "index": 0,
+  "shared": {
+    "maxLiability": "annual fees",
+    "allowUnlimitedLiability": false
+  }
+}

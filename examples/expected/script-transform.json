@@ -1,0 +1,6 @@
+{
+  "customer": "GM-HZ",
+  "orderCount": 3,
+  "total": 100,
+  "approvedIds": ["A-100", "A-102"]
+}

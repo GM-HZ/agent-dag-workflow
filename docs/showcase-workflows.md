@@ -4,10 +4,10 @@
 
 | 场景 | 模板 | 展示的核心能力 |
 | --- | --- | --- |
-| AI 模型周报 | [`weekly-ai-model-news.workflow.json`](../examples/weekly-ai-model-news.workflow.json) | Host `web_search` 13 路并行检索、最多 100 条候选、Agent 评分 overlay、`joinBy` 防篡改合并、稳定 Top 10、结构化摘要 |
-| 生产发布门禁 | [`secure-release-guardian.workflow.yaml`](../examples/secure-release-guardian.workflow.yaml) | 并行架构/安全 Agent、确定性最高风险聚合、条件分支、一次性人工授权、完整审计链 |
-| 批量合同审查 | [`batch-contract-review.workflow.yaml`](../examples/batch-contract-review.workflow.yaml) + [`contract-clause-review-worker.workflow.yaml`](../examples/contract-clause-review-worker.workflow.yaml) | 固定发布版本的子 Workflow、并发 `foreach`、逐项持久化 frame、崩溃恢复、汇总 Agent |
-| 多源尽调 | [`multi-source-due-diligence.workflow.yaml`](../examples/multi-source-due-diligence.workflow.yaml) | Agent 查询规划、三路 `web_search`、不可信内容隔离、证据 Schema、确定性排序、带引用报告 |
+| AI 模型周报 | [`weekly-ai-model-news.workflow.json`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/weekly-ai-model-news.workflow.json) | Host `web_search` 13 路并行检索、最多 100 条候选、Agent 评分 overlay、`joinBy` 防篡改合并、稳定 Top 10、结构化摘要 |
+| 生产发布门禁 | [`secure-release-guardian.workflow.yaml`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/secure-release-guardian.workflow.yaml) | 并行架构/安全 Agent、确定性最高风险聚合、条件分支、一次性人工授权、完整审计链 |
+| 批量合同审查 | [`batch-contract-review.workflow.yaml`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/batch-contract-review.workflow.yaml) + [`contract-clause-review-worker.workflow.yaml`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/contract-clause-review-worker.workflow.yaml) | 固定发布版本的子 Workflow、并发 `foreach`、逐项持久化 frame、崩溃恢复、汇总 Agent |
+| 多源尽调 | [`multi-source-due-diligence.workflow.yaml`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/multi-source-due-diligence.workflow.yaml) | Agent 查询规划、三路 `web_search`、不可信内容隔离、证据 Schema、确定性排序、带引用报告 |
 
 ## 与 Coze / Dify 工作流的共同点
 
@@ -82,4 +82,4 @@ node examples/run-weekly-ai-model-news.mjs --json > weekly-result.json
 4. 在运行输入中填写 `from` 和 `to` 日期窗口，点击 `试运行`。模板内部已经把候选上限固定为 100 条。
 5. 底部先显示 13 路 Tool 调用，再显示 Agent 结构化评分与确定性脚本合并/排序；最终输出只保留 Top 10。
 
-完整验收仍以 [weekly-ai-model-news.workflow.json](../examples/weekly-ai-model-news.workflow.json) 中声明的 input Schema 为准，不要在脚本节点中放入网络调用、密钥或动态代码。
+完整验收仍以 [weekly-ai-model-news.workflow.json](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/weekly-ai-model-news.workflow.json) 中声明的 input Schema 为准，不要在脚本节点中放入网络调用、密钥或动态代码。

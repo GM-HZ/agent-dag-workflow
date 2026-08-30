@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Agent DAG Workflow">
+  <rect width="64" height="64" rx="14" fill="#1946d2"/>
+  <path d="M17 18h12v12H17zM35 34h12v12H35zM17 42h10v6H17z" fill="#f4f0e8"/>
+  <path d="M29 24h9c5 0 7 4 7 10M22 30v12M27 45h8" fill="none" stroke="#ffb547" stroke-width="4" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,8 @@
+{
+  "customer": "  gm-hz  ",
+  "orders": [
+    { "id": "A-100", "amount": 28.5, "approved": true },
+    { "id": "A-101", "amount": 11.5, "approved": false },
+    { "id": "A-102", "amount": 60, "approved": true }
+  ]
+}

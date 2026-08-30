@@ -1,0 +1,11 @@
+{
+  "contractId": "contract-2026-08",
+  "clauses": [
+    { "id": "clause-1", "text": "Liability is limited to annual fees." },
+    { "id": "clause-2", "text": "Liability is unlimited for all indirect losses." }
+  ],
+  "policy": {
+    "maxLiability": "annual fees",
+    "allowUnlimitedLiability": false
+  }
+}

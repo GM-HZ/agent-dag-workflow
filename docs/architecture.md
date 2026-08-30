@@ -1,6 +1,6 @@
 # Agent DAG Workflow 总体架构
 
-本文描述 `1.0.0` 已实现的 Host-neutral 架构。README 给出黄金使用路径，本文只解释稳定边界和执行语义；公开协议以 [Workflow Template v1](../spec/workflow-template-v1.md) 为准。
+本文描述 `1.0.0` 已实现的 Host-neutral 架构。README 给出黄金使用路径，本文只解释稳定边界和执行语义；公开协议以 [Workflow Template v1](https://github.com/GM-HZ/agent-dag-workflow/blob/main/spec/workflow-template-v1.md) 为准。
 
 ## 1. 产品边界
 

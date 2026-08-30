@@ -45,7 +45,7 @@ Gateway 的返回值仍会经过节点 Schema、`expects` 和 Workflow 输出 Sc
 
 ## 运行最小示例
 
-仓库内的 [`minimal-host.mjs`](../examples/minimal-host.mjs) 把已有 `echo` Tool 适配给通用 Tool Gateway。完整发布和运行过程为：
+仓库内的 [`minimal-host.mjs`](https://github.com/GM-HZ/agent-dag-workflow/blob/main/examples/minimal-host.mjs) 把已有 `echo` Tool 适配给通用 Tool Gateway。完整发布和运行过程为：
 
 ```bash
 pnpm build

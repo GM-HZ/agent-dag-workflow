@@ -10,9 +10,13 @@
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "pnpm sync:codex-plugin && pnpm clean && pnpm generate:typert && tsc -p tsconfig.build.json && tsdown --config canvas.tsdown.config.ts",
-    "check": "pnpm typecheck && pnpm test",
+    "check": "pnpm typecheck && pnpm test && pnpm run docs:build",
     "demo": "pnpm build && node examples/run-approval-gate.mjs && node examples/run-script-transform.mjs",
     "example:weekly": "pnpm build && node examples/run-weekly-ai-model-news.mjs",
+    "examples:codex": "pnpm build && node examples/run-codex-examples.mjs",
+    "docs:build": "vitepress build docs",
+    "docs:dev": "vitepress dev docs",
+    "docs:preview": "vitepress preview docs",
     "generate:typert": "node scripts/canvas/generate-typert.mjs",
     "showcase:install": "pnpm build && node examples/install-showcases.mjs",
     "sync:codex-plugin": "node scripts/sync-codex-plugin.mjs",
@@ -109,6 +113,7 @@
     "./package.json": "./package.json"
   },
   "bin": {
+    "adw": "lib/cli.js",
     "agent-workflow": "lib/cli.js",
     "agent-workflow-mcp": "lib/mcp-cli.js"
   },
@@ -118,7 +123,7 @@
     "lib/typert.host.d.ts",
     "lib/typert.remote-client.js",
     "lib/typert.remote-client.d.ts",
-    "docs",
+    "docs/**/*.md",
     "examples",
     "spec",
     "skills",
@@ -183,6 +188,7 @@
     "react-dom": "18.3.1",
     "tsdown": "^0.22.14",
     "typescript": "^6.0.3",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.8"
   },
   "repository": {

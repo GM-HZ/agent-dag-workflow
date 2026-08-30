@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "host": "deterministic-host.mjs",
+  "examples": [
+    {
+      "id": "approval-gate-demo",
+      "title": "风险条件分支",
+      "workflow": "approval-gate.workflow.json",
+      "input": "inputs/approval-gate.json",
+      "expected": "expected/approval-gate.json",
+      "revision": 1,
+      "level": "入门",
+      "capabilities": ["Condition", "typed output"]
+    },
+    {
+      "id": "script-transform-demo",
+      "title": "纯 JSON 数据变换",
+      "workflow": "script-transform.workflow.json",
+      "input": "inputs/script-transform.json",
+      "expected": "expected/script-transform.json",
+      "revision": 1,
+      "level": "入门",
+      "capabilities": ["Script", "deterministic"]
+    },
+    {
+      "id": "tool-echo",
+      "title": "Host Tool 调用",
+      "workflow": "tool-echo.workflow.yaml",
+      "input": "inputs/tool-echo.json",
+      "expected": "expected/tool-echo.json",
+      "revision": 1,
+      "level": "入门",
+      "capabilities": ["Tool Gateway", "requires"]
+    },
+    {
+      "id": "research-report",
+      "title": "Agent 研究报告",
+      "workflow": "research-report.workflow.yaml",
+      "input": "inputs/research-report.json",
+      "expected": "expected/research-report.json",
+      "revision": 1,
+      "level": "进阶",
+      "capabilities": ["Agent Gateway", "structured output"]
+    },
+    {
+      "id": "contract-clause-review-worker",
+      "title": "可复用条款审查子流程",
+      "workflow": "contract-clause-review-worker.workflow.yaml",
+      "input": "inputs/contract-clause-review-worker.json",
+      "expected": "expected/contract-clause-review-worker.json",
+      "revision": 2,
+      "level": "进阶",
+      "capabilities": ["Subworkflow", "schema boundary"]
+    },
+    {
+      "id": "batch-contract-review",
+      "title": "批量合同审查",
+      "workflow": "batch-contract-review.workflow.yaml",
+      "input": "inputs/batch-contract-review.json",
+      "expected": "expected/batch-contract-review.json",
+      "revision": 1,
+      "level": "复杂",
+      "capabilities": ["Foreach", "checkpoint", "Subworkflow"]
+    },
+    {
+      "id": "multi-source-due-diligence",
+      "title": "多源尽调",
+      "workflow": "multi-source-due-diligence.workflow.yaml",
+      "input": "inputs/multi-source-due-diligence.json",
+      "expected": "expected/multi-source-due-diligence.json",
+      "revision": 1,
+      "level": "复杂",
+      "capabilities": ["Tool", "Agent", "evidence ranking"]
+    },
+    {
+      "id": "secure-release-guardian",
+      "title": "生产发布门禁",
+      "workflow": "secure-release-guardian.workflow.yaml",
+      "input": "inputs/secure-release-guardian.json",
+      "expected": "expected/secure-release-guardian.json",
+      "revision": 1,
+      "level": "复杂",
+      "capabilities": ["parallel Agent", "Condition", "Approval"]
+    },
+    {
+      "id": "weekly-ai-model-news",
+      "title": "AI 模型周报 Top 10",
+      "workflow": "weekly-ai-model-news.workflow.json",
+      "input": "weekly-ai-model-news.inputs.json",
+      "expected": "expected/weekly-ai-model-news.json",
+      "revision": 1,
+      "level": "复杂",
+      "capabilities": ["13-way Tool fan-out", "Agent overlay", "stable ranking"]
+    }
+  ]
+}

@@ -12,6 +12,7 @@ interface PackageManifest {
   exports?: Record<string, unknown>
   files?: string[]
   dsh?: { bundle?: { patch?: string }; client?: { immediately?: boolean; platform?: string } }
+  bin?: Record<string, string>
 }
 
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as PackageManifest
@@ -25,13 +26,15 @@ describe('published root package manifest', () => {
     })
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(manifest.dsh?.client).toMatchObject({ platform: 'web', immediately: true })
+    expect(manifest.bin).toMatchObject({ adw: 'lib/cli.js', 'agent-workflow': 'lib/cli.js' })
     const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
     expect(patch).toContain("name: '@gm-hz/agent-dag-workflow'")
     expect(patch).not.toContain('@gm-hz/agent-dag-workflow/dsh')
     expect(Object.keys(manifest.exports ?? {})).toEqual(expect.arrayContaining([
       '.', './core', './catalog', './sqlite', './dsh', './canvas', './client', './package.json',
     ]))
-    expect(manifest.files).toEqual(expect.arrayContaining(['docs', 'examples', 'spec', 'skills', 'integrations/codex/agent-dag-workflow']))
+    expect(manifest.files).toEqual(expect.arrayContaining(['docs/**/*.md', 'examples', 'spec', 'skills', 'integrations/codex/agent-dag-workflow']))
+    expect(manifest.files).not.toContain('docs')
     expect(Object.keys(manifest.exports ?? {})).toContain('./access')
     expect(Object.keys(manifest.exports ?? {})).not.toContain('./migrations')
     expect(manifest.dependencies?.['@modelcontextprotocol/sdk']).toBe('1.30.0')

@@ -51,6 +51,8 @@ flowchart LR
 
 当前架构见 [总体架构](docs/architecture.md)，安全与恢复不变量见 [Core hardening](docs/core-hardening.md) 和 [Core Verification Harness](docs/core-verification-harness.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
+完整的使用手册发布在 [Agent DAG Workflow 文档站](https://gm-hz.github.io/agent-dag-workflow/)。仓库内文档是站点唯一内容源，随 `main` 分支自动部署，不维护另一份 Wiki 副本。
+
 ## 安装
 
 要求 Node.js 22.19+：
@@ -221,21 +223,21 @@ Recorded Replay 不声称重放模型隐藏思维链。它只使用显式输入�
 
 ## CLI
 
-CLI 默认使用当前目录的 `.agent-dag-workflow.db`，也可以用 `--db` 指定 SQLite 文件：
+CLI 提供简写 `adw` 和完整命令 `agent-workflow`，二者完全等价。日常交互推荐使用 `adw`；脚本可以继续使用语义更明确的完整命令。CLI 默认使用当前目录的 `.agent-dag-workflow.db`，也可以用 `--db` 指定 SQLite 文件：
 
 ```bash
-agent-workflow validate examples/script-transform.workflow.json
-agent-workflow draft put examples/script-transform.workflow.json --db workflows.db
-agent-workflow publish script-transform-demo --expected 1 --db workflows.db
-agent-workflow search "transform" --db workflows.db
-agent-workflow describe script-transform-demo@1 --view schema --db workflows.db
-agent-workflow run script-transform-demo@1 --input input.json --db workflows.db
-agent-workflow run-get <runId> --db workflows.db
-agent-workflow trace <runId> --events --db workflows.db
-agent-workflow trace <runId> --follow --format jsonl --db workflows.db
-agent-workflow replay <runId> --mode recorded --db workflows.db
-agent-workflow resume <runId> --db workflows.db
-agent-workflow cancel <runId> --reason "operator stop" --db workflows.db
+adw validate examples/script-transform.workflow.json
+adw draft put examples/script-transform.workflow.json --db workflows.db
+adw publish script-transform-demo --expected 1 --db workflows.db
+adw search "transform" --db workflows.db
+adw describe script-transform-demo@1 --view schema --db workflows.db
+adw run script-transform-demo@1 --input input.json --db workflows.db
+adw run-get <runId> --db workflows.db
+adw trace <runId> --events --db workflows.db
+adw trace <runId> --follow --format jsonl --db workflows.db
+adw replay <runId> --mode recorded --db workflows.db
+adw resume <runId> --db workflows.db
+adw cancel <runId> --reason "operator stop" --db workflows.db
 ```
 
 所有非流式命令都返回单个 `agent-workflow.cli/v1` JSON Envelope；`--input -` 从 stdin 读取 JSON，不需要把大型输入塞进 shell 参数。CLI 对每个命令使用严格参数契约，未知、重复或多余参数会在打开数据库前 fail closed。包含 Tool/Agent 节点时，必须显式传入 `--host ./host.mjs`。该模块导出 Gateway、Authority 和可选自定义 Node；CLI 不会隐式读取环境变量来猜测能力或凭据。
@@ -354,6 +356,7 @@ CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个
 - [approval-gate.workflow.json](examples/approval-gate.workflow.json)：条件分支；
 - [batch-contract-review.workflow.yaml](examples/batch-contract-review.workflow.yaml)：foreach 与子工作流；
 - [weekly-ai-model-news.workflow.json](examples/weekly-ai-model-news.workflow.json)：多路检索、Agent 结构化、确定性排序和 Top 10；
+- [Example 回归清单](examples/README.md)：9 个模板的固定输入、期望输出与 Codex Plugin 全链路回归；
 - [showcase 说明](docs/showcase-workflows.md)：复杂场景的依赖与运行方式。
 
 源码验证：
@@ -363,9 +366,10 @@ pnpm install
 pnpm check
 pnpm verify:pack
 pnpm demo
+pnpm examples:codex
 pnpm example:weekly
 ```
 
-`pnpm example:weekly` 会在本地持久化数据库中真实执行 21 节点的“AI 模型周报”模板：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。默认使用离线确定性 Host；替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
+`pnpm examples:codex` 会通过真实 Codex Plugin wrapper 对清单中的 9 个模板逐一执行 validate、draft、publish、search、describe、run、run-get 和 trace；确定性 Host 让契约回归可在本地与 CI 重复。`pnpm example:weekly` 则单独执行 21 节点的“AI 模型周报”：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
 
 项目使用 MIT License。验证命令和发布门禁见 [Core Verification Harness](docs/core-verification-harness.md) 与 [1.0 发布流程](docs/release.md)。
