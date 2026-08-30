@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import {
   WorkflowAccessError,
@@ -7,7 +7,6 @@ import {
   type WorkflowAgentAccessApi,
 } from '../../access/index.js'
 import { parseWorkflowTemplate, snapshotJsonObject, snapshotJsonValue, type JsonObject, type JsonValue } from '../../core/index.js'
-import { migrateLegacyWorkflowTemplate } from '../../migrations/index.js'
 import { WorkflowRunWorker } from '../../triggers/core/index.js'
 import { createWorkflowCliApplication, type WorkflowCliApplication } from './application.js'
 import { workflowCliExitCode, workflowCliFailure, workflowCliRunHints, workflowCliSuccess } from './protocol.js'
@@ -128,15 +127,6 @@ async function executeCommand(
         ...(io.signal === undefined ? {} : { signal: io.signal }),
       })
       return success(result === undefined ? { status: 'idle' } : result)
-    }
-    case 'migrate-template': {
-      const source = requiredPositional(args, 0, 'migrate-template requires input file')
-      const target = option(args, '--output')
-      if (target === undefined) invalid('migrate-template requires --output')
-      const legacy = snapshotJsonObject(JSON.parse(await readFile(resolve(source), 'utf8')))
-      const migrated = migrateLegacyWorkflowTemplate(legacy)
-      await writeFile(resolve(target), `${JSON.stringify(migrated, null, 2)}\n`, 'utf8')
-      return success({ output: resolve(target), apiVersion: migrated.apiVersion })
     }
     default: invalid('unknown or missing command')
   }
@@ -296,7 +286,6 @@ function validateCommandArguments(command: string | undefined, args: readonly st
     case 'diff': assertArguments(args, [], [], 2, 2); return
     case 'publish': assertArguments(args, ['--expected'], [], 1, 1); return
     case 'worker': assertArguments(args, ['--worker-id', '--lease-ms'], ['--once'], 0, 0); return
-    case 'migrate-template': assertArguments(args, ['--output'], [], 1, 1); return
     default: invalid('unknown or missing command')
   }
 }
@@ -408,5 +397,5 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 function usage(): string {
-  return 'Usage: agent-workflow search|describe|run|run-get|trace|replay|resume|cancel|nodes search|validate|draft get|draft put|diff|publish|worker --once|migrate-template ... [--db path] [--host module.mjs] [--config file]'
+  return 'Usage: agent-workflow search|describe|run|run-get|trace|replay|resume|cancel|nodes search|validate|draft get|draft put|diff|publish|worker --once ... [--db path] [--host module.mjs] [--config file]'
 }

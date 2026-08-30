@@ -73,10 +73,6 @@
       "types": "./lib/adapters/cli/index.d.ts",
       "default": "./lib/adapters/cli/index.js"
     },
-    "./migrations": {
-      "types": "./lib/migrations/index.d.ts",
-      "default": "./lib/migrations/index.js"
-    },
     "./sqlite": {
       "types": "./lib/storage/sqlite/index.d.ts",
       "default": "./lib/storage/sqlite/index.js"

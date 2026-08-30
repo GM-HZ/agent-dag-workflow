@@ -9,7 +9,6 @@ import type { WorkflowLaunchTarget } from '../../runtime/index.js'
 
 export interface DshSessionLike {
   readonly id?: string
-  readonly header?: { readonly id?: string }
   append(type: string, data: unknown): unknown
 }
 

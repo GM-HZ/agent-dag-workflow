@@ -1,6 +1,6 @@
 # Workflow Template v1 语义
 
-状态：`v1` 已实现；未知 `apiVersion/kind` fail closed，不做静默 migration。
+状态：`v1` 已实现；未知 `apiVersion/kind` fail closed，不提供旧格式解析或运行时迁移。
 
 ## Envelope
 
@@ -101,7 +101,7 @@ requires:
 ```
 
 - `id` 在模板内唯一且稳定，不使用 Canvas 顺序作为身份。
-- `uses` 必须是精确的 `type@integer-version`。draft 可以经显式 migration 升级，published revision 不做运行时静默迁移。
+- `uses` 必须是精确的 `type@integer-version`。协议升级应在 Runtime 外生成新的 draft 并重新校验；published revision 不做原地修改或运行时迁移。
 - `with` 由节点定义的 `configSchema` 校验。
 - `inputs` 的每个值是 binding；它必须满足节点 `inputSchema`。
 - `policy` 只能收紧 deployment/NodeDefinition 上限，不能提升权限或资源额度。

@@ -71,7 +71,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
 const DSH_AUTHORITY_PREFIX = 'dsh-session:'
 
 function stableDshAuthorityReference(agent: DshWorkflow.DshAgentLike): string {
-  const sessionId = agent.session.id ?? agent.session.header?.id
+  const sessionId = agent.session.id
   if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 512) {
     throw new Error('agent-dag-workflow durable runs require a DSH Session with a stable 1-512 character id')
   }

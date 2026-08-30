@@ -1,6 +1,6 @@
 # Agent DAG Workflow 总体架构
 
-本文描述 `1.0.0` 的 Host-neutral 架构。完整决策、阶段门禁和完成定义见 [核心通用化重构方案](core-generalization-refactor.md)。Agent 如何通过 CLI、MCP、Skill 和 Plugin 按需访问 Runtime，见 [Agent Workflow 访问架构技术方案](agent-access-architecture.md)。
+本文描述 `1.0.0` 已实现的 Host-neutral 架构。README 给出黄金使用路径，本文只解释稳定边界和执行语义；公开协议以 [Workflow Template v1](../spec/workflow-template-v1.md) 为准。
 
 ## 1. 产品边界
 
@@ -194,14 +194,14 @@ Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unkn
 
 根入口、`./runtime`、`./sqlite`、`./mcp` 和 `./triggers` 不允许静态加载 DSH/Cordis。打包前必须清空 `lib/`，避免已删除的旧 Adapter 产物混入 tarball。
 
-## 8. Migration
+## 8. 版本与兼容边界
 
-- Store Schema：SQLite `user_version` 顺序事务迁移，每个历史 fixture 都要验证；
-- Template Protocol：0.2 只通过离线命令转换，运行时不双解析；
-- Node Definition：破坏性语义升级 `uses@major`，生成新发布 revision；
-- In-flight Checkpoint：不猜测迁移；无法证明兼容的旧运行会被显式隔离为 `paused` 并标记 operator attention，生产升级仍优先 drain 或由旧 Worker 完成。
+- Template Parser 只接受 `workflow.gm-hz.dev/v1`，Core 不注册旧 API Version、旧节点别名或双解析路径；
+- SQLite 只创建当前完整 schema，或打开 application id 与 schema version 精确匹配的数据库；旧、未知和被篡改的数据库 fail closed；
+- 发布修订和历史 Run 不原地改写；节点发生破坏性语义变化时提升 `uses@major`，并创建新的 Workflow revision；
+- 协议升级通过独立、显式、可审查的数据转换完成，转换代码不进入 Runtime、CLI 或公开包入口。
 
-Migration 不等于运行时兼容层。Core 不注册旧 API Version 或旧节点别名。
+因此 Store schema version、Template API Version、Node major、Published revision 和 Event seq 是独立维度，任何一个都不能被另一个隐式替代。
 
 ## 9. 验收基准
 
@@ -212,4 +212,4 @@ Migration 不等于运行时兼容层。Core 不注册旧 API Version 或旧节�
 5. Trigger 重复投递、launch gap 恢复和幂等结果投递；
 6. 同一模板通过 SDK、CLI、MCP、DSH 与 Canvas 产生一致契约。
 
-完整门禁以 [重构方案的完成定义](core-generalization-refactor.md#18-完成定义) 为准。
+完整门禁见 [Core Verification Harness](core-verification-harness.md)。

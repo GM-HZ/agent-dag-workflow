@@ -1022,9 +1022,9 @@ export class DagWorkflowEngine {
 }
 
 /**
- * Node providers are Host code and may fail to observe AbortSignal. The engine
+ * Node executors are Host code and may fail to observe AbortSignal. The engine
  * must still release runner ownership on cancellation, timeout, or detach.
- * The attached rejection handler also prevents a late provider rejection from
+ * The attached rejection handler also prevents a late executor rejection from
  * becoming an unhandled rejection after the engine has moved on.
  */
 function awaitExecutionOrAbort<Value>(

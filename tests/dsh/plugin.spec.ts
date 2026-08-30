@@ -872,7 +872,7 @@ describe('DSH Cordis plugin', () => {
     const warn = vi.fn()
     const records = [
       { runId: 'run-owned', execution: { authorityRef: 'session:1', origin: { type: 'host' } }, checkpoint: { status: 'running' } },
-      { runId: 'run-unowned', execution: { authorityRef: 'migration:unavailable', origin: { type: 'migration' } }, checkpoint: { status: 'running' } },
+      { runId: 'run-unowned', execution: { authorityRef: 'session:missing', origin: { type: 'host' } }, checkpoint: { status: 'running' } },
       { runId: 'run-paused', execution: { authorityRef: 'session:1', origin: { type: 'host' } }, checkpoint: { status: 'paused' } },
     ] as unknown as readonly WorkflowRunRecord[]
     const fake = {

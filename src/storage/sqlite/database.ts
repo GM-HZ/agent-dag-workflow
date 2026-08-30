@@ -17,7 +17,7 @@ export function openWorkflowDatabase(options: SqliteWorkflowOptions): DatabaseSy
     db.exec('PRAGMA trusted_schema = OFF; PRAGMA foreign_keys = ON; PRAGMA mmap_size = 0; PRAGMA synchronous = FULL;')
     db.exec(`PRAGMA busy_timeout = ${timeout}`)
     if (options.path !== ':memory:') db.exec('PRAGMA journal_mode = WAL;')
-    transaction(db, () => initializeOrMigrate(db))
+    transaction(db, () => initializeOrValidate(db))
     return db
   } catch (error: unknown) {
     db.close()
@@ -37,7 +37,7 @@ export function transaction<T>(db: DatabaseSync, operation: () => T): T {
   }
 }
 
-function initializeOrMigrate(db: DatabaseSync): void {
+function initializeOrValidate(db: DatabaseSync): void {
   const version = pragmaInteger(db, 'user_version')
   const applicationId = pragmaInteger(db, 'application_id')
   const objectCount = scalarInteger(db, `SELECT COUNT(*) AS value FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'`)
@@ -50,83 +50,6 @@ function initializeOrMigrate(db: DatabaseSync): void {
     createDeliveryTables(db)
     createBindingTables(db)
     db.exec(`PRAGMA application_id = ${SQLITE_APPLICATION_ID}; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 1 && applicationId === SQLITE_APPLICATION_ID) {
-    const names = tableNames(db)
-    if (names.join(',') !== 'workflow_drafts,workflow_revisions') throw new Error('workflow database v1 schema objects do not match the migration source')
-    createRunTables(db)
-    createArtifactTables(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 2 && applicationId === SQLITE_APPLICATION_ID) {
-    const names = tableNames(db)
-    if (names.join(',') !== 'workflow_drafts,workflow_revisions,workflow_run_events,workflow_runs') {
-      throw new Error('workflow database v2 schema objects do not match the migration source')
-    }
-    db.exec(`ALTER TABLE workflow_runs ADD COLUMN owner_ref TEXT;`)
-    addExecutionContext(db)
-    addExecutionPlan(db)
-    addLaunchMetadata(db)
-    createArtifactTables(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 3 && applicationId === SQLITE_APPLICATION_ID) {
-    addExecutionContext(db)
-    addExecutionPlan(db)
-    addLaunchMetadata(db)
-    createArtifactTables(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 4 && applicationId === SQLITE_APPLICATION_ID) {
-    addExecutionPlan(db)
-    addLaunchMetadata(db)
-    createArtifactTables(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 5 && applicationId === SQLITE_APPLICATION_ID) {
-    addLaunchMetadata(db)
-    createArtifactTables(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 6 && applicationId === SQLITE_APPLICATION_ID) {
-    addLaunchMetadata(db)
-    createIngressTables(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 7 && applicationId === SQLITE_APPLICATION_ID) {
-    addLaunchMetadata(db)
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 8 && applicationId === SQLITE_APPLICATION_ID) {
-    createRunQueueTables(db)
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 9 && applicationId === SQLITE_APPLICATION_ID) {
-    createDeliveryTables(db)
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
-  } else if (version === 10 && applicationId === SQLITE_APPLICATION_ID) {
-    createBindingTables(db)
-    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
@@ -246,43 +169,6 @@ function createRunTables(db: DatabaseSync): void {
       PRIMARY KEY (run_id, seq)
     ) STRICT;
   `)
-}
-
-function addExecutionContext(db: DatabaseSync): void {
-  const fallback = '{"authorityRef":"migration:unavailable","origin":{"type":"migration"}}'
-  db.exec(`ALTER TABLE workflow_runs ADD COLUMN execution_json TEXT NOT NULL DEFAULT '${fallback}';`)
-}
-
-function addExecutionPlan(db: DatabaseSync): void {
-  const fallback = '{"root":{"id":"migration-unavailable","semanticHash":"migration-unavailable","template":{}},"dependencies":[],"engineVersion":"migration-unavailable","nodeDefinitionSetHash":"migration-unavailable","replayable":false}'
-  db.exec(`ALTER TABLE workflow_runs ADD COLUMN plan_json TEXT NOT NULL DEFAULT '${fallback}';`)
-  quarantineLegacyInFlightRuns(db)
-}
-
-function quarantineLegacyInFlightRuns(db: DatabaseSync): void {
-  const reason = 'MIGRATION_IN_FLIGHT_UNSUPPORTED: execution plan was not persisted by the source schema; inspect only or restart as a new run'
-  const rows = db.prepare(`SELECT run_id, checkpoint_json FROM workflow_runs WHERE status IN ('running', 'paused')`).all()
-  const update = db.prepare(`UPDATE workflow_runs SET checkpoint_json = ?, status = 'paused', updated_at = ? WHERE run_id = ?`)
-  for (const row of rows) {
-    const record = row as Record<string, unknown>
-    if (typeof record.run_id !== 'string' || typeof record.checkpoint_json !== 'string') throw new Error('legacy workflow run row is invalid')
-    const checkpoint = JSON.parse(record.checkpoint_json) as Record<string, unknown>
-    checkpoint.status = 'paused'
-    checkpoint.error = reason
-    const nodeStates = checkpoint.nodeStates
-    if (nodeStates !== null && typeof nodeStates === 'object' && !Array.isArray(nodeStates)) {
-      for (const [nodeId, status] of Object.entries(nodeStates)) {
-        if (status === 'running' || status === 'waiting') (nodeStates as Record<string, unknown>)[nodeId] = 'needs_attention'
-      }
-    }
-    const updatedAt = Date.now()
-    checkpoint.updatedAt = updatedAt
-    update.run(JSON.stringify(checkpoint), updatedAt, record.run_id)
-  }
-}
-
-function addLaunchMetadata(db: DatabaseSync): void {
-  db.exec(`ALTER TABLE workflow_runs ADD COLUMN launch_json TEXT NOT NULL DEFAULT '{}';`)
 }
 
 function tableNames(db: DatabaseSync): string[] {

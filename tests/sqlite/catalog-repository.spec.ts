@@ -298,84 +298,20 @@ describe('SQLite workflow catalog repository', () => {
     finalStore.close()
   })
 
-  it('migrates the catalog-only v1 schema to the current run-store schema', async () => {
-    const path = dbPath()
-    const initialized = new SqliteWorkflowCatalogRepository({ path })
-    initialized.close()
-    const old = new DatabaseSync(path)
-    old.exec('DROP TABLE workflow_bindings; DROP TABLE workflow_delivery; DROP TABLE workflow_run_queue; DROP TABLE workflow_run_events; DROP TABLE workflow_runs; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; PRAGMA user_version = 1;')
-    old.close()
-
-    const migrated = new SqliteWorkflowRunStore({ path })
-    expect(await migrated.listRecoverableRuns()).toEqual([])
-    migrated.close()
-  })
-
-  it('migrates v2 run rows by adding durable execution context', async () => {
+  it('rejects an older schema without mutating it', () => {
     const path = dbPath()
     const initialized = new SqliteWorkflowRunStore({ path })
     initialized.close()
     const old = new DatabaseSync(path)
-    old.exec('ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings; PRAGMA user_version = 2;')
+    old.exec('PRAGMA user_version = 10;')
     old.close()
 
-    const migrated = new SqliteWorkflowRunStore({ path })
-    expect(await migrated.listRecoverableRuns()).toEqual([])
-    migrated.close()
+    expect(() => new SqliteWorkflowRunStore({ path })).toThrow(/expected 11/)
+
+    const unchanged = new DatabaseSync(path)
+    expect((unchanged.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
+    unchanged.close()
   })
-
-  it('quarantines an unsupported in-flight legacy checkpoint for operator attention', async () => {
-    const path = dbPath()
-    const underlying = new SqliteWorkflowRunStore({ path })
-    const failing = new OneShotFailingRunStore(underlying, events => events.some(event => event.type === 'run.accepted'))
-    const engine = new DagWorkflowEngine(workflowRegistry(), { tools: toolGateway() }, { runStore: failing })
-    const run = await engine.start({ execution: testExecution, template: toolTemplate(), inputs: { message: 'legacy' } })
-    await expect(run.result).resolves.toMatchObject({ status: 'failed', error: 'simulated crash before SQLite checkpoint commit' })
-    underlying.close()
-
-    const old = new DatabaseSync(path)
-    old.exec(`ALTER TABLE workflow_runs DROP COLUMN plan_json;
-      ALTER TABLE workflow_runs DROP COLUMN launch_json;
-      DROP TABLE workflow_artifacts;
-      DROP TABLE workflow_ingress;
-      DROP TABLE workflow_run_queue;
-      DROP TABLE workflow_delivery;
-      DROP TABLE workflow_bindings;
-      PRAGMA user_version = 4;`)
-    old.close()
-
-    const migrated = new SqliteWorkflowRunStore({ path })
-    const record = await migrated.loadRun(run.id)
-    expect(record?.checkpoint).toMatchObject({ status: 'paused', error: expect.stringContaining('MIGRATION_IN_FLIGHT_UNSUPPORTED') })
-    expect(record?.plan).toMatchObject({ engineVersion: 'migration-unavailable', replayable: false })
-    migrated.close()
-  })
-
-  for (const fixture of [
-    { version: 3, sql: 'ALTER TABLE workflow_runs DROP COLUMN execution_json; ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 4, sql: 'ALTER TABLE workflow_runs DROP COLUMN plan_json; ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 5, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_artifacts; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 6, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_ingress; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 7, sql: 'ALTER TABLE workflow_runs DROP COLUMN launch_json; DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 8, sql: 'DROP TABLE workflow_run_queue; DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 9, sql: 'DROP TABLE workflow_delivery; DROP TABLE workflow_bindings;' },
-    { version: 10, sql: 'DROP TABLE workflow_bindings;' },
-  ]) {
-    it(`migrates a real v${fixture.version} schema fixture and reopens idempotently`, async () => {
-      const path = dbPath()
-      const initialized = new SqliteWorkflowRunStore({ path })
-      initialized.close()
-      const old = new DatabaseSync(path)
-      old.exec(`${fixture.sql} PRAGMA user_version = ${fixture.version};`)
-      old.close()
-      const migrated = new SqliteWorkflowRunStore({ path })
-      expect(await migrated.listRecoverableRuns()).toEqual([])
-      migrated.close()
-      const reopened = new SqliteWorkflowRunStore({ path })
-      expect(await reopened.listRecoverableRuns()).toEqual([])
-      reopened.close()
-    })
-  }
 
   it('coordinates durable worker claims with lease expiry and fencing tokens', async () => {
     const path = dbPath()

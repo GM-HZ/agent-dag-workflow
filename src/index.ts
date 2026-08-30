@@ -4,7 +4,6 @@ export * from './runtime/index.js'
 export * from './access/index.js'
 export * from './journal/index.js'
 export * from './triggers/core/index.js'
-export * from './migrations/index.js'
 
 /**
  * DSH treats the package named by the bundle patch as the owner of both the

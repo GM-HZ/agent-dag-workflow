@@ -1,6 +1,6 @@
 # Agent DAG Workflow
 
-当前版本：`1.0.0` 正式版。Core、CLI、MCP、Skill、DSH、Trigger、Canvas、SQLite、恢复与发布门禁均已收口；不再以 RC/候选协议维护。
+当前版本：`1.0.0`。Core、CLI、MCP、Skill、DSH、Trigger、Canvas、SQLite、恢复与发布门禁使用同一套 v1 契约。
 
 `@gm-hz/agent-dag-workflow` 是一个可嵌入任意 Agent Host 的持久化 DAG Workflow 内核。它把 Agent、Tool、Skill、MCP 和受控本地能力编排成同一份可保存、校验、发布、恢复、审计和重放的 `WorkflowTemplate` JSON。
 
@@ -39,7 +39,17 @@ flowchart LR
 - Trigger 不进入 DAG：Cron、Webhook、钉钉等只产生可信 Envelope，再通过固定 Binding 启动发布修订。
 - 默认由当前 Agent、CLI 或 Host 直接调用 Runtime；Queue/Runner 只是不可靠进程或分布式部署需要时才启用的可选适配器。
 
-完整设计见 [核心通用化重构方案](docs/core-generalization-refactor.md)、[Core hardening 不变量](docs/core-hardening.md) 与 [Core Verification Harness](docs/core-verification-harness.md)，Agent 访问方式见 [访问架构技术方案](docs/agent-access-architecture.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
+代码按职责分成五层，但仍作为一个 npm 包发布：
+
+| 层 | 负责 | 不负责 |
+| --- | --- | --- |
+| Template / Catalog | v1 JSON、校验、草稿 CAS、不可变发布修订 | 执行外部能力 |
+| Runtime / Engine | 编译 DAG、调度、恢复、Replay、资源上限 | 发现凭据或绕过 Host 权限 |
+| Journal / SQLite | Run、Event、Checkpoint、Artifact、Ingress 与 Delivery 事实 | 猜测旧格式语义 |
+| Access / Adapter | SDK、CLI、固定 MCP Gateway、Skill、DSH、Trigger、Canvas | 创建第二套执行引擎或 DSL |
+| Host Gateway | Tool、Agent、Approval、Authority 和自定义 Node 实现 | 修改 Workflow 的调度事实 |
+
+当前架构见 [总体架构](docs/architecture.md)，安全与恢复不变量见 [Core hardening](docs/core-hardening.md) 和 [Core Verification Harness](docs/core-verification-harness.md)，模板字段见 [Workflow Template v1](spec/workflow-template-v1.md)。
 
 ## 安装
 
@@ -226,7 +236,6 @@ agent-workflow trace <runId> --follow --format jsonl --db workflows.db
 agent-workflow replay <runId> --mode recorded --db workflows.db
 agent-workflow resume <runId> --db workflows.db
 agent-workflow cancel <runId> --reason "operator stop" --db workflows.db
-agent-workflow migrate-template old.json --output workflow-v1.json
 ```
 
 所有非流式命令都返回单个 `agent-workflow.cli/v1` JSON Envelope；`--input -` 从 stdin 读取 JSON，不需要把大型输入塞进 shell 参数。CLI 对每个命令使用严格参数契约，未知、重复或多余参数会在打开数据库前 fail closed。包含 Tool/Agent 节点时，必须显式传入 `--host ./host.mjs`。该模块导出 Gateway、Authority 和可选自定义 Node；CLI 不会隐式读取环境变量来猜测能力或凭据。
@@ -277,7 +286,7 @@ dsh web
 插件向 DSH 注册 `workflow-builder` Skill，以及查询节点、创建/更新/校验 draft、发布和运行的受保护工具。Canvas 编辑的是同一份 `WorkflowTemplate`，Trace 来自同一份 Journal。
 Canvas 的“触发与投递”页面还能查看 Binding、重复 Ingress、run 关联和状态不确定的 Delivery，并从入口直接打开权威 Trace。
 
-根 bundle 会把持久 Run 的 `authorityRef` 绑定到稳定的 DSH `Session.id`，并通过 `agents` 服务在重启后恢复当前 Agent；它不会把 Agent object 或凭据写进 SQLite。外部 Tool 在未知副作用边界上恢复时仍会进入 `paused`，需要操作者显式选择 retry/fail。
+根 bundle 会把持久 Run 的 `authorityRef` 绑定到稳定的 DSH `Session.id`，并通过 `agents` 服务在重启后恢复当前 Agent；它不会读取旧的 Session 字段，也不会把 Agent object 或凭据写进 SQLite。外部 Tool 在未知副作用边界上恢复时仍会进入 `paused`，需要操作者显式选择 retry/fail。
 
 ## Trigger
 
@@ -328,6 +337,15 @@ await bindings.publish({
 
 CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个 Runtime。入口不会改变固定 revision、输入输出 Schema、Authority、Journal、Checkpoint 或 Replay 语义。
 
+## 版本与兼容边界
+
+- Template 只接受 `workflow.gm-hz.dev/v1` 和当前节点 `uses@major`，没有旧 API Version、旧节点别名或双解析器。
+- SQLite 只初始化空数据库，或打开 application id 与 schema version 都精确匹配当前实现的数据库；旧、未知或被篡改的数据库会在启动时拒绝。
+- 包不导出迁移 API，CLI 也不提供隐式转换命令。升级协议时应先导出当前模板/审计数据，再由明确的独立工具生成并人工校验新模板。
+- 发布修订和历史 Run 永不原地改写。破坏性节点语义使用新的 `uses@major`，并发布新的 Workflow revision。
+
+这一边界是 1.0 的刻意约束：Runtime 只执行一种事实模型，避免兼容分支进入调度、恢复和权限路径。
+
 ## 示例与验证
 
 仓库包含以下长期基准：
@@ -350,4 +368,4 @@ pnpm example:weekly
 
 `pnpm example:weekly` 会在本地持久化数据库中真实执行 21 节点的“AI 模型周报”模板：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。默认使用离线确定性 Host；替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
 
-项目使用 MIT License。发布、兼容性和实现门禁以 [重构方案](docs/core-generalization-refactor.md) 的完成定义为准；首次 npm bootstrap 与后续 OIDC tag 发布见 [1.0 发布流程](docs/release.md)。
+项目使用 MIT License。验证命令和发布门禁见 [Core Verification Harness](docs/core-verification-harness.md) 与 [1.0 发布流程](docs/release.md)。

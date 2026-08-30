@@ -16,8 +16,8 @@ const testExecution = { authorityRef: 'test:user', authority: { id: 'test-user' 
 describe('DAG workflow engine', () => {
   it('freezes the public v1 template envelope and rejects pre-v1 input', () => {
     expect(WORKFLOW_TEMPLATE_API_VERSION).toBe('workflow.gm-hz.dev/v1')
-    const legacy = { ...toolWorkflowTemplate(), apiVersion: 'workflow.gm-hz.dev/v1alpha1' }
-    expect(() => parseWorkflowTemplate(JSON.stringify(legacy))).toThrow(/apiVersion/)
+    const unsupported = { ...toolWorkflowTemplate(), apiVersion: 'workflow.gm-hz.dev/v1alpha1' }
+    expect(() => parseWorkflowTemplate(JSON.stringify(unsupported))).toThrow(/apiVersion/)
   })
 
   it('executes tool nodes only through the injected gateway', async () => {

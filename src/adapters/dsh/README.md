@@ -36,7 +36,7 @@ await ctx.plugin(DagWorkflow, {
 
 `reference` 只返回可持久化的查找键；Agent object 永不进入数据库。启动协调器只恢复 `running + authorityRef + valid Agent`，paused run 等待操作者。Credential 只以不透明引用保存在静态配置中，并由 DSH Tool 自己的 policy/credential 边界解析；明文不进入 Workflow 数据面和 checkpoint。
 
-从包根加载的 durable bundle 已内置这层 recovery：它要求 DSH `agents` 服务，并使用 `agent.session.id`（兼容 `session.header.id`）生成 `dsh-session:<id>`。只有直接装配 `/dsh/host` 时才需要自行提供上面的回调。
+从包根加载的 durable bundle 已内置这层 recovery：它要求 DSH `agents` 服务，并使用当前契约的 `agent.session.id` 生成 `dsh-session:<id>`。只有直接装配 `/dsh/host` 时才需要自行提供上面的回调。
 
 插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`tool.call@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`agent.run@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`human.approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
 
