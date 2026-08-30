@@ -28,7 +28,7 @@
 
 - 外部 Trigger 不能指定最终 Authority、Workflow revision 或幂等键。Adapter 先验签并生成可信 Envelope，Ingress 根据来源和消息 id 派生去重键，Binding 再固定映射到发布修订与 Authority。
 - Run launch 与 Ingress 状态之间的崩溃间隙由确定性 idempotency key + `recoverPending` 收敛，不通过猜测执行结果处理。
-- Reference Worker 使用 claim/lease/heartbeat；Runtime 仍以 Journal CAS 防止并发提交。生产分布式 Store 必须增加服务端 fencing token，不能把单进程 Coordinator 当作分布式锁。
+- Reference Worker 使用 claim/lease/heartbeat，但 1.0 只把它作为单进程、单 Runner 的后台恢复执行器，不提供多线程或分布式 Worker 框架。Runtime 仍以 Journal CAS 防止并发提交；生产分布式 Store 必须增加服务端 fencing token，不能把单进程 Coordinator 当作分布式锁。
 - Result Delivery 使用稳定 invocationId，并区分成功、失败和 unknown attempt；重试不能生成新的业务身份。
 
 ## 资源限制

@@ -33,6 +33,16 @@ class OneShotFailingStore extends InMemoryWorkflowRunStore {
   }
 }
 
+class DelayedCapturingStore extends InMemoryWorkflowRunStore {
+  readonly commits: Array<{ readonly checkpoint: WorkflowRunCheckpoint; readonly events: readonly WorkflowEvent[] }> = []
+
+  override async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
+    this.commits.push({ checkpoint: structuredClone(checkpoint), events: structuredClone(events) })
+    await new Promise(resolve => setTimeout(resolve, 1))
+    await super.commit(runId, expectedSeq, checkpoint, events)
+  }
+}
+
 function registry(): WorkflowNodeRegistry {
   const result = new WorkflowNodeRegistry()
   registerCoreNodes(result)
@@ -163,6 +173,46 @@ function subworkflowParentTemplate(): WorkflowTemplate {
 }
 
 describe('workflow run store and recovery', () => {
+  it('serializes concurrent progress so every Journal event matches its atomic Checkpoint', async () => {
+    const nodes = registry()
+    nodes.register({
+      type: 'test.concurrent-progress', version: 1, title: 'Concurrent progress', description: 'Exercises overlapping progress writes',
+      configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-concurrent-progress-v1',
+      async execute(context) {
+        await Promise.all([
+          context.checkpointProgress({ value: 'A' }),
+          context.checkpointProgress({ value: 'B' }),
+        ])
+        return { outputs: {} }
+      },
+    })
+    const template: WorkflowTemplate = {
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'concurrent-progress', name: 'Concurrent progress' },
+      spec: {
+        inputSchema: { type: 'object', additionalProperties: false }, outputSchema: { type: 'object', additionalProperties: false },
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'progress', uses: 'test.concurrent-progress@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: {} },
+        ],
+        edges: [{ id: 'start-progress', source: 'start', target: 'progress' }, { id: 'progress-end', source: 'progress', target: 'end' }],
+        outputs: {},
+      },
+    }
+    const store = new DelayedCapturingStore()
+    const run = await new DagWorkflowEngine(nodes, {}, { runStore: store }).start({ execution: testExecution, template, inputs: {} })
+
+    await expect(run.result).resolves.toMatchObject({ status: 'completed' })
+    const progressCommits = store.commits.flatMap(({ checkpoint, events }) => events
+      .filter((event): event is WorkflowEvent & { readonly type: 'node.progress' } => event.type === 'node.progress')
+      .map(event => ({ journal: event.progress, checkpoint: checkpoint.nodeProgress[event.nodeId] })))
+    expect(progressCommits).toEqual([
+      { journal: { value: 'A' }, checkpoint: { value: 'A' } },
+      { journal: { value: 'B' }, checkpoint: { value: 'B' } },
+    ])
+  })
+
   it('recovers a queued run when the process dies between run creation and its first Journal commit', async () => {
     const store = new OneShotFailingStore(events => events.some(event => event.type === 'run.accepted'))
     const firstEngine = new DagWorkflowEngine(registry(), { tools: tools() }, { runStore: store })

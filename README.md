@@ -242,7 +242,7 @@ adw cancel <runId> --reason "operator stop" --db workflows.db
 
 Host 不需要 Provider 层。最小 Tool Adapter、加载时契约校验、Authority 边界和错误排查方式见 [Host Adapter 接入](docs/host-adapter.md)。
 
-后台调用使用 `run ... --detach`，并由 `agent-workflow worker --once` claim/resume。Host 必须提供可恢复的 Authority Resolver，否则 Runtime 会拒绝后台启动。
+后台调用使用 `run ... --detach`，并由 `agent-workflow worker --once` claim/resume。Host 必须提供可恢复的 Authority Resolver，否则 Runtime 会拒绝后台启动。1.0 的 Worker 是单进程、单次 claim/resume 的参考执行器；Core 不内置 `worker_threads`、进程池或分布式调度。需要水平扩展时，由 Host 在共享 Store 上补充 fencing token 与部署级调度约束。
 
 ## Codex、Skill 与 MCP
 
@@ -362,6 +362,8 @@ CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个
 ```bash
 pnpm install
 pnpm check
+pnpm exec playwright-cli install-browser chromium # 首次运行或 CI 镜像中执行
+pnpm verify:canvas-browser
 pnpm verify:pack
 pnpm demo
 pnpm examples:codex

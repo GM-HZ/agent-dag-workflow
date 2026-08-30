@@ -1,6 +1,6 @@
 # 运行与存储运维
 
-Core 不内置常驻控制平面。部署者通过同一个 Runtime、SQLite Store 和可选 Worker 完成恢复、取消、投递重试与数据保留；这些操作都保留 Authority 和 Journal 边界。
+Core 不内置常驻控制平面。部署者通过同一个 Runtime、SQLite Store 和可选 Worker 完成恢复、取消、投递重试与数据保留；这些操作都保留 Authority 和 Journal 边界。1.0 的 `WorkflowRunWorker.runOnce()` 每次只 claim 一个 Run，不提供多线程或多进程 Worker 池。
 
 ## 取消与进程退出
 
@@ -50,4 +50,4 @@ Channel 凭据与平台 token 只存在于 Delivery Gateway 自己的安全存�
 2. 根据业务数据量收紧 `WorkflowDeploymentLimits`，不要接受模板自行提升 ceiling。
 3. 为 Host 外部能力实现稳定 invocation id 去重、AbortSignal 和输出 Schema。
 4. 配置数据库备份、终态保留周期与 delivery attention 告警。
-5. 发布前运行 `pnpm check`、`pnpm verify:pack`、复杂示例和 Host/Canvas 回归。
+5. 发布前运行 `pnpm check`、`pnpm verify:canvas-browser`、`pnpm verify:pack`、复杂示例和 Host 回归。

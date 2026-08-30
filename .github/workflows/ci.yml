@@ -26,5 +26,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: pnpm exec playwright-cli install-browser --with-deps chromium
+      - run: pnpm verify:canvas-browser
       - run: pnpm verify:pack
       - run: pnpm --registry=https://registry.npmjs.org audit --prod --audit-level high

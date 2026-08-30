@@ -12,6 +12,8 @@
 npm login --registry=https://registry.npmjs.org
 npm whoami --registry=https://registry.npmjs.org
 pnpm check
+pnpm exec playwright-cli install-browser chromium # 首次运行或 CI 镜像中执行
+pnpm verify:canvas-browser
 AGENT_DAG_VERIFY_NETWORK_INSTALL=1 pnpm verify:pack
 npm publish --access public --registry=https://registry.npmjs.org
 ```
@@ -28,7 +30,7 @@ npm publish --access public --registry=https://registry.npmjs.org
 
 ## 1.0 顺序
 
-首次 1.0 不要在 bootstrap 之前先推 `v1.0.0` tag，否则自动发布尚未建立信任关系。推荐顺序：合并并推送版本提交 → 本机通过 2FA 首发 1.0.0 → 配置 Trusted Publisher → 创建并推送 `v1.0.0` tag。该 tag 的流水线会再次运行全部门禁，并在确认相同 immutable version 已存在后跳过重复 publish。后续 tag 则完全自动发布。
+首次 1.0 不要在 bootstrap 之前先推 `v1.0.0` tag，否则自动发布尚未建立信任关系。推荐顺序：合并并推送版本提交 → 本机通过 2FA 首发 1.0.0 → 配置 Trusted Publisher → 创建并推送 `v1.0.0` tag。该 tag 的流水线会再次运行全部门禁，并在确认相同 immutable version 已存在后跳过重复 publish。`verify:canvas-browser` 使用真实 Chromium 覆盖 Canvas 加载、明暗主题、草稿创建/更新、校验、试运行与 Trace 投影。后续 tag 则完全自动发布。
 
 发布后确认：
 

@@ -37,6 +37,7 @@ export class InMemoryWorkflowRunCoordinator implements WorkflowRunCoordinator {
   }
 }
 
+/** Single-claim reference runner. Host-level worker pools and distributed fencing are intentionally out of scope. */
 export class WorkflowRunWorker {
   constructor(
     private readonly runtime: WorkflowRuntimeApi,

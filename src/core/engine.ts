@@ -513,11 +513,23 @@ export class DagWorkflowEngine {
     const { id: runId, workflow, inputs: workflowInputs, state, authority, controller, onEvent, execution, plan } = options
     const services = this.#services
     let commitTail = Promise.resolve()
-    const commit = async (events: readonly WorkflowEventInput[]): Promise<void> => {
+    const commit = async (
+      events: readonly WorkflowEventInput[],
+      transition?: { readonly apply: () => void; readonly rollback: () => void },
+    ): Promise<void> => {
       const operation = commitTail.then(async () => {
+        if (transition !== undefined) {
+          try {
+            transition.apply()
+          } catch (error: unknown) {
+            transition.rollback()
+            throw error
+          }
+        }
         try {
           await this.#commit(runId, workflow, state, events, plan, execution, onEvent)
         } catch (error: unknown) {
+          transition?.rollback()
           throw new WorkflowCommitFailure(error)
         }
       })
@@ -582,19 +594,27 @@ export class DagWorkflowEngine {
               policies.maxOutputBytes,
               Math.min(state.subworkflowDepthLimit, policies.subworkflowMaxDepth ?? 8),
               async progress => {
-                if (controller.signal.aborted) throw new WorkflowExecutionError('WORKFLOW_CANCELLED', 'cannot checkpoint node progress after cancellation', { nodeId: item.nodeId })
                 const value = snapshotJsonValue(progress)
                 assertOutputSize(value, policies.maxOutputBytes, `node ${item.nodeId} progress`)
-                const previous = state.nodeProgress.get(item.nodeId)
-                state.nodeProgress.set(item.nodeId, value)
-                try {
-                  assertStateCheckpointSize(runId, workflow.semanticHash, state, options.checkpointMaxBytes, workflow.order)
-                  await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }])
-                } catch (error: unknown) {
-                  if (previous === undefined) state.nodeProgress.delete(item.nodeId)
-                  else state.nodeProgress.set(item.nodeId, previous)
-                  throw error
-                }
+                let hadPrevious = false
+                let previous: JsonValue | undefined
+                let applied = false
+                await commit([{ type: 'node.progress', nodeId: item.nodeId, progress: value }], {
+                  apply: () => {
+                    if (controller.signal.aborted) throw new WorkflowExecutionError('WORKFLOW_CANCELLED', 'cannot checkpoint node progress after cancellation', { nodeId: item.nodeId })
+                    hadPrevious = state.nodeProgress.has(item.nodeId)
+                    previous = state.nodeProgress.get(item.nodeId)
+                    state.nodeProgress.set(item.nodeId, value)
+                    applied = true
+                    assertStateCheckpointSize(runId, workflow.semanticHash, state, options.checkpointMaxBytes, workflow.order)
+                  },
+                  rollback: () => {
+                    if (!applied) return
+                    if (hadPrevious) state.nodeProgress.set(item.nodeId, previous!)
+                    else state.nodeProgress.delete(item.nodeId)
+                    applied = false
+                  },
+                })
               },
               item.attempt,
               commit,

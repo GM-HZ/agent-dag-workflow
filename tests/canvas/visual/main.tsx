@@ -3,6 +3,12 @@ import { WorkflowStudio } from '../../../src/canvas/client/studio.js'
 import type { WorkflowCanvasClientApi } from '../../../src/canvas/client/api.js'
 import type { CanvasNodeDefinition, CanvasWorkflowTemplate } from '../../../src/canvas/types.js'
 
+const smoke = {
+  calls: { createDraft: 0, updateDraft: 0, validate: 0, runDraft: 0, trace: 0 },
+  savedName: '',
+}
+;(window as unknown as { __canvasSmoke: typeof smoke }).__canvasSmoke = smoke
+
 const definitions: CanvasNodeDefinition[] = [
   node('core.start@1', 'Start', 'start', ['success']),
   node('agent.run@1', 'Agent delegate', 'regular', ['success']),
@@ -51,13 +57,36 @@ const completedTrace = {
     { seq: 5, type: 'run.completed', runId: 'visual-run-1' },
   ],
 }
+let savedDraft: import('../../../src/canvas/types.js').CanvasWorkflowDraft | undefined
 const api = {
   remote: {
-    nodes: () => ok(definitions), templates: () => ok([]),
+    nodes: () => ok(definitions),
+    templates: () => ok(savedDraft === undefined ? [] : [{
+      id: savedDraft.id, name: savedDraft.template.metadata.name, draftRevision: savedDraft.revision, updatedAt: savedDraft.updatedAt,
+    }]),
     operations: () => ok({ bindings: [], ingress: [], deliveryAttention: [] }),
-    validate: () => ok({ diagnostics: [] }),
-    runDraft: () => ok({ runId: 'visual-run-1', status: 'completed', outputs: { quality: 'verified' } }),
-    trace: () => ok(completedTrace),
+    createDraft: (_sessionId: string, request: { readonly template: CanvasWorkflowTemplate }) => {
+      smoke.calls.createDraft++
+      smoke.savedName = request.template.metadata.name
+      savedDraft = {
+        id: request.template.metadata.id, revision: 1, template: request.template,
+        contentHash: 'visual-content', semanticHash: 'visual-semantic', createdAt: Date.now(), updatedAt: Date.now(),
+      }
+      return ok(savedDraft)
+    },
+    updateDraft: (_sessionId: string, request: { readonly id: string; readonly expectedRevision: number; readonly template: CanvasWorkflowTemplate }) => {
+      smoke.calls.updateDraft++
+      smoke.savedName = request.template.metadata.name
+      savedDraft = {
+        id: request.id, revision: request.expectedRevision + 1, template: request.template,
+        contentHash: 'visual-content-updated', semanticHash: 'visual-semantic-updated',
+        createdAt: savedDraft?.createdAt ?? Date.now(), updatedAt: Date.now(),
+      }
+      return ok(savedDraft)
+    },
+    validate: () => { smoke.calls.validate++; return ok({ diagnostics: [] }) },
+    runDraft: () => { smoke.calls.runDraft++; return ok({ runId: 'visual-run-1', status: 'completed', outputs: { quality: 'verified' } }) },
+    trace: () => { smoke.calls.trace++; return ok(completedTrace) },
   },
   unwrap: <T,>(_operation: string, result: { readonly ok: true; readonly value: T }) => result.value,
   request: async <T,>(_operation: string, invoke: () => Promise<{ readonly ok: true; readonly value: T }>) => (await invoke()).value,

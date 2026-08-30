@@ -24,6 +24,7 @@
     "test": "pnpm build && vitest --config config/vitest.ts run",
     "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p config/typescript/tests/core.json --noEmit && tsc -p config/typescript/tests/catalog.json --noEmit && tsc -p config/typescript/tests/dsh.json --noEmit && tsc -p config/typescript/tests/sqlite.json --noEmit && tsc -p config/typescript/tests/canvas.json --noEmit && tsc -p config/typescript/tests/verification.json --noEmit",
     "verify:core": "pnpm generate:typert && tsc -p config/typescript/tests/verification.json --noEmit && vitest --config config/vitest.ts run tests/verification",
+    "verify:canvas-browser": "node scripts/verify-canvas-browser.mjs",
     "verify:pack": "pnpm build && node scripts/verify-packed-install.mjs"
   },
   "main": "lib/index.js",
@@ -181,6 +182,7 @@
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-invariants": "0.1.1-rc.2",
     "@deepseek-ai/dsh-typert-generator": "0.1.1-rc.2",
+    "@playwright/cli": "0.1.18",
     "@types/node": "^22.20.0",
     "@types/react": "^18.3.28",
     "@types/react-dom": "^18.3.7",
@@ -188,6 +190,7 @@
     "react-dom": "18.3.1",
     "tsdown": "^0.22.14",
     "typescript": "^6.0.3",
+    "vite": "8.2.2",
     "vitepress": "^1.6.4",
     "vitest": "^4.1.8"
   },

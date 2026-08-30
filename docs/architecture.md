@@ -168,7 +168,7 @@ Envelope 不接收来源自报的最终 Authority 或幂等键。Ingress 使用 
 
 Ingress 与 run create 可以同事务，也可以使用“持久 Ingress + 稳定幂等 runId + recoverPending”达到 outbox 等价效果。launch 已成功但关联写入失败时，Ingress 必须保持 `received`，不能误记为 `rejected`。
 
-外部 Trigger 使用 background launch：Ingress 只原子保存 run/queue 事实，不在接收进程执行 DAG；Worker claim 后通过同一个 Runtime `resume` 执行。本地 SQLite Coordinator 提供 queue、claim、lease、heartbeat 和过期接管。它不承诺 exactly-once：多 Worker 仍需要 lease fencing、Journal CAS、稳定 invocationId、Gateway 幂等和 unknown-state 策略共同工作。
+外部 Trigger 使用 background launch：Ingress 只原子保存 run/queue 事实，不在接收进程执行 DAG；Worker claim 后通过同一个 Runtime `resume` 执行。本地 SQLite Coordinator 提供 queue、claim、lease、heartbeat 和过期接管。1.0 默认是单进程、单 Runner 的参考部署，不内置多线程 Worker、进程池或分布式调度；节点级并发仍由 DAG Runtime 以受限 Promise 并发执行，与 Worker 横向扩展是两件事。若 Host 自行启动多个 Worker，它不应假设 exactly-once，必须额外提供 lease fencing、Journal CAS、稳定 invocationId、Gateway 幂等和 unknown-state 策略。
 
 Result Delivery 是独立外部副作用，使用 `runId + deliveryRef + phase` 生成稳定 invocationId；状态不明时保留 attempt 并以同一 invocationId 重试，不改变 Workflow 已完成事实。
 Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unknown Delivery 和 Journal Trace；这些仍是同一事实存储的只读投影，不是第二套状态模型。
