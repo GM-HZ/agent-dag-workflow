@@ -338,12 +338,11 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
           })
           const run = await runtime.subagents.start(target, {
             label: request.nodeId,
-            prompt: [{ type: 'text', text: request.prompt }],
+            prompt: [{ type: 'text', text: renderDshAgentPrompt(request.prompt, request.skills) }],
             parent: request.authority,
             signal: request.signal,
             ...(request.outputSchema === undefined ? {} : { outputSchema: request.outputSchema }),
-            ...(request.tools === undefined ? {} : { tools: request.tools }),
-            ...(request.skills === undefined ? {} : { skills: request.skills }),
+            ...(request.tools === undefined ? {} : { toolFilter: { allow: request.tools } }),
           })
           let execution: Awaited<typeof run.result> | undefined
           let executionError: unknown
@@ -484,6 +483,16 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     this.authorityRefs.set(parent, reference)
     return reference
   }
+}
+
+function renderDshAgentPrompt(prompt: string, skills: readonly string[] | undefined): string {
+  if (skills === undefined || skills.length === 0) return prompt
+  return [
+    `Required workflow skill dependencies: ${skills.map(skill => JSON.stringify(skill)).join(', ')}.`,
+    'Load and follow those skills when they are available before completing this task.',
+    '',
+    prompt,
+  ].join('\n')
 }
 
 export class WorkflowRecoveryCoordinator {

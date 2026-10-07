@@ -38,7 +38,7 @@ await ctx.plugin(DagWorkflow, {
 
 从包根加载的 durable bundle 已内置这层 recovery：它要求 DSH `agents` 服务，并使用当前契约的 `agent.session.id` 生成 `dsh-session:<id>`。只有直接装配 `/dsh/host` 时才需要自行提供上面的回调。
 
-插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`tool.call@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`agent.run@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`human.approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。
+插件声明 `inject = ['tools', 'subagents', 'approval', 'skills']`。`tool.call@1` 始终调用当前 Cordis scope 下的 `ctx.tools.execute()`；`agent.run@1` 使用 `ctx.subagents.start()` 并始终 dispose holder-owned run；`human.approval@1` 使用 `ctx.approval.request()`。三者都传入发起运行的 owning Agent、caller-owned signal 和稳定的 run/node call id。DSH 0.2 下，节点 `tools` 被映射为 `toolFilter.allow`；节点 `skills` 作为声明式依赖写入子 Agent prompt，由 DSH Skill scope 完成发现与授权。
 
 `workflow.call@1` 与 `core.foreach@1` 还会读取 `ctx.workflowTemplates` 中的精确 published revision。每个 child 是同一 `ctx.workflowRuns` 中的确定性 run；子流程暂停时父流程进入 `paused/needs_attention`，不会把未知副作用误报成普通失败。
 
@@ -67,7 +67,7 @@ const recovered = await ctx.dagWorkflowEngine.resume({
 })
 ```
 
-`parent` 在公共类型上接受任意 object；运行边界会验证它确实暴露可追加的 Session。Host 对 Tools/Agent 使用窄结构桥接，唯一硬 peer dependency 是与当前 Harness 一致的 `@deepseek-ai/cordis@^4.0.1`。
+`parent` 在公共类型上接受任意 object；运行边界会验证它确实暴露可追加的 Session。Host 对 Tools/Agent 使用窄结构桥接。`1.0.1` 的 DSH 边界是 `@deepseek-ai/cordis@~4.0.4` 与 `@deepseek-ai/dsh-typert-protocol@>=0.2.0-rc.2 <0.3.0`，对应 DSH 0.2；旧 DSH 0.1 使用本包 `1.0.0`。
 
 ## 生命周期
 

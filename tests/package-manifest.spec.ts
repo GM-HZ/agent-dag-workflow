@@ -9,9 +9,10 @@ interface PackageManifest {
   name?: string
   repository?: { url?: string; directory?: string }
   dependencies?: Record<string, string>
+  peerDependencies?: Record<string, string>
   exports?: Record<string, unknown>
   files?: string[]
-  dsh?: { bundle?: { patch?: string }; client?: { immediately?: boolean; platform?: string } }
+  dsh?: { bundle?: { patch?: string }; client?: { immediately?: boolean; platform?: string; inject?: string[] } }
   bin?: Record<string, string>
 }
 
@@ -25,7 +26,18 @@ describe('published root package manifest', () => {
       url: 'git+https://github.com/GM-HZ/agent-dag-workflow.git',
     })
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
-    expect(manifest.dsh?.client).toMatchObject({ platform: 'web', immediately: true })
+    expect(manifest.dsh?.client).toEqual({
+      platform: 'web',
+      inject: [
+        '@deepseek-ai/dsh-api-remotes',
+        '@deepseek-ai/dsh-client-ui-session',
+        '@deepseek-ai/dsh-client-ui-renderer',
+        '@deepseek-ai/dsh-client-ui-layout',
+      ],
+    })
+    expect(manifest.dsh?.client?.inject).not.toContain('@deepseek-ai/dsh-client-runtime')
+    expect(manifest.peerDependencies?.['@deepseek-ai/cordis']).toBe('~4.0.4')
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-typert-protocol']).toBe('>=0.2.0-rc.2 <0.3.0')
     expect(manifest.bin).toMatchObject({ adw: 'lib/cli.js', 'agent-workflow': 'lib/cli.js' })
     const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
     expect(patch).toContain("name: '@gm-hz/agent-dag-workflow'")

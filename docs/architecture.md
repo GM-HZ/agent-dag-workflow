@@ -200,6 +200,7 @@ Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unkn
 - SQLite 只创建当前完整 schema，或打开 application id 与 schema version 精确匹配的数据库；旧、未知和被篡改的数据库 fail closed；
 - 发布修订和历史 Run 不原地改写；节点发生破坏性语义变化时提升 `uses@major`，并创建新的 Workflow revision；
 - 协议升级通过独立、显式、可审查的数据转换完成，转换代码不进入 Runtime、CLI 或公开包入口。
+- DSH 是独立 Adapter 兼容面：`1.0.1` 只声明 DSH `>=0.2.0-rc.2 <0.3.0`，并使用 0.2 的 Typert、Client module graph 与 Subagent `toolFilter`；Host-neutral Core 不随 DSH 版本分叉。
 
 因此 Store schema version、Template API Version、Node major、Published revision 和 Event seq 是独立维度，任何一个都不能被另一个隐式替代。
 

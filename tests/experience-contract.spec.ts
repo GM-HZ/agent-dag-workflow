@@ -18,6 +18,13 @@ describe('user experience contract', () => {
     }
   })
 
+  it('binds Canvas authority to the DSH 0.2 selected UI session', () => {
+    expect(client).toContain('scope.uiSession.adapter.current')
+    expect(client).not.toContain('scope.sessions.list')
+    expect(overlay).toContain('snapshot.key')
+    expect(overlay).not.toContain('snapshot.current')
+  })
+
   it('keeps recovery, first success, progressive disclosure, and run diagnosis visible', () => {
     for (const phrase of ['已恢复未保存内容', '从可运行示例开始', '高级配置 · Schema 与依赖', '显示底层事件', '发布不可变修订？']) {
       expect(studio).toContain(phrase)

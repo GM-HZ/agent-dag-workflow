@@ -1,6 +1,6 @@
 {
   "name": "agent-dag-workflow",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Discover, run, diagnose, and author durable Agent DAG workflows from Codex without loading every workflow into context.",
   "author": {
     "name": "GM-HZ",

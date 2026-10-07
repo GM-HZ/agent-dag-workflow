@@ -1,4 +1,4 @@
-import { copyFile, mkdir } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,3 +11,12 @@ await mkdir(resolve(root, 'integrations/codex/agent-dag-workflow/scripts'), { re
 await copyFile(resolve(source, 'SKILL.md'), resolve(target, 'SKILL.md'))
 await copyFile(resolve(source, 'agents/openai.yaml'), resolve(target, 'agents/openai.yaml'))
 await copyFile(resolve(root, 'scripts/agent-workflow.mjs'), resolve(root, 'integrations/codex/agent-dag-workflow/scripts/agent-workflow.mjs'))
+
+const packageManifest = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'))
+const pluginManifestPath = resolve(root, 'integrations/codex/agent-dag-workflow/.codex-plugin/plugin.json')
+const pluginManifest = await readFile(pluginManifestPath, 'utf8')
+const synchronizedManifest = pluginManifest.replace(
+  /(\"version\"\s*:\s*\")[^\"]+(\")/,
+  `$1${packageManifest.version}$2`,
+)
+await writeFile(pluginManifestPath, synchronizedManifest)

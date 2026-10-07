@@ -44,8 +44,10 @@ export interface DshSubagentRuntimeLike {
     readonly signal: AbortSignal
     readonly outputSchema?: Readonly<Record<string, unknown>>
     readonly maxDepth?: number
-    readonly tools?: readonly string[]
-    readonly skills?: readonly string[]
+    readonly toolFilter?: {
+      readonly allow?: readonly string[]
+      readonly deny?: readonly string[]
+    }
   }): Promise<DshSubagentRunLike>
 }
 

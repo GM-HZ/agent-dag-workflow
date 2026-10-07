@@ -158,6 +158,8 @@ function agentApprovalTemplate(): WorkflowTemplate {
       requires: [
         { kind: 'capability', uses: 'gateway.agent.execute' },
         { kind: 'capability', uses: 'gateway.approval.request' },
+        { kind: 'tool', uses: 'web_search' },
+        { kind: 'skill', uses: 'workflow-builder' },
         { kind: 'approval-action', uses: 'publish-report' },
       ],
       inputSchema: { type: 'object', additionalProperties: false },
@@ -174,6 +176,8 @@ function agentApprovalTemplate(): WorkflowTemplate {
           uses: 'agent.run@1',
           with: {
             prompt: 'Produce the answer.',
+            tools: ['web_search'],
+            skills: ['workflow-builder'],
             outputSchema: { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } },
           },
           inputs: { topic: { literal: 'DSH' } },
@@ -722,7 +726,8 @@ describe('DSH Cordis plugin', () => {
       expect.objectContaining({
         parent,
         label: 'delegate',
-        prompt: [{ type: 'text', text: expect.stringContaining('"topic":"DSH"') }],
+        toolFilter: { allow: ['web_search'] },
+        prompt: [{ type: 'text', text: expect.stringMatching(/Required workflow skill dependencies: "workflow-builder"[\s\S]*"topic":"DSH"/) }],
       }),
     ])
     expect(ctx.approval.requests).toHaveLength(1)

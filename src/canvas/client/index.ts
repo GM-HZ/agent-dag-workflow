@@ -29,7 +29,7 @@ interface ClientSlots {
     readonly label: string
     readonly inject: () => {
       readonly remote: WorkflowCanvasRemoteNamespace
-      readonly sessions: SnapshotStore<{ readonly current?: string }>
+      readonly session: SnapshotStore<{ readonly key?: string }>
       readonly controller: WorkflowCanvasUiController
     }
   }, component: typeof WorkflowCanvasOverlay): () => void
@@ -38,7 +38,11 @@ interface ClientSlots {
 interface WorkflowCanvasClientContext {
   readonly remote: ClientRemote
   readonly slots: ClientSlots
-  readonly sessions: { readonly list: SnapshotStore<{ readonly current?: string }> }
+  readonly uiSession: {
+    readonly adapter: {
+      readonly current: SnapshotStore<{ readonly key?: string }>
+    }
+  }
   readonly reflect: { provide(name: string, value: unknown): Promise<void> | (() => Promise<void>) }
   effect(effect: () => (() => void) | Promise<() => Promise<void>>, label: string): void
   inject(
@@ -48,7 +52,7 @@ interface WorkflowCanvasClientContext {
 }
 
 export const name = 'agent-dag-workflow-canvas-client'
-export const inject = ['slots', 'sessions', 'remote']
+export const inject = ['slots', 'uiSession', 'remote']
 
 export async function apply(ctx: WorkflowCanvasClientContext): Promise<void> {
   const controller = new WorkflowCanvasUiController()
@@ -57,13 +61,13 @@ export async function apply(ctx: WorkflowCanvasClientContext): Promise<void> {
     return () => { if (typeof disposal === 'function') void disposal() }
   }, 'agent-dag-workflow-canvas: UI controller')
   await ctx.remote.$mount(workflowCanvasRemote)
-  ctx.inject(['slots', 'sessions', 'remote.workflowCanvas'], (scope) => {
+  ctx.inject(['slots', 'uiSession', 'remote.workflowCanvas'], (scope) => {
     scope.slots.inject('shell.overlay', () => scope.slots.register({
       name: 'shell.overlay',
       id: 'agent-dag-workflow-canvas',
       order: 80,
       label: 'Agent DAG Workflow',
-      inject: () => ({ remote: scope.remote.workflowCanvas, sessions: scope.sessions.list, controller }),
+      inject: () => ({ remote: scope.remote.workflowCanvas, session: scope.uiSession.adapter.current, controller }),
     }, WorkflowCanvasOverlay))
   })
 }

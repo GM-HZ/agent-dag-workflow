@@ -13,7 +13,7 @@ export interface WorkflowMcpSdkServerOptions {
 
 export function createWorkflowMcpSdkServer(gateway: WorkflowMcpGateway, options: WorkflowMcpSdkServerOptions): Server {
   const server = new Server(
-    { name: options.name ?? 'agent-dag-workflow', version: options.version ?? '1.0.0' },
+    { name: options.name ?? 'agent-dag-workflow', version: options.version ?? '1.0.1' },
     {
       capabilities: { tools: {} },
       instructions: 'Search and describe one published workflow before running its exact id@revision. Tool count is constant and independent of catalog size.',
