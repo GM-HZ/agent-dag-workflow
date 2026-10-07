@@ -49,7 +49,7 @@ describe('published root package manifest', () => {
     expect(manifest.files).not.toContain('docs')
     expect(Object.keys(manifest.exports ?? {})).toContain('./access')
     expect(Object.keys(manifest.exports ?? {})).not.toContain('./migrations')
-    expect(manifest.dependencies?.['@modelcontextprotocol/sdk']).toBe('1.30.0')
+    expect(manifest.dependencies?.['@modelcontextprotocol/sdk']).toBe('1.32.1')
     const plugin = JSON.parse(readFileSync(new URL('../integrations/codex/agent-dag-workflow/.codex-plugin/plugin.json', import.meta.url), 'utf8')) as { version?: string; name?: string }
     expect(plugin).toMatchObject({ name: 'agent-dag-workflow', version: manifest.version })
     const marketplace = JSON.parse(readFileSync(new URL('../integrations/codex/.agents/plugins/marketplace.json', import.meta.url), 'utf8')) as {
