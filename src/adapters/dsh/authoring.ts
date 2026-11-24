@@ -12,15 +12,16 @@ import {
 import type {
   DshAgentLike,
   DshSkillRuntimeLike,
-  DshSubagentRuntimeLike,
+  DshToolBatchRegistryLike,
   DshToolRegistryLike,
   DshToolRunContextLike,
   DshWorkflowToolDefinition,
 } from './types.js'
+import { currentAgentCapabilities, type DshSubagents } from './runtime-api.js'
 
 type AuthoringContext = Context & {
-  readonly tools: DshToolRegistryLike
-  readonly subagents: DshSubagentRuntimeLike
+  readonly tools: DshToolRegistryLike | DshToolBatchRegistryLike
+  readonly subagents: DshSubagents
   readonly skills: DshSkillRuntimeLike
 }
 
@@ -63,43 +64,45 @@ export function registerWorkflowAuthoring(rawContext: Context): () => void {
 }
 
 export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolDefinition[] {
-  const agentCapabilities = currentAgentCapabilities((ctx as AuthoringContext).subagents)
   return [
-    tool('workflow_nodes_list', 'List exact workflow NodeDefinitions, pure script runtimes, and DSH Tools visible in the calling Agent scope.', {}, async (_args, execution) => ({
-      nodes: ctx.workflowNodes.list().map(node => snapshotJsonValue({
-        uses: `${node.type}@${node.version}`,
-        title: node.title,
-        description: node.description,
-        role: node.role ?? 'regular',
-        configSchema: node.configSchema as JsonValue,
-        ...(node.defaultConfig === undefined ? {} : { defaultConfig: node.defaultConfig }),
-        inputSchema: node.inputSchema as JsonValue,
-        outputSchema: node.outputSchema as JsonValue,
-        outputPorts: node.outputPorts,
-        requiredOutputPorts: node.requiredOutputPorts ?? [],
-        capabilities: node.capabilities,
-        dependencyKinds: node.dependencyKinds ?? [],
-        defaultRequirements: [
-          ...node.capabilities.map(uses => ({ kind: 'capability', uses })),
-          ...(node.defaultConfig === undefined ? [] : node.dependencies?.(node.defaultConfig) ?? []),
-        ],
-        retry: node.retry,
-      })),
-      scriptRuntimes: ctx.workflowScripts.list().map(runtime => snapshotJsonValue({
-        uses: `${runtime.language}@${runtime.version}`,
-        title: runtime.title,
-        description: runtime.description,
-        deterministic: runtime.deterministic,
-      })),
-      tools: (ctx as AuthoringContext).tools.schemas(execution.agent)
-        .filter(schema => !schema.name.startsWith('workflow_'))
-        .map(schema => snapshotJsonValue(schema)),
-      agent: snapshotJsonValue({
-        mode: 'current',
-        capabilities: agentCapabilities,
-        ...(agentCapabilities.outputSchema ? { structuredOutputSchema: DSH_STRUCTURED_OUTPUT_SCHEMA } : {}),
-      }),
-    }), true),
+    tool('workflow_nodes_list', 'List exact workflow NodeDefinitions, pure script runtimes, and DSH Tools visible in the calling Agent scope.', {}, async (_args, execution) => {
+      const agentCapabilities = currentAgentCapabilities((ctx as AuthoringContext).subagents)
+      return {
+        nodes: ctx.workflowNodes.list().map(node => snapshotJsonValue({
+          uses: `${node.type}@${node.version}`,
+          title: node.title,
+          description: node.description,
+          role: node.role ?? 'regular',
+          configSchema: node.configSchema as JsonValue,
+          ...(node.defaultConfig === undefined ? {} : { defaultConfig: node.defaultConfig }),
+          inputSchema: node.inputSchema as JsonValue,
+          outputSchema: node.outputSchema as JsonValue,
+          outputPorts: node.outputPorts,
+          requiredOutputPorts: node.requiredOutputPorts ?? [],
+          capabilities: node.capabilities,
+          dependencyKinds: node.dependencyKinds ?? [],
+          defaultRequirements: [
+            ...node.capabilities.map(uses => ({ kind: 'capability', uses })),
+            ...(node.defaultConfig === undefined ? [] : node.dependencies?.(node.defaultConfig) ?? []),
+          ],
+          retry: node.retry,
+        })),
+        scriptRuntimes: ctx.workflowScripts.list().map(runtime => snapshotJsonValue({
+          uses: `${runtime.language}@${runtime.version}`,
+          title: runtime.title,
+          description: runtime.description,
+          deterministic: runtime.deterministic,
+        })),
+        tools: (ctx as AuthoringContext).tools.schemas(execution.agent)
+          .filter(schema => !schema.name.startsWith('workflow_'))
+          .map(schema => snapshotJsonValue(schema)),
+        agent: snapshotJsonValue({
+          mode: 'current',
+          capabilities: agentCapabilities,
+          ...(agentCapabilities.outputSchema ? { structuredOutputSchema: DSH_STRUCTURED_OUTPUT_SCHEMA } : {}),
+        }),
+      }
+    }, true),
     tool('workflow_draft_create', 'Create a workflow draft after materializing a lossless JSON snapshot. Drafts may be structurally incomplete.', {
       template: { ...templateProperty, required: true },
     }, async args => snapshotJsonValue(await ctx.workflowTemplates.createDraft(templateArg(args, 'template')))),
@@ -170,23 +173,6 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       })
     }),
   ]
-}
-
-function currentAgentCapabilities(runtime: DshSubagentRuntimeLike): {
-  readonly outputSchema: boolean
-  readonly depthLimit: boolean
-  readonly toolFilter: boolean
-  readonly persona: boolean
-} {
-  const capabilities = runtime.list()
-    .map(name => runtime.getProvider(name)?.capabilities)
-    .filter(value => value !== undefined)
-  return {
-    outputSchema: capabilities.some(value => value.outputSchema),
-    depthLimit: capabilities.some(value => value.depthLimit),
-    toolFilter: capabilities.some(value => value.toolFilter),
-    persona: capabilities.some(value => value.persona),
-  }
 }
 
 function tool(

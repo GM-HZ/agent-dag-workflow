@@ -1,6 +1,8 @@
 import { useMemo, useRef, useSyncExternalStore } from 'react'
 import { createWorkflowCanvasApi, type WorkflowCanvasRemoteNamespace } from './api.js'
 import type { WorkflowCanvasUiController } from './controller.js'
+import { useCanvasLocale } from './locale.js'
+import { canvasText } from './messages.js'
 import { WorkflowStudio } from './studio.js'
 
 export interface SnapshotStore<T> {
@@ -12,6 +14,7 @@ export interface WorkflowCanvasOverlayProps {
   readonly remote: WorkflowCanvasRemoteNamespace
   readonly session: SnapshotStore<{ readonly key?: string }>
   readonly controller: WorkflowCanvasUiController
+  readonly locale?: string
 }
 
 /**
@@ -33,7 +36,9 @@ export function canLaunchWorkflowCanvas(current: string | undefined): boolean {
   return current !== undefined
 }
 
-export function WorkflowCanvasOverlay({ remote, session, controller }: WorkflowCanvasOverlayProps) {
+export function WorkflowCanvasOverlay({ remote, session, controller, locale }: WorkflowCanvasOverlayProps) {
+  const language = useCanvasLocale(locale)
+  const t = canvasText(language)
   const api = useMemo(() => createWorkflowCanvasApi(remote), [remote])
   const snapshot = useSyncExternalStore(
     listener => session.subscribe(listener),
@@ -48,6 +53,7 @@ export function WorkflowCanvasOverlay({ remote, session, controller }: WorkflowC
     return <WorkflowStudio
       key={ui.requestId}
       api={api}
+      locale={language}
       sessionId={sessionId}
       {...(ui.target === undefined ? {} : { initialTarget: ui.target })}
       onClose={() => controller.close()}
@@ -57,11 +63,12 @@ export function WorkflowCanvasOverlay({ remote, session, controller }: WorkflowC
     className="wf-launcher"
     data-workflow-canvas-launcher
     disabled={!canLaunchWorkflowCanvas(snapshot.key)}
-    title={!canLaunchWorkflowCanvas(snapshot.key) ? '请先打开一个 Agent 顶层会话' : '打开 Agent DAG Workflow'}
+    lang={language}
+    title={t(canLaunchWorkflowCanvas(snapshot.key) ? 'Open Agent DAG Workflow' : 'Open a top-level agent session first')}
     onClick={() => controller.open()}
   >
     <style>{LAUNCHER_CSS}</style>
-    <span>◇</span><b>工作流</b>
+    <span aria-hidden="true">◇</span><b>{t('Workflow')}</b>
   </button>
 }
 

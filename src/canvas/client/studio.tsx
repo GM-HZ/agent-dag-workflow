@@ -35,6 +35,8 @@ import type {
 } from '../types.js'
 import { WorkflowCanvasRequestError, type WorkflowCanvasClientApi } from './api.js'
 import type { WorkflowCanvasUiTarget } from './controller.js'
+import { CanvasLocaleContext, useCanvasCopy, useCanvasLocale } from './locale.js'
+import { canvasText, type CanvasLocale, type CanvasMessage, type MessageValues } from './messages.js'
 import {
   addNode,
   blankTemplate,
@@ -70,6 +72,7 @@ import {
 
 export interface WorkflowStudioProps {
   readonly api: WorkflowCanvasClientApi
+  readonly locale?: string
   readonly sessionId: string
   readonly initialTemplate?: CanvasWorkflowTemplate
   readonly initialTarget?: WorkflowCanvasUiTarget
@@ -79,14 +82,26 @@ export interface WorkflowStudioProps {
 type RightPanel = 'inspector' | 'diagnostics' | 'diff'
 type PaletteGroup = 'nodes' | 'tools'
 
-export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget, onClose }: WorkflowStudioProps) {
+type Activity = { readonly message: CanvasMessage; readonly values?: MessageValues; readonly action?: CanvasMessage }
+const nodeTypes = { workflow: WorkflowNodeView }
+
+export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget, onClose, locale }: WorkflowStudioProps) {
+  const language = useCanvasLocale(locale)
+  const t = canvasText(language)
+  const graphLabels = useMemo(() => ({
+    'controls.ariaLabel': t('Canvas controls'),
+    'controls.zoomIn.ariaLabel': t('Zoom in'),
+    'controls.zoomOut.ariaLabel': t('Zoom out'),
+    'controls.fitView.ariaLabel': t('Fit view'),
+    'minimap.ariaLabel': t('Canvas minimap'),
+  }), [t])
   const initialRecovery = useMemo(() => initialTemplate === undefined && initialTarget?.templateId === undefined
     ? readRecovery(sessionId)
     : undefined, [initialTarget?.templateId, initialTemplate, sessionId])
   const [definitions, setDefinitions] = useState<readonly CanvasNodeDefinition[]>([])
   const [catalog, setCatalog] = useState<readonly CanvasCatalogSummary[]>([])
   const [draft, setDraft] = useState<CanvasWorkflowDraft | undefined>(initialRecovery?.draft)
-  const [template, setTemplate] = useState<CanvasWorkflowTemplate>(() => initialTemplate ?? initialRecovery?.template ?? blankTemplate())
+  const [template, setTemplate] = useState<CanvasWorkflowTemplate>(() => initialTemplate ?? initialRecovery?.template ?? blankTemplate(undefined, language))
   const [selectedNode, setSelectedNode] = useState<string | undefined>(initialTarget?.nodeId)
   const [diagnostics, setDiagnostics] = useState<readonly CanvasWorkflowDiagnostic[]>([])
   const [diff, setDiff] = useState<CanvasTemplateDiff>()
@@ -98,9 +113,10 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const [paletteGroup, setPaletteGroup] = useState<PaletteGroup>('nodes')
   const [documentState, setDocumentState] = useState<WorkflowDocumentState>(initialRecovery !== undefined ? 'dirty' : initialTemplate === undefined ? 'pristine' : 'unsaved')
   const [connectionState, setConnectionState] = useState<WorkflowConnectionState>('connecting')
-  const [activity, setActivity] = useState(initialRecovery === undefined ? '准备就绪' : '已恢复未保存的画布')
+  const [activity, setActivity] = useState<Activity>({ message: initialRecovery === undefined ? 'Ready to work' : 'Unsaved Canvas restored' })
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<WorkflowErrorPresentation>()
+  const [requestError, setError] = useState<WorkflowErrorPresentation>()
+  const error = requestError === undefined ? undefined : classifyWorkflowError(requestError.detail, language)
   const [showInfrastructureEvents, setShowInfrastructureEvents] = useState(false)
   const [confirmPublish, setConfirmPublish] = useState(false)
   const [surface, setSurface] = useState<'design' | 'operations'>('design')
@@ -108,18 +124,18 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const [recoveryNotice, setRecoveryNotice] = useState(initialRecovery !== undefined)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>()
 
-  const execute = useCallback(async <T,>(label: string, operation: () => Promise<T>): Promise<T | undefined> => {
+  const execute = useCallback(async <T,>(action: CanvasMessage, operation: () => Promise<T>): Promise<T | undefined> => {
     setBusy(true)
     setError(undefined)
-    setActivity(`${label}…`)
+    setActivity({ message: '{action}…', action })
     try {
       const value = await operation()
-      setActivity(`${label}完成`)
+      setActivity({ message: '{action} complete', action })
       return value
     } catch (cause: unknown) {
       const presentation = cause instanceof WorkflowCanvasRequestError ? cause.presentation : classifyWorkflowError(cause)
       setError(presentation)
-      setActivity(`${label}未完成`)
+      setActivity({ message: '{action} failed', action })
       if (presentation.kind === 'connection') setConnectionState('disconnected')
       return undefined
     } finally {
@@ -141,9 +157,9 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
     setConnectionState('connected')
   }, [api, sessionId])
 
-  const syncCatalog = useCallback(() => execute('同步工作流目录', refreshCatalog), [execute, refreshCatalog])
+  const syncCatalog = useCallback(() => execute('Sync catalog', refreshCatalog), [execute, refreshCatalog])
 
-  const refreshOperations = useCallback(() => execute('刷新触发与投递', async () => {
+  const refreshOperations = useCallback(() => execute('Refresh trigger and delivery records', async () => {
     const value = await api.request('workflowCanvas.operations', () => api.remote.operations(sessionId, { limit: 200 }), { retries: 1 })
     setOperations(value)
     return value
@@ -190,11 +206,11 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const filteredDefinitions = useMemo(() => {
     const query = paletteQuery.trim().toLocaleLowerCase()
     return definitions.filter(definition => definitionGroup(definition) === paletteGroup)
-      .filter(definition => query.length === 0 || [definitionDisplayTitle(definition), definitionDisplayDescription(definition), definition.title, definition.description, definition.uses, definition.toolName]
+      .filter(definition => query.length === 0 || [definitionDisplayTitle(definition, language), definitionDisplayDescription(definition, language), definition.title, definition.description, definition.uses, definition.toolName]
       .some(value => value?.toLocaleLowerCase().includes(query)))
-  }, [definitions, paletteGroup, paletteQuery])
+  }, [definitions, language, paletteGroup, paletteQuery])
 
-  const save = useCallback(async (): Promise<CanvasWorkflowDraft | undefined> => execute('保存草稿', async () => {
+  const save = useCallback(async (): Promise<CanvasWorkflowDraft | undefined> => execute('Save draft', async () => {
     const next = draft === undefined
       ? await api.request('workflowCanvas.createDraft', () => api.remote.createDraft(sessionId, { template }))
       : await api.request('workflowCanvas.updateDraft', () => api.remote.updateDraft(sessionId, {
@@ -208,7 +224,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
     return next
   }), [api, draft, execute, refreshCatalog, sessionId, template])
 
-  const validate = useCallback(async () => execute('校验工作流', async () => {
+  const validate = useCallback(async () => execute('Validate workflow', async () => {
     const result = await api.request('workflowCanvas.validate', () => api.remote.validate(sessionId, { template }), { retries: 1 })
     setDiagnostics(result.diagnostics)
     setRightPanel('diagnostics')
@@ -220,7 +236,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
   const showDiff = useCallback(async () => {
     if (draft === undefined) { setError(classifyWorkflowError('catalog diff requires a saved draft')); return }
-    await execute('比较变更', async () => {
+    await execute('Compare changes', async () => {
       const value = await api.request('workflowCanvas.diff', () => api.remote.diff(sessionId, { id: draft.id, candidate: template }), { retries: 1 })
       setDiff(value)
       setRightPanel('diff')
@@ -232,19 +248,19 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
     setConfirmPublish(false)
     const saved = await save()
     if (saved === undefined) return
-    await execute('发布工作流', async () => {
+    const revision = await execute('Publish workflow', async () => {
       const published = await api.request('workflowCanvas.publish', () => api.remote.publish(sessionId, {
         id: saved.id,
         expectedRevision: saved.revision,
       }))
       await refreshCatalog()
       setDocumentState('published')
-      setActivity(`已发布为不可变修订 ${published.revision}`)
-      return published
+      return published.revision
     })
+    if (revision !== undefined) setActivity({ message: 'Published as immutable revision {revision}', values: { revision } })
   }, [api, execute, refreshCatalog, save, sessionId])
 
-  const loadDraft = useCallback(async (id: string) => execute('打开草稿', async () => {
+  const loadDraft = useCallback(async (id: string) => execute('Open draft', async () => {
     const value = await api.request('workflowCanvas.readDraft', () => api.remote.readDraft(sessionId, { id }), { retries: 1 })
     setDraft(value)
     setTemplate(value.template)
@@ -264,16 +280,16 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
   useEffect(() => {
     if (initialTarget?.runId === undefined) return
-    void execute('打开运行轨迹', async () => {
+    void execute('Open run trace', async () => {
       const value = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId: initialTarget.runId! }), { retries: 1 })
       setTrace(value)
       return value
     })
   }, [api, execute, initialTarget?.runId, sessionId])
 
-  const runDraft = useCallback(async () => execute('试运行', async () => {
+  const runDraft = useCallback(async () => execute('Test run', async () => {
     const parsed = JSON.parse(inputsText) as unknown
-    if (!isObject(parsed)) throw new Error('运行输入必须是 JSON object')
+    if (!isObject(parsed)) throw new Error('Invalid run input: expected a JSON object')
     const result = await api.request('workflowCanvas.runDraft', () => api.remote.runDraft(sessionId, { template, inputs: parsed }))
     setRunResult(result)
     const nextTrace = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId: result.runId }), { retries: 1 })
@@ -284,7 +300,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const refreshTrace = useCallback(async () => {
     const runId = runResult?.runId ?? trace?.runId
     if (runId === undefined) return
-    await execute('刷新运行轨迹', async () => {
+    await execute('Refresh run trace', async () => {
       const value = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId }), { retries: 1 })
       setTrace(value)
       return value
@@ -294,7 +310,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const loadMoreTrace = useCallback(async () => {
     if (trace?.nextAfterSeq === undefined) return
     const afterSeq = trace.nextAfterSeq
-    await execute('加载更多运行事件', async () => {
+    await execute('Load more run events', async () => {
       const page = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, {
         runId: trace.runId, afterSeq, limit: 200,
       }), { retries: 1 })
@@ -305,7 +321,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
   const resumeRun = useCallback(async (resolution?: 'retry' | 'fail') => {
     if (runResult === undefined) return
-    await execute('继续运行', async () => {
+    await execute('Resume run', async () => {
       const unknownNodeResolutions = resolution === undefined || runResult.needsAttention === undefined
         ? undefined
         : Object.fromEntries(runResult.needsAttention.map(nodeId => [nodeId, resolution] as const))
@@ -322,7 +338,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const cancelRun = useCallback(async () => {
     const runId = runResult?.runId ?? trace?.runId
     if (runId === undefined) return
-    await execute('取消运行', async () => {
+    await execute('Cancel run', async () => {
       const result = await api.request('workflowCanvas.cancel', () => api.remote.cancel(sessionId, { runId, reason: 'cancelled from Canvas' }))
       setRunResult(result)
       setTrace(await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId }), { retries: 1 }))
@@ -333,7 +349,9 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const mutate = useCallback((next: CanvasWorkflowTemplate) => {
     setTemplate(next)
     setDocumentState(draft === undefined ? 'unsaved' : 'dirty')
-    setActivity(draft === undefined ? '尚未保存' : `草稿修订 ${draft.revision} 有未保存更改`)
+    setActivity(draft === undefined
+      ? { message: 'Unsaved' }
+      : { message: 'Draft revision {revision} has unsaved changes', values: { revision: draft.revision } })
   }, [draft])
 
   const updateSelected = useCallback((next: CanvasWorkflowNode) => {
@@ -349,20 +367,20 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   }, [mutate, template])
 
   const confirmDiscard = useCallback(() => !hasUnsavedChanges(documentState)
-    || window.confirm('当前工作流有未保存的更改。确定放弃这些更改吗？'), [documentState])
+    || window.confirm(t('Discard the unsaved changes to this workflow?')), [documentState, t])
   const startNew = useCallback(() => {
     if (!confirmDiscard()) return
     setDraft(undefined)
-    setTemplate(blankTemplate())
+    setTemplate(blankTemplate(undefined, language))
     setSelectedNode(undefined)
     setTrace(undefined)
     setRunResult(undefined)
     setDiagnostics([])
     setDocumentState('pristine')
     setRecoveryNotice(false)
-    setActivity('已新建空白工作流')
+    setActivity({ message: 'Created a blank workflow' })
     clearRecovery(sessionId)
-  }, [confirmDiscard, sessionId])
+  }, [confirmDiscard, language, sessionId])
   const openDraftSafely = useCallback((id: string) => {
     if (id === '' || !confirmDiscard()) return
     void loadDraft(id)
@@ -373,98 +391,98 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
   const useStarter = useCallback(() => {
     if (!confirmDiscard()) return
     setDraft(undefined)
-    setTemplate(starterTemplate())
-    setInputsText('{\n  "message": "你好，DSH Workflow"\n}')
+    setTemplate(starterTemplate(undefined, language))
+    setInputsText(JSON.stringify({ message: t('Hello, DSH Workflow') }, null, 2))
     setDocumentState('unsaved')
     setRecoveryNotice(false)
-    setActivity('示例已就绪，可以直接试运行')
+    setActivity({ message: 'Example ready for a test run' })
   }, [confirmDiscard])
   const copyTemplate = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(JSON.stringify(template, null, 2))
-      setActivity('当前 WorkflowTemplate JSON 已复制')
+      setActivity({ message: 'WorkflowTemplate JSON copied' })
     } catch (cause: unknown) { setError(classifyWorkflowError(cause)) }
   }, [template])
   const copyAgentPrompt = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText('请使用 workflow-builder Skill 创建一个可复用的 DAG workflow。先创建并校验草稿，不要发布；完成后告诉我草稿名称、修订和校验结果，我会在工作流画布中确认。')
-      setActivity('已复制给 Agent 的创建指令')
+      await navigator.clipboard.writeText(t('Use the workflow-builder skill to create a reusable DAG workflow. Create and validate a draft first. Leave it as a draft and report its name, revision, and validation results so I can review it in Canvas.'))
+      setActivity({ message: 'Agent prompt copied' })
     } catch (cause: unknown) { setError(classifyWorkflowError(cause)) }
-  }, [])
+  }, [t])
 
   const nodes = flow.nodes
   const edges = flow.edges
-  const traceEvents = useMemo(() => trace === undefined ? [] : visibleTraceEvents(trace, showInfrastructureEvents), [showInfrastructureEvents, trace])
-  const runFailure = workflowFailurePresentation(trace)
+  const traceEvents = useMemo(() => trace === undefined ? [] : visibleTraceEvents(trace, showInfrastructureEvents, language), [language, showInfrastructureEvents, trace])
+  const runFailure = workflowFailurePresentation(trace, language)
   const selectedOutput = selectedNode === undefined ? undefined : trace?.nodeOutputs[selectedNode]
   const selectedProgress = selectedNode === undefined ? undefined : trace?.nodeProgress[selectedNode]
 
-  return <div className="wf-studio" data-workflow-studio data-surface={surface}>
+  return <CanvasLocaleContext.Provider value={language}><div className="wf-studio" data-workflow-studio data-surface={surface} lang={language}>
     <style>{STRUCTURE_CSS + PRODUCT_CSS + EXPERIENCE_CSS}</style>
     <header className="wf-topbar">
       <div className="wf-brand">
         <span className="wf-brand-mark">D</span>
-        <span><b>AGENT DAG WORKFLOW</b><small>可审计工作流</small></span>
+        <span><b>AGENT DAG WORKFLOW</b><small>{t('Auditable workflows')}</small></span>
       </div>
       <div className="wf-doc-title">
         <span className="wf-status-dot" data-busy={busy} data-connection={connectionState} />
-        <input value={template.metadata.name} aria-label="工作流名称" onChange={event => mutate({
+        <input value={template.metadata.name} aria-label={t('Workflow name')} onChange={event => mutate({
           ...template, metadata: { ...template.metadata, name: event.target.value },
         })} />
-        <span className="wf-document-state" data-state={documentState}>{documentStateLabel(documentState)}</span>
+        <span className="wf-document-state" data-state={documentState}>{documentStateLabel(documentState, language)}</span>
         <code>{template.metadata.id}</code>
       </div>
-      <div className="wf-guardrails" aria-label="工作流安全边界">
-        <span><i />{template.spec.requires?.length ?? 0} 项依赖</span><span><i />全程审计</span><span><i />Schema 校验</span>
+      <div className="wf-guardrails" aria-label={t('Workflow safeguards')}>
+        <span><i />{t('Dependencies: {count}', { count: template.spec.requires?.length ?? 0 })}</span><span><i />{t('Audited')}</span><span><i />{t('Schema validation')}</span>
       </div>
       <div className="wf-actions">
-        <button onClick={() => { const next = surface === 'design' ? 'operations' : 'design'; setSurface(next); if (next === 'operations') void refreshOperations() }} disabled={busy}>{surface === 'design' ? '触发与投递' : '返回设计'}</button>
-        <button onClick={startNew} disabled={busy} title={busy ? '请等待当前操作完成' : '新建工作流'}>新建</button>
-        <button onClick={() => void save()} disabled={busy || !hasUnsavedChanges(documentState)} title={busy ? '请等待当前操作完成' : !hasUnsavedChanges(documentState) ? '当前草稿没有待保存内容' : '保存当前草稿'}>保存</button>
-        <button onClick={() => void validate()} disabled={busy} title={busy ? '请等待当前操作完成' : '使用同一套运行时规则校验'}>校验</button>
-        <button onClick={() => void showDiff()} disabled={busy || draft === undefined} title={draft === undefined ? '先保存一次草稿才能比较变更' : '比较当前画布与已保存草稿'}>变更</button>
-        <button className="wf-primary" onClick={() => setConfirmPublish(true)} disabled={busy} title={busy ? '请等待当前操作完成' : '发布不可变修订'}>发布</button>
-        {onClose === undefined ? null : <button className="wf-close" onClick={closeSafely} aria-label="关闭工作流画布">×</button>}
+        <button onClick={() => { const next = surface === 'design' ? 'operations' : 'design'; setSurface(next); if (next === 'operations') void refreshOperations() }} disabled={busy}>{surface === 'design' ? t('Triggers & delivery') : t('Back to Canvas')}</button>
+        <button onClick={startNew} disabled={busy} title={busy ? t('Wait for the current action to finish') : t('Create a workflow')}>{t('New')}</button>
+        <button onClick={() => void save()} disabled={busy || !hasUnsavedChanges(documentState)} title={busy ? t('Wait for the current action to finish') : !hasUnsavedChanges(documentState) ? t('The draft has no changes to save') : t('Save current draft')}>{t('Save')}</button>
+        <button onClick={() => void validate()} disabled={busy} title={busy ? t('Wait for the current action to finish') : t('Validate using the runtime rules')}>{t('Validate')}</button>
+        <button onClick={() => void showDiff()} disabled={busy || draft === undefined} title={draft === undefined ? t('Save a draft before comparing changes') : t('Compare Canvas with the saved draft')}>{t('Changes')}</button>
+        <button className="wf-primary" onClick={() => setConfirmPublish(true)} disabled={busy} title={busy ? t('Wait for the current action to finish') : t('Publish an immutable revision')}>{t('Publish')}</button>
+        {onClose === undefined ? null : <button className="wf-close" onClick={closeSafely} aria-label={t('Close workflow Canvas')}>×</button>}
       </div>
     </header>
 
     {connectionState !== 'connected' ? <div className="wf-system-banner" data-kind={connectionState === 'disconnected' ? 'danger' : 'info'}>
-      <b>{connectionStateLabel(connectionState)}</b><span>{connectionState === 'disconnected' ? '当前内容已保留，恢复后将自动同步。' : '正在同步节点、Tool 和草稿目录。'}</span>
-      <button onClick={() => void syncCatalog()} disabled={busy}>立即重试</button>
+      <b>{connectionStateLabel(connectionState, language)}</b><span>{connectionState === 'disconnected' ? t('Your changes were kept. Sync will resume when the connection returns.') : t('Syncing nodes, tools, and drafts.')}</span>
+      <button onClick={() => void syncCatalog()} disabled={busy}>{t('Retry now')}</button>
     </div> : null}
-    {recoveryNotice ? <div className="wf-system-banner wf-recovery" data-kind="warning"><b>已恢复未保存内容</b><span>上次连接中断前的画布和运行输入已经找回。</span><button onClick={() => setRecoveryNotice(false)}>知道了</button></div> : null}
+    {recoveryNotice ? <div className="wf-system-banner wf-recovery" data-kind="warning"><b>{t('Unsaved changes restored')}</b><span>{t('We restored the Canvas and run inputs from your previous session.')}</span><button onClick={() => setRecoveryNotice(false)}>{t('Dismiss')}</button></div> : null}
     {error === undefined || error.kind === 'connection' ? null : <div className="wf-error-banner" data-kind={error.kind}>
-      <div><b>{error.title}</b><span>{error.message} {error.remedy}</span><details><summary>技术详情</summary><code>{error.detail}</code></details></div>
-      <div>{error.retryable ? <button onClick={() => void syncCatalog()}>重试</button> : null}
-        {error.kind === 'conflict' ? <><button onClick={() => void copyTemplate()}>复制当前 JSON</button>{draft === undefined ? null : <button onClick={() => void loadDraft(draft.id)}>重新加载</button>}</> : null}
-        <button onClick={() => setError(undefined)}>关闭</button></div>
+      <div><b>{error.title}</b><span>{error.message} {error.remedy}</span><details><summary>{t('Technical details')}</summary><code>{error.detail}</code></details></div>
+      <div>{error.retryable ? <button onClick={() => void syncCatalog()}>{t('Retry')}</button> : null}
+        {error.kind === 'conflict' ? <><button onClick={() => void copyTemplate()}>{t('Copy current JSON')}</button>{draft === undefined ? null : <button onClick={() => void loadDraft(draft.id)}>{t('Reload')}</button>}</> : null}
+        <button onClick={() => setError(undefined)}>{t('Close')}</button></div>
     </div>}
 
     <aside className="wf-palette">
-      <div className="wf-section-row"><SectionLabel index="01" text="工作流" /><button onClick={() => void syncCatalog()} disabled={busy} title="刷新 Agent 创建的草稿">↻</button></div>
-      <select aria-label="选择工作流草稿" value={draft?.id ?? ''} onChange={event => openDraftSafely(event.target.value)}>
-        <option value="">选择一个草稿…</option>
-        {catalog.map(item => <option key={item.id} value={item.id}>{item.name} · 草稿修订 {item.draftRevision}{item.publishedRevision === undefined ? '' : ` · 已发布 ${item.publishedRevision}`}</option>)}
+      <div className="wf-section-row"><SectionLabel index="01" text={t('Workflow')} /><button onClick={() => void syncCatalog()} disabled={busy} title={t('Refresh drafts created by agents')}>↻</button></div>
+      <select aria-label={t('Select workflow draft')} value={draft?.id ?? ''} onChange={event => openDraftSafely(event.target.value)}>
+        <option value="">{t('Select a draft…')}</option>
+        {catalog.map(item => <option key={item.id} value={item.id}>{item.name} · {t('Draft revision {revision}', { revision: item.draftRevision })}{item.publishedRevision === undefined ? '' : ` · ${t('Published {revision}', { revision: item.publishedRevision })}`}</option>)}
       </select>
-      <SectionLabel index="02" text="添加节点" />
-      <div className="wf-palette-tabs" role="tablist" aria-label="节点分类">
-        <button role="tab" data-active={paletteGroup === 'nodes'} onClick={() => setPaletteGroup('nodes')}>流程节点 <span>{definitions.filter(item => item.kind === 'node').length}</span></button>
-        <button role="tab" data-active={paletteGroup === 'tools'} onClick={() => setPaletteGroup('tools')}>Agent Tool <span>{definitions.filter(item => item.kind === 'tool').length}</span></button>
+      <SectionLabel index="02" text={t('Add nodes')} />
+      <div className="wf-palette-tabs" role="tablist" aria-label={t('Node categories')}>
+        <button role="tab" data-active={paletteGroup === 'nodes'} onClick={() => setPaletteGroup('nodes')}>{t('Workflow nodes')} <span>{definitions.filter(item => item.kind === 'node').length}</span></button>
+        <button role="tab" data-active={paletteGroup === 'tools'} onClick={() => setPaletteGroup('tools')}>{t('Agent tools')} <span>{definitions.filter(item => item.kind === 'tool').length}</span></button>
       </div>
-      <div className="wf-palette-search"><span>⌕</span><input value={paletteQuery} onChange={event => setPaletteQuery(event.target.value)} placeholder={paletteGroup === 'nodes' ? '搜索流程节点…' : '搜索当前 Agent 可用的 Tool…'} aria-label="搜索工作流节点" /></div>
+      <div className="wf-palette-search"><span>⌕</span><input value={paletteQuery} onChange={event => setPaletteQuery(event.target.value)} placeholder={paletteGroup === 'nodes' ? t('Search workflow nodes…') : t('Search available agent tools…')} aria-label={t('Search workflow nodes')} /></div>
       <div className="wf-node-list">
-        {filteredDefinitions.length === 0 ? <p className="wf-list-empty">当前分类没有匹配项</p> : filteredDefinitions.map((definition, index) => <button
+        {filteredDefinitions.length === 0 ? <p className="wf-list-empty">{t('No matches in this category')}</p> : filteredDefinitions.map((definition, index) => <button
           key={definition.catalogId} className="wf-palette-node"
           onClick={() => mutate(addNode(template, definition, { x: 140 + index % 2 * 280, y: 100 + index * 42 }))}
-        ><span>{nodeGlyph(definition)}</span><b>{definitionDisplayTitle(definition)}</b><small>{definitionDisplayDescription(definition)}</small><em>{definition.kind === 'tool' ? '通过 Host 权限边界执行' : definition.uses}</em></button>)}
+        ><span>{nodeGlyph(definition)}</span><b>{definitionDisplayTitle(definition, language)}</b><small>{definitionDisplayDescription(definition, language)}</small><em>{definition.kind === 'tool' ? t('Uses host permissions') : definition.uses}</em></button>)}
       </div>
-      <div className="wf-palette-foot"><span>显示 {filteredDefinitions.length} 项</span><span>模板 v1</span></div>
+      <div className="wf-palette-foot"><span>{t('Showing {count}', { count: filteredDefinitions.length })}</span><span>{t('Template v1')}</span></div>
     </aside>
 
     <main className="wf-canvas">
-      <div className="wf-coordinate"><b>工作流画布</b><span>{template.spec.nodes.length} 个节点 · {template.spec.edges.length} 条连接</span></div>
-      {definitions.length === 0 ? <div className="wf-canvas-loading">正在同步节点和 Tool…</div> : <ReactFlow
-        nodes={nodes} edges={edges} nodeTypes={{ workflow: WorkflowNodeView }} fitView minZoom={0.25} maxZoom={1.8}
+      <div className="wf-coordinate"><b>{t('Workflow Canvas')}</b><span>{t('Nodes: {nodes} · Edges: {edges}', { nodes: template.spec.nodes.length, edges: template.spec.edges.length })}</span></div>
+      {definitions.length === 0 ? <div className="wf-canvas-loading">{t('Syncing nodes and tools…')}</div> : <ReactFlow
+        nodes={nodes} edges={edges} nodeTypes={nodeTypes} ariaLabelConfig={graphLabels} fitView minZoom={0.25} maxZoom={1.8}
         onNodeClick={(_event, node) => { setSelectedNode(node.id); setRightPanel('inspector') }}
         onNodeDragStop={(_event, node) => mutate(moveNode(template, node.id, node.position))}
         onConnect={onConnect} onEdgesDelete={onEdgesDelete} deleteKeyCode={['Backspace', 'Delete']}
@@ -473,7 +491,7 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
     </main>
 
     <aside className="wf-inspector">
-      <nav>{(['inspector', 'diagnostics', 'diff'] as const).map(panel => <button key={panel} data-active={rightPanel === panel} onClick={() => setRightPanel(panel)}>{panel === 'inspector' ? '配置' : panel === 'diagnostics' ? `问题${diagnostics.length > 0 ? ` ${diagnostics.length}` : ''}` : '变更'}</button>)}</nav>
+      <nav>{(['inspector', 'diagnostics', 'diff'] as const).map(panel => <button key={panel} data-active={rightPanel === panel} onClick={() => setRightPanel(panel)}>{panel === 'inspector' ? t('Settings') : panel === 'diagnostics' ? `${t('Issues')}${diagnostics.length > 0 ? ` ${diagnostics.length}` : ''}` : t('Changes')}</button>)}</nav>
       {rightPanel === 'inspector' ? selected === undefined
         ? <WorkflowInspector template={template} onChange={mutate} />
         : <NodeInspector node={selected} definition={findNodeDefinition(definitions, selected)}
@@ -487,34 +505,34 @@ export function WorkflowStudio({ api, sessionId, initialTemplate, initialTarget,
 
     <section className="wf-trace">
       <div className="wf-trace-head">
-        <SectionLabel index="03" text="运行与审计" />
-        <textarea value={inputsText} onChange={event => setInputsText(event.target.value)} aria-label="运行输入 JSON" title="运行输入 JSON" />
-        <button className="wf-run" onClick={() => void runDraft()} disabled={busy}>▶ 试运行</button>
-        <button onClick={() => void refreshTrace()} disabled={busy || trace === undefined} title={trace === undefined ? '还没有可刷新的运行轨迹' : '读取已持久化的最新轨迹'}>刷新</button>
-        {trace?.status === 'running' ? <button onClick={() => void cancelRun()} disabled={busy}>停止运行</button> : null}
-        {runResult?.status === 'paused' && (runResult.needsAttention?.length ?? 0) === 0 ? <button onClick={() => void resumeRun()} disabled={busy}>▶ 继续运行</button> : null}
-        {(runResult?.needsAttention?.length ?? 0) > 0 ? <><button onClick={() => void resumeRun('retry')} disabled={busy}>↻ 重试未确认节点</button><button onClick={() => void resumeRun('fail')} disabled={busy}>× 标记失败</button></> : null}
-        {trace === undefined ? null : <><button className="wf-subtle" onClick={() => setShowInfrastructureEvents(value => !value)}>{showInfrastructureEvents ? '隐藏底层事件' : '显示底层事件'}</button><button className="wf-copy-run" onClick={() => void navigator.clipboard.writeText(trace.runId)} title={trace.runId}>复制运行 ID</button></>}
-        <span className={`wf-run-state wf-${trace?.status ?? 'idle'}`}>{runStatusLabel(trace?.status)}</span>
+        <SectionLabel index="03" text={t('Run & audit')} />
+        <textarea value={inputsText} onChange={event => setInputsText(event.target.value)} aria-label={t('Run input JSON')} title={t('Run input JSON')} />
+        <button className="wf-run" onClick={() => void runDraft()} disabled={busy}>▶ {t('Test run')}</button>
+        <button onClick={() => void refreshTrace()} disabled={busy || trace === undefined} title={trace === undefined ? t('No run trace to refresh') : t('Load the latest saved trace')}>{t('Refresh')}</button>
+        {trace?.status === 'running' ? <button onClick={() => void cancelRun()} disabled={busy}>{t('Stop run')}</button> : null}
+        {runResult?.status === 'paused' && (runResult.needsAttention?.length ?? 0) === 0 ? <button onClick={() => void resumeRun()} disabled={busy}>▶ {t('Resume run')}</button> : null}
+        {(runResult?.needsAttention?.length ?? 0) > 0 ? <><button onClick={() => void resumeRun('retry')} disabled={busy}>↻ {t('Retry unresolved nodes')}</button><button onClick={() => void resumeRun('fail')} disabled={busy}>× {t('Mark failed')}</button></> : null}
+        {trace === undefined ? null : <><button className="wf-subtle" onClick={() => setShowInfrastructureEvents(value => !value)}>{showInfrastructureEvents ? t('Hide infrastructure events') : t('Show infrastructure events')}</button><button className="wf-copy-run" onClick={() => void navigator.clipboard.writeText(trace.runId)} title={trace.runId}>{t('Copy run ID')}</button></>}
+        <span className={`wf-run-state wf-${trace?.status ?? 'idle'}`}>{runStatusLabel(trace?.status, language)}</span>
       </div>
       <div className="wf-events">
         {runFailure === undefined ? null : <article className="wf-run-failure"><span>!</span><div><b>{runFailure.title}</b><small>{runFailure.remedy}</small></div></article>}
-        {trace === undefined ? <div className="wf-empty-line">填写左侧 JSON 输入并试运行，执行路径和失败节点会显示在这里。</div> : <>{traceEvents.map(event => <button key={`${event.seq}-${event.title}`} data-tone={event.tone} onClick={() => { if (event.nodeId !== undefined) { setSelectedNode(event.nodeId); setRightPanel('inspector') } }}><span>{String(event.seq).padStart(3, '0')}</span><b>{event.title}</b><small>{event.detail}</small></button>)}{trace.nextAfterSeq === undefined ? null : <button className="wf-load-more" onClick={() => void loadMoreTrace()} disabled={busy}><span>…</span><b>加载更多</b><small>继续读取权威 Journal</small></button>}</>}
+        {trace === undefined ? <div className="wf-empty-line">{t('Enter JSON inputs and run a test. The execution path and any failed nodes will appear here.')}</div> : <>{traceEvents.map(event => <button key={`${event.seq}-${event.title}`} data-tone={event.tone} onClick={() => { if (event.nodeId !== undefined) { setSelectedNode(event.nodeId); setRightPanel('inspector') } }}><span>{String(event.seq).padStart(3, '0')}</span><b>{event.title}</b><small>{event.detail}</small></button>)}{trace.nextAfterSeq === undefined ? null : <button className="wf-load-more" onClick={() => void loadMoreTrace()} disabled={busy}><span>…</span><b>{t('Load more')}</b><small>{t('Read more events from the journal')}</small></button>}</>}
       </div>
-      <div className="wf-statusbar"><span>{documentStateLabel(documentState)} · {connectionStateLabel(connectionState)}</span><span>{error?.title ?? activity}</span></div>
+      <div className="wf-statusbar"><span>{documentStateLabel(documentState, language)} · {connectionStateLabel(connectionState, language)}</span><span>{error?.title ?? t(activity.message, activity.action === undefined ? activity.values : { action: t(activity.action) })}</span></div>
     </section>
 
     {surface === 'operations' ? <WorkflowOperationsPanel snapshot={operations} busy={busy} onRefresh={() => void refreshOperations()} onOpenRun={runId => {
       setSurface('design')
-      void execute('打开运行轨迹', async () => {
+      void execute('Open run trace', async () => {
         const value = await api.request('workflowCanvas.trace', () => api.remote.trace(sessionId, { runId }), { retries: 1 })
         setTrace(value)
         return value
       })
     }} /> : null}
 
-    {confirmPublish ? <div className="wf-modal-backdrop" role="presentation"><section className="wf-modal" role="dialog" aria-modal="true" aria-labelledby="wf-publish-title"><span className="wf-modal-icon">↗</span><h2 id="wf-publish-title">发布不可变修订？</h2><p>发布前会自动保存并再次使用当前草稿修订。发布后的运行必须明确引用该修订，后续编辑会产生新的草稿修订。</p><div><button onClick={() => setConfirmPublish(false)}>取消</button><button className="wf-primary" onClick={() => void publish()}>确认发布</button></div></section></div> : null}
-  </div>
+    {confirmPublish ? <div className="wf-modal-backdrop" role="presentation"><section className="wf-modal" role="dialog" aria-modal="true" aria-labelledby="wf-publish-title"><span className="wf-modal-icon">↗</span><h2 id="wf-publish-title">{t('Publish an immutable revision?')}</h2><p>{t('Canvas saves your draft before publishing. Runs must reference the published revision, and later edits create a new draft revision.')}</p><div><button onClick={() => setConfirmPublish(false)}>{t('Cancel')}</button><button className="wf-primary" onClick={() => void publish()}>{t('Confirm publication')}</button></div></section></div> : null}
+  </div></CanvasLocaleContext.Provider>
 }
 
 function WorkflowOperationsPanel({ snapshot, busy, onRefresh, onOpenRun }: {
@@ -523,12 +541,13 @@ function WorkflowOperationsPanel({ snapshot, busy, onRefresh, onOpenRun }: {
   readonly onRefresh: () => void
   readonly onOpenRun: (runId: string) => void
 }) {
-  return <section className="wf-operations" aria-label="触发与投递审计">
-    <header><div><p>OPERATIONS / TRIGGER</p><h1>触发、运行与投递</h1><span>这里展示 Host 提供的绑定、去重入口记录和需要人工关注的投递。所有入口都引用不可变工作流修订。</span></div><button onClick={onRefresh} disabled={busy}>↻ 刷新</button></header>
+  const { t } = useCanvasCopy()
+  return <section className="wf-operations" aria-label={t('Trigger and delivery audit')}>
+    <header><div><h1>{t('Triggers, runs, and delivery')}</h1><span>{t('View host bindings, deduplicated ingress records, and deliveries that need attention. All triggers reference immutable workflow revisions.')}</span></div><button onClick={onRefresh} disabled={busy}>↻ {t('Refresh')}</button></header>
     <div className="wf-operations-grid">
-      <section><h2>绑定 <em>{snapshot.bindings.length}</em></h2>{snapshot.bindings.length === 0 ? <EmptyOperation text="当前 Host 没有暴露触发绑定" /> : snapshot.bindings.map(binding => <article key={`${binding.metadata.id}@${binding.metadata.revision}`}><b>{binding.metadata.id}</b><code>{binding.spec.trigger.uses}</code><span>{binding.spec.workflow.id}@{binding.spec.workflow.revision}</span><small>{binding.spec.authorityRef} · {binding.spec.enabled === false ? '已停用' : '启用中'}</small></article>)}</section>
-      <section><h2>入口审计 <em>{snapshot.ingress.length}</em></h2>{snapshot.ingress.length === 0 ? <EmptyOperation text="还没有收到外部触发" /> : snapshot.ingress.map(record => <article key={record.triggerId} data-status={record.status}><b>{record.source} / {record.sourceEventId}</b><code>{record.status}</code><span>{record.binding.id}@{record.binding.revision}</span><small>{record.runId ?? record.reasonCode ?? '尚未关联运行'} · 重复 {record.duplicateCount ?? 0} 次</small>{record.runId === undefined ? null : <button onClick={() => onOpenRun(record.runId!)}>查看 Trace</button>}</article>)}</section>
-      <section><h2>投递待处理 <em>{snapshot.deliveryAttention.length}</em></h2>{snapshot.deliveryAttention.length === 0 ? <EmptyOperation text="没有状态不确定的投递" /> : snapshot.deliveryAttention.map(record => <article key={record.invocationId} data-status="unknown"><b>{record.deliveryRef}</b><code>{record.phase} / {record.status}</code><span>{record.runId}</span><small>尝试 {record.attempts} 次 · {record.error ?? '等待确认'}</small><button onClick={() => onOpenRun(record.runId)}>查看 Trace</button></article>)}</section>
+      <section><h2>{t('Bindings')} <em>{snapshot.bindings.length}</em></h2>{snapshot.bindings.length === 0 ? <EmptyOperation text={t('The host has no trigger bindings')} /> : snapshot.bindings.map(binding => <article key={`${binding.metadata.id}@${binding.metadata.revision}`}><b>{binding.metadata.id}</b><code>{binding.spec.trigger.uses}</code><span>{binding.spec.workflow.id}@{binding.spec.workflow.revision}</span><small>{binding.spec.authorityRef} · {binding.spec.enabled === false ? t('Disabled') : t('Enabled')}</small></article>)}</section>
+      <section><h2>{t('Ingress audit')} <em>{snapshot.ingress.length}</em></h2>{snapshot.ingress.length === 0 ? <EmptyOperation text={t('No external triggers received')} /> : snapshot.ingress.map(record => <article key={record.triggerId} data-status={record.status}><b>{record.source} / {record.sourceEventId}</b><code>{record.status}</code><span>{record.binding.id}@{record.binding.revision}</span><small>{record.runId ?? record.reasonCode ?? t('No associated run')} · {t('Duplicates: {count}', { count: record.duplicateCount ?? 0 })}</small>{record.runId === undefined ? null : <button onClick={() => onOpenRun(record.runId!)}>{t('View trace')}</button>}</article>)}</section>
+      <section><h2>{t('Deliveries needing attention')} <em>{snapshot.deliveryAttention.length}</em></h2>{snapshot.deliveryAttention.length === 0 ? <EmptyOperation text={t('No deliveries in an unknown state')} /> : snapshot.deliveryAttention.map(record => <article key={record.invocationId} data-status="unknown"><b>{record.deliveryRef}</b><code>{record.phase} / {record.status}</code><span>{record.runId}</span><small>{t('Attempts: {count}', { count: record.attempts })} · {record.error ?? t('Awaiting confirmation')}</small><button onClick={() => onOpenRun(record.runId)}>{t('View trace')}</button></article>)}</section>
     </div>
   </section>
 }
@@ -536,15 +555,16 @@ function WorkflowOperationsPanel({ snapshot, busy, onRefresh, onOpenRun }: {
 function EmptyOperation({ text }: { readonly text: string }) { return <div className="wf-operation-empty">✓<span>{text}</span></div> }
 
 function WorkflowNodeView({ data, selected }: NodeProps<WorkflowFlowNode>) {
+  const { language, t } = useCanvasCopy()
   const renderer = workflowNodeRenderers.resolve(data.template.uses)
   const Custom = renderer
   const ports = data.definition?.outputPorts ?? ['default']
   return <article className="wf-graph-node" data-selected={selected} data-status={data.status ?? 'pending'}>
-    <div className="wf-node-cap"><span>{nodeGlyph(data.definition)}</span><em>{data.definition?.kind === 'tool' ? 'DSH TOOL' : nodeStatusLabel(data.status)}</em></div>
+    <div className="wf-node-cap"><span>{nodeGlyph(data.definition)}</span><em>{data.definition?.kind === 'tool' ? t('DSH tool') : nodeStatusLabel(data.status, language)}</em></div>
     {Custom === undefined
-      ? <><h3>{data.template.title ?? (data.definition === undefined ? data.template.id : definitionDisplayTitle(data.definition))}</h3><code>{data.template.uses}</code></>
+      ? <><h3>{data.template.title ?? (data.definition === undefined ? data.template.id : definitionDisplayTitle(data.definition, language))}</h3><code>{data.template.uses}</code></>
       : <Custom data={data} selected={selected} />}
-    <div className="wf-node-foot"><span>{nodeStatusLabel(data.status)}</span><span>{data.definition?.capabilities.length ?? 0} 项能力声明</span></div>
+    <div className="wf-node-foot"><span>{nodeStatusLabel(data.status, language)}</span><span>{t('Capabilities: {count}', { count: data.definition?.capabilities.length ?? 0 })}</span></div>
     <Handle type="target" position={Position.Left} className="wf-handle" />
     {ports.map((port, index) => <Handle
       key={port}
@@ -558,18 +578,19 @@ function WorkflowNodeView({ data, selected }: NodeProps<WorkflowFlowNode>) {
 }
 
 function WorkflowInspector({ template, onChange }: { readonly template: CanvasWorkflowTemplate; readonly onChange: (value: CanvasWorkflowTemplate) => void }) {
+  const { t } = useCanvasCopy()
   return <div className="wf-panel-body">
-    <p className="wf-eyebrow">工作流配置</p>
-    <label>工作流 ID<input value={template.metadata.id} onChange={event => onChange({ ...template, metadata: { ...template.metadata, id: event.target.value } })} /></label>
-    <label>说明<textarea value={template.metadata.description ?? ''} onChange={event => onChange({
+    <p className="wf-eyebrow">{t('Workflow settings')}</p>
+    <label>{t('Workflow ID')}<input value={template.metadata.id} onChange={event => onChange({ ...template, metadata: { ...template.metadata, id: event.target.value } })} /></label>
+    <label>{t('Description')}<textarea value={template.metadata.description ?? ''} onChange={event => onChange({
       ...template,
       metadata: { ...template.metadata, description: event.target.value },
     })} /></label>
-    <details className="wf-advanced"><summary>高级配置 · Schema 与依赖</summary>
-      <p>这里直接编辑唯一真源 WorkflowTemplate。外部能力必须在依赖清单中声明。</p>
-      <JsonEditor label="输入 Schema" value={template.spec.inputSchema} onChange={value => onChange({ ...template, spec: { ...template.spec, inputSchema: value } })} />
+    <details className="wf-advanced"><summary>{t('Advanced · schemas and dependencies')}</summary>
+      <p>{t('These fields edit the WorkflowTemplate directly. Declare external capabilities in the dependency allowlist.')}</p>
+      <JsonEditor label={t('Input schema')} value={template.spec.inputSchema} onChange={value => onChange({ ...template, spec: { ...template.spec, inputSchema: value } })} />
       <RequirementsEditor value={template.spec.requires ?? []} onChange={value => onChange({ ...template, spec: { ...template.spec, requires: value } })} />
-      <JsonEditor label="工作流输出绑定" value={template.spec.outputs as unknown as CanvasJsonObject} onChange={value => onChange({ ...template, spec: { ...template.spec, outputs: value as unknown as CanvasWorkflowTemplate['spec']['outputs'] } })} />
+      <JsonEditor label={t('Workflow output bindings')} value={template.spec.outputs as unknown as CanvasJsonObject} onChange={value => onChange({ ...template, spec: { ...template.spec, outputs: value as unknown as CanvasWorkflowTemplate['spec']['outputs'] } })} />
     </details>
   </div>
 }
@@ -584,33 +605,34 @@ function NodeInspector({ node, definition, requirements, status, output, progres
   readonly onChange: (node: CanvasWorkflowNode) => void
   readonly onDelete: () => void
 }) {
+  const { language, t } = useCanvasCopy()
   return <div className="wf-panel-body">
-    <p className="wf-eyebrow">节点配置</p>
+    <p className="wf-eyebrow">{t('Node settings')}</p>
     <h2>{node.id}</h2>
     <code className="wf-uses">{node.uses}</code>
     {requirements.length === 0 ? null : <section className="wf-node-security">
-      <header><b>能力边界</b><span data-complete={requirements.every(item => item.declared)}>{requirements.every(item => item.declared) ? '依赖已声明' : '存在未声明依赖'}</span></header>
+      <header><b>{t('Capability boundary')}</b><span data-complete={requirements.every(item => item.declared)}>{requirements.every(item => item.declared) ? t('Dependencies declared') : t('Undeclared dependencies')}</span></header>
       <div>{requirements.map(item => <code key={`${item.kind}:${item.uses}`} data-declared={item.declared}>{item.kind} · {item.uses}</code>)}</div>
-      <p>声明只构成 Allowlist；真实权限仍由当前 Host/Agent 校验。</p>
+      <p>{t('Declarations form an allowlist. The current host or agent checks the actual permissions.')}</p>
     </section>}
-    <label>节点名称<input value={node.title ?? ''} onChange={event => onChange({ ...node, title: event.target.value })} /></label>
+    <label>{t('Node name')}<input value={node.title ?? ''} onChange={event => onChange({ ...node, title: event.target.value })} /></label>
     <SchemaObjectEditor schema={definition?.configSchema} value={node.with} onChange={value => onChange({ ...node, with: value })} />
-    <JsonEditor label="输入绑定" value={node.inputs as unknown as CanvasJsonObject} onChange={value => onChange({
+    <JsonEditor label={t('Input bindings')} value={node.inputs as unknown as CanvasJsonObject} onChange={value => onChange({
       ...node,
       inputs: value as unknown as CanvasWorkflowNode['inputs'],
     })} />
-    {status === undefined ? null : <section className="wf-node-run"><header><b>本次运行</b><span data-status={status}>{nodeStatusLabel(status)}</span></header>
-      {progress === undefined ? null : <details><summary>查看已保存进度</summary><pre>{JSON.stringify(progress, null, 2)}</pre></details>}
-      {output === undefined ? null : <details><summary>查看节点输出</summary><pre>{JSON.stringify(output, null, 2)}</pre></details>}
+    {status === undefined ? null : <section className="wf-node-run"><header><b>{t('Current run')}</b><span data-status={status}>{nodeStatusLabel(status, language)}</span></header>
+      {progress === undefined ? null : <details><summary>{t('View saved progress')}</summary><pre>{JSON.stringify(progress, null, 2)}</pre></details>}
+      {output === undefined ? null : <details><summary>{t('View node output')}</summary><pre>{JSON.stringify(output, null, 2)}</pre></details>}
     </section>}
-    <details className="wf-advanced"><summary>高级配置 · 原始 JSON 与输出契约</summary>
-      <JsonEditor label="节点原始配置" value={node.with} onChange={value => onChange({ ...node, with: value })} />
-      <JsonEditor label="预期输出契约" value={(node.expects ?? {}) as unknown as CanvasJsonObject} onChange={value => {
+    <details className="wf-advanced"><summary>{t('Advanced · raw JSON and output contract')}</summary>
+      <JsonEditor label={t('Raw node configuration')} value={node.with} onChange={value => onChange({ ...node, with: value })} />
+      <JsonEditor label={t('Expected output contract')} value={(node.expects ?? {}) as unknown as CanvasJsonObject} onChange={value => {
         const { expects: _expects, ...withoutExpectation } = node
         onChange(Object.keys(value).length === 0 ? withoutExpectation : { ...withoutExpectation, expects: value as unknown as NonNullable<CanvasWorkflowNode['expects']> })
       }} />
     </details>
-    <button className="wf-danger" onClick={onDelete}>删除节点</button>
+    <button className="wf-danger" onClick={onDelete}>{t('Delete node')}</button>
   </div>
 }
 
@@ -619,10 +641,11 @@ function SchemaObjectEditor({ schema, value, onChange }: {
   readonly value: CanvasJsonObject
   readonly onChange: (value: CanvasJsonObject) => void
 }) {
+  const { t } = useCanvasCopy()
   const properties = isObject(schema?.properties) ? schema.properties : undefined
   if (properties === undefined || Object.keys(properties).length === 0) return null
   const required = new Set(Array.isArray(schema?.required) ? schema.required.filter(item => typeof item === 'string') : [])
-  return <fieldset className="wf-schema-form"><legend>节点参数</legend>{Object.entries(properties).map(([name, candidate]) => {
+  return <fieldset className="wf-schema-form"><legend>{t('Node parameters')}</legend>{Object.entries(properties).map(([name, candidate]) => {
     const property = isObject(candidate) ? candidate : {}
     const current = value[name]
     const type = typeof property.type === 'string' ? property.type : undefined
@@ -654,11 +677,12 @@ function SchemaObjectEditor({ schema, value, onChange }: {
 }
 
 function JsonEditor({ label, value, onChange }: { readonly label: string; readonly value: CanvasJsonObject; readonly onChange: (value: CanvasJsonObject) => void }) {
+  const { t } = useCanvasCopy()
   const serialized = JSON.stringify(value, null, 2)
   const [text, setText] = useState(serialized)
   const [invalid, setInvalid] = useState(false)
   useEffect(() => { setText(serialized); setInvalid(false) }, [serialized])
-  return <label data-invalid={invalid}>{label}{invalid ? <span className="wf-field-error">需要一个合法的 JSON object</span> : null}<textarea value={text} onChange={event => setText(event.target.value)} onBlur={() => {
+  return <label data-invalid={invalid}>{label}{invalid ? <span className="wf-field-error">{t('Enter a valid JSON object')}</span> : null}<textarea value={text} onChange={event => setText(event.target.value)} onBlur={() => {
     try {
       const parsed = JSON.parse(text) as unknown
       if (!isObject(parsed)) throw new Error('object required')
@@ -672,11 +696,12 @@ function RequirementsEditor({ value, onChange }: {
   readonly value: NonNullable<CanvasWorkflowTemplate['spec']['requires']>
   readonly onChange: (value: NonNullable<CanvasWorkflowTemplate['spec']['requires']>) => void
 }) {
+  const { t } = useCanvasCopy()
   const serialized = JSON.stringify(value, null, 2)
   const [text, setText] = useState(serialized)
   const [invalid, setInvalid] = useState(false)
   useEffect(() => { setText(serialized); setInvalid(false) }, [serialized])
-  return <label data-invalid={invalid}>声明的依赖（Allowlist）{invalid ? <span className="wf-field-error">每项必须包含 kind 和 uses</span> : null}<textarea value={text} onChange={event => setText(event.target.value)} onBlur={() => {
+  return <label data-invalid={invalid}>{t('Declared dependencies (allowlist)')}{invalid ? <span className="wf-field-error">{t('Each item requires kind and uses')}</span> : null}<textarea value={text} onChange={event => setText(event.target.value)} onBlur={() => {
     try {
       const parsed = JSON.parse(text) as unknown
       if (!Array.isArray(parsed) || parsed.some(item => !isObject(item) || typeof item.kind !== 'string' || typeof item.uses !== 'string')) {
@@ -689,23 +714,26 @@ function RequirementsEditor({ value, onChange }: {
 }
 
 function Diagnostics({ diagnostics, documentState, onSelect }: { readonly diagnostics: readonly CanvasWorkflowDiagnostic[]; readonly documentState: WorkflowDocumentState; readonly onSelect: (id: string) => void }) {
-  if (diagnostics.length === 0) return <div className="wf-panel-empty"><b>{documentState === 'validated' || documentState === 'validated-dirty' ? '校验通过' : '尚未校验'}</b><span>{documentState === 'validated' || documentState === 'validated-dirty' ? '当前模板没有发现结构、依赖或 Schema 问题。' : '点击顶部“校验”，使用与运行时相同的编译规则检查当前工作流。'}</span></div>
+  const { language, t } = useCanvasCopy()
+  if (diagnostics.length === 0) return <div className="wf-panel-empty"><b>{documentState === 'validated' || documentState === 'validated-dirty' ? t('Validation passed') : t('Not yet validated')}</b><span>{documentState === 'validated' || documentState === 'validated-dirty' ? t('No structure, dependency, or schema issues found.') : t('Select Validate to check this workflow with the runtime’s compile rules.')}</span></div>
   return <div className="wf-diagnostics">{diagnostics.map((item, index) => <button key={`${item.code}-${index}`} data-severity={item.severity} onClick={() => { if (item.nodeId !== undefined) onSelect(item.nodeId) }}>
-    <span>{item.severity === 'error' ? '×' : '!'}</span><div><b>{diagnosticTitle(item)}</b><p>{item.message}</p><small>{item.nodeId === undefined ? `工作流 · ${item.code}` : `${item.nodeId} · ${item.code}`}</small></div>
+    <span>{item.severity === 'error' ? '×' : '!'}</span><div><b>{diagnosticTitle(item, language)}</b><p>{item.message}</p><small>{item.nodeId === undefined ? `${t('Workflow')} · ${item.code}` : `${item.nodeId} · ${item.code}`}</small></div>
   </button>)}</div>
 }
 
 function DiffView({ diff }: { readonly diff: CanvasTemplateDiff | undefined }) {
-  if (diff === undefined) return <div className="wf-panel-empty"><b>尚未比较变更</b><span>先保存一次草稿，再比较当前画布与已保存修订。</span></div>
+  const { t } = useCanvasCopy()
+  if (diff === undefined) return <div className="wf-panel-empty"><b>{t('No comparison yet')}</b><span>{t('Save a draft, then compare Canvas with the saved revision.')}</span></div>
   return <div className="wf-diff">
-    <div className="wf-diff-flags"><Flag on={diff.semanticChanged} text="语义变更" /><Flag on={diff.layoutChanged} text="仅布局变更" /></div>
-    <ChangeSet label="节点" value={diff.nodes} />
-    <ChangeSet label="连接" value={diff.edges} />
+    <div className="wf-diff-flags"><Flag on={diff.semanticChanged} text={t('Semantic changes')} /><Flag on={diff.layoutChanged} text={t('Layout changes')} /></div>
+    <ChangeSet label={t('Nodes')} value={diff.nodes} />
+    <ChangeSet label={t('Edges')} value={diff.edges} />
   </div>
 }
 
 function ChangeSet({ label, value }: { readonly label: string; readonly value: { readonly added: readonly string[]; readonly removed: readonly string[]; readonly changed: readonly string[] } }) {
-  const labels = { added: '新增', changed: '修改', removed: '删除' }
+  const { t } = useCanvasCopy()
+  const labels = { added: t('Added'), changed: t('Changed'), removed: t('Removed') }
   return <section><h3>{label}</h3>{(['added', 'changed', 'removed'] as const).map(kind => <div key={kind}><b>{labels[kind]}</b><span>{value[kind].join(', ') || '—'}</span></div>)}</section>
 }
 
@@ -718,14 +746,15 @@ function WelcomePanel({ catalog, onOpen, onStarter, onAgentPrompt }: {
   readonly onStarter: () => void
   readonly onAgentPrompt: () => void
 }) {
+  const { t } = useCanvasCopy()
   return <section className="wf-welcome">
-    <span className="wf-welcome-kicker">一个 JSON 模板，一条可审计执行链</span>
-    <h1>从一个明确的结果开始</h1>
-    <p>Agent、画布和 DAG Engine 始终操作同一份 WorkflowTemplate。你可以直接跑示例，也可以让 Agent 把离散步骤编排成 DAG。</p>
+    <span className="wf-welcome-kicker">{t('One JSON template with an auditable execution path')}</span>
+    <h1>{t('Start with a clear outcome')}</h1>
+    <p>{t('The agent, Canvas, and DAG engine use the same WorkflowTemplate. Run an example or have an agent turn your steps into a workflow.')}</p>
     <div className="wf-welcome-actions">
-      <button className="wf-welcome-primary" onClick={onStarter}><span>01</span><b>从可运行示例开始</b><small>两节点回显工作流，不需要外部 Tool</small></button>
-      <button onClick={onAgentPrompt}><span>02</span><b>让 Agent 创建</b><small>复制一条遵循 workflow-builder 的创建指令</small></button>
-      {catalog[0] === undefined ? <button disabled><span>03</span><b>打开已有草稿</b><small>当前还没有草稿</small></button> : <button onClick={() => onOpen(catalog[0]!.id)}><span>03</span><b>继续最近草稿</b><small>{catalog[0]!.name} · 草稿修订 {catalog[0]!.draftRevision}</small></button>}
+      <button className="wf-welcome-primary" onClick={onStarter}><span>01</span><b>{t('Start with a runnable example')}</b><small>{t('A two-node echo workflow that runs without external tools')}</small></button>
+      <button onClick={onAgentPrompt}><span>02</span><b>{t('Ask an agent to create it')}</b><small>{t('Copy a prompt for the workflow-builder skill')}</small></button>
+      {catalog[0] === undefined ? <button disabled><span>03</span><b>{t('Open an existing draft')}</b><small>{t('No drafts yet')}</small></button> : <button onClick={() => onOpen(catalog[0]!.id)}><span>03</span><b>{t('Continue the latest draft')}</b><small>{catalog[0]!.name} · {t('Draft revision {revision}', { revision: catalog[0]!.draftRevision })}</small></button>}
     </div>
   </section>
 }
@@ -749,17 +778,19 @@ function statusColor(status: string): string {
   return '#77766f'
 }
 
-function nodeStatusLabel(status: string | undefined): string {
+function nodeStatusLabel(status: string | undefined, language: CanvasLocale): string {
+  const t = canvasText(language)
   const labels: Record<string, string> = {
-    pending: '等待', ready: '就绪', running: '运行中', waiting: '等待人工处理', succeeded: '已完成',
-    failed: '失败', cancelled: '已取消', skipped: '已跳过', needs_attention: '需要处理', draft: '草稿',
+    pending: t('Pending'), ready: t('Ready'), running: t('Running'), waiting: t('Awaiting human input'), succeeded: t('Completed'),
+    failed: t('Failed'), cancelled: t('Canceled'), skipped: t('Skipped'), needs_attention: t('Needs attention'), draft: t('Draft'),
   }
-  return labels[status ?? 'draft'] ?? status ?? '草稿'
+  return labels[status ?? 'draft'] ?? status ?? t('Draft')
 }
 
-function runStatusLabel(status: CanvasTrace['status'] | undefined): string {
-  if (status === undefined) return '尚未运行'
-  return { running: '运行中', completed: '运行完成', failed: '运行失败', cancelled: '已取消', paused: '等待处理' }[status]
+function runStatusLabel(status: CanvasTrace['status'] | undefined, language: CanvasLocale): string {
+  const t = canvasText(language)
+  if (status === undefined) return t('No runs yet')
+  return { running: t('Running'), completed: t('Run complete'), failed: t('Run failed'), cancelled: t('Canceled'), paused: t('Paused') }[status]
 }
 
 function isObject(value: unknown): value is CanvasJsonObject {
@@ -834,7 +865,7 @@ html[style*="color-scheme: dark"] .wf-topbar{box-shadow:0 1px 0 #0005}html[style
 @media(prefers-color-scheme:dark){html:not([style*="color-scheme: light"]) .wf-studio{--wf-bg:#111318;--wf-surface:#181b21;--wf-surface-soft:#20242c;--wf-surface-hover:#222b3d;--wf-border:#2b303a;--wf-border-strong:#3b424f;--wf-text:#eef1f6;--wf-muted:#98a2b3;--wf-brand:#6d9cff;--wf-brand-strong:#8aafff;--wf-brand-soft:#1d2b47;--wf-success:#42c77a;--wf-warning:#e5ad4f;--wf-danger:#f07070;--wf-shadow:0 16px 46px rgba(0,0,0,.28);color-scheme:dark}}
 @media(max-width:1400px){.wf-doc-title code{display:none}}
 @media(max-width:1180px){.wf-studio{grid-template-columns:232px minmax(0,1fr) 310px}.wf-brand{width:232px}.wf-guardrails{display:none}.wf-trace-head .wf-section-label{min-width:232px}.wf-actions button{padding-inline:8px}}
-@media(max-width:900px){.wf-studio{grid-template-columns:210px minmax(0,1fr) 280px}.wf-brand{width:210px}.wf-doc-title code{display:none}.wf-actions button:nth-child(-n+2){display:none}.wf-trace-head .wf-section-label{min-width:210px}.wf-trace-head textarea{width:240px}}
+@media(max-width:900px){.wf-studio{grid-template-columns:210px minmax(0,1fr) 280px}.wf-brand{width:210px}.wf-doc-title code{display:none}.wf-actions button:nth-child(-n+2){display:none}.wf-trace-head{min-width:0;overflow-x:auto}.wf-trace-head button,.wf-run-state{flex:none;white-space:nowrap}.wf-trace-head .wf-section-label{min-width:210px}.wf-trace-head textarea{width:240px}}
 `
 
 const EXPERIENCE_CSS = String.raw`

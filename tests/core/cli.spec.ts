@@ -43,8 +43,14 @@ describe('agent-workflow CLI protocol', () => {
     expect(run.plan).toBeUndefined()
 
     expect(await runWorkflowCli(['trace', result.runId, '--events', '--limit', '5', '--db', database], line => lines.push(line))).toBe(0)
-    const trace = data(lines.pop()!) as { readonly events: readonly { readonly runId: string }[] }
+    const trace = data(lines.pop()!) as { readonly events: readonly { readonly runId: string }[]; readonly nextAfterSeq?: number }
     expect(trace.events.map(event => event.runId)).toContain(result.runId)
+    expect(trace.nextAfterSeq).toBeDefined()
+
+    expect(await runWorkflowCli(['trace', result.runId, '--events', '--limit', '1000', '--db', database], line => lines.push(line))).toBe(0)
+    const completeTrace = data(lines.pop()!) as { readonly events: readonly unknown[] }
+    expect(await runWorkflowCli(['trace', result.runId, '--follow', '--limit', '5', '--db', database], line => lines.push(line))).toBe(0)
+    expect(lines.splice(0).map(data)).toEqual(completeTrace.events)
 
     expect(await runWorkflowCli(['replay', result.runId, '--mode', 'recorded', '--db', database], line => lines.push(line))).toBe(0)
     const replay = data(lines.pop()!) as { runId: string; status: string }

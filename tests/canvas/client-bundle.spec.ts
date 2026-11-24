@@ -29,6 +29,8 @@ describe('DSH Canvas client artifact', () => {
     expect(artifact).toContain('显示底层事件')
     expect(artifact).toContain('能力边界')
     expect(artifact).toContain('外部能力已返回')
+    expect(artifact).toContain('Search workflow nodes')
+    expect(artifact).toContain('Show infrastructure events')
     expect(artifact).toContain('color-scheme: dark')
     expect(artifact).toContain('color-scheme: light')
     expect(artifact).toContain('prefers-color-scheme:dark')

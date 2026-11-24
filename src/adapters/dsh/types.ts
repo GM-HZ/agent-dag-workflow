@@ -27,28 +27,43 @@ export interface DshSubagentRunLike {
   dispose(): Promise<void>
 }
 
+export interface DshSubagentRequest {
+  readonly label?: string
+  readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
+  readonly parent: DshAgentLike
+  readonly signal: AbortSignal
+  readonly outputSchema?: Readonly<Record<string, unknown>>
+  readonly maxDepth?: number
+}
+
+export interface DshSubagentProviderLike {
+  readonly capabilities: {
+    readonly outputSchema: boolean
+    readonly depthLimit: boolean
+    readonly toolFilter?: boolean
+    readonly persona?: boolean
+  }
+  readonly inheritsParentContext?: boolean
+}
+
 export interface DshSubagentRuntimeLike {
   list(): readonly string[]
-  getProvider(name: string): {
-    readonly capabilities: {
-      readonly outputSchema: boolean
-      readonly depthLimit: boolean
-      readonly toolFilter: boolean
-      readonly persona: boolean
-    }
-  } | undefined
-  start(target: string, request: {
-    readonly label?: string
-    readonly prompt: readonly { readonly type: 'text'; readonly text: string }[]
-    readonly parent: DshAgentLike
-    readonly signal: AbortSignal
-    readonly outputSchema?: Readonly<Record<string, unknown>>
-    readonly maxDepth?: number
+  getProvider(name: string): DshSubagentProviderLike | undefined
+  start(target: string, request: DshSubagentRequest & {
     readonly toolFilter?: {
       readonly allow?: readonly string[]
       readonly deny?: readonly string[]
     }
   }): Promise<DshSubagentRunLike>
+}
+
+export interface DshSubagentActivationRuntimeLike {
+  getProvider(name: string): DshSubagentProviderLike | undefined
+  startActivation(request: DshSubagentRequest & {
+    readonly provider: string
+    readonly label: string
+    readonly delivery: 'caller'
+  }): Promise<Omit<DshSubagentRunLike, 'id'> & { readonly childId: string }>
 }
 
 export type DshApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
@@ -96,7 +111,7 @@ export interface DshWorkflowToolDefinition {
   execute(args: unknown, context: DshToolRunContextLike): Promise<JsonValue>
 }
 
-export interface DshToolRegistryLike extends DshToolRuntimeLike {
+interface DshToolCatalogLike {
   register(definition: DshWorkflowToolDefinition): () => void
   schemas(scope?: unknown): readonly {
     readonly name: string
@@ -104,6 +119,24 @@ export interface DshToolRegistryLike extends DshToolRuntimeLike {
     readonly parameters: Readonly<Record<string, unknown>>
   }[]
 }
+
+export interface DshToolRegistryLike extends DshToolCatalogLike, DshToolRuntimeLike {}
+
+export interface DshToolBatchRuntimeLike {
+  readonly setExecutor: unknown
+  execute(input: {
+    readonly calls: readonly {
+      readonly type: 'tool-call'
+      readonly id: string
+      readonly name: string
+      readonly arguments: string
+    }[]
+    readonly signal: AbortSignal
+    readonly agent: DshAgentLike
+  }): Promise<{ readonly results: readonly { readonly callId: string; readonly result: DshToolRuntimeResult }[] }>
+}
+
+export interface DshToolBatchRegistryLike extends DshToolCatalogLike, DshToolBatchRuntimeLike {}
 
 export interface DshSkillRuntimeLike {
   register(skill: {

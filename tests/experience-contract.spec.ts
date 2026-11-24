@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
+import { canvasText } from '../src/canvas/client/messages.js'
+import { blankTemplate } from '../src/canvas/client/model.js'
 
 const studio = readFileSync(new URL('../src/canvas/client/studio.tsx', import.meta.url), 'utf8')
 const overlay = readFileSync(new URL('../src/canvas/client/overlay.tsx', import.meta.url), 'utf8')
@@ -8,11 +10,14 @@ const model = readFileSync(new URL('../src/canvas/client/model.ts', import.meta.
 const skill = readFileSync(new URL('../skills/workflow-builder/SKILL.md', import.meta.url), 'utf8')
 
 describe('user experience contract', () => {
-  it('uses one product name and Chinese workflow terminology in the shipped UI', () => {
+  it('uses one product name and localized workflow terminology in the shipped UI', () => {
     expect(studio).toContain('AGENT DAG WORKFLOW')
-    expect(overlay).toContain('<b>工作流</b>')
+    expect(overlay).toContain("<b>{t('Workflow')}</b>")
+    expect(canvasText('zh')('Workflow')).toBe('工作流')
+    expect(canvasText('en')('Workflow')).toBe('Workflow')
     expect(client).toContain("label: 'Agent DAG Workflow'")
-    expect(model).toContain("name: '未命名工作流'")
+    expect(blankTemplate(1, 'zh').metadata.name).toBe('未命名工作流')
+    expect(blankTemplate(1, 'en').metadata.name).toBe('Untitled workflow')
     for (const source of [studio, overlay, client, model]) {
       expect(source).not.toMatch(/GUARDED DAG STUDIO|Workflow Signal Studio|Untitled signal|>FLOW<|NO DIAGNOSTICS|RETRY UNKNOWN|>RESUME</)
     }
@@ -26,8 +31,9 @@ describe('user experience contract', () => {
   })
 
   it('keeps recovery, first success, progressive disclosure, and run diagnosis visible', () => {
-    for (const phrase of ['已恢复未保存内容', '从可运行示例开始', '高级配置 · Schema 与依赖', '显示底层事件', '发布不可变修订？']) {
+    for (const phrase of ['Unsaved changes restored', 'Start with a runnable example', 'Advanced · schemas and dependencies', 'Show infrastructure events', 'Publish an immutable revision?'] as const) {
       expect(studio).toContain(phrase)
+      expect(canvasText('zh')(phrase)).toMatch(/[\p{Script=Han}]/u)
     }
   })
 

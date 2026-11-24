@@ -185,6 +185,7 @@ async function traceWorkflow(access: WorkflowAgentAccessApi, args: readonly stri
       io.stdout(JSON.stringify(workflowCliSuccess('trace', 0, event)))
       afterSeq = event.seq
     }
+    if (page.nextAfterSeq !== undefined) continue
     if (page.run.status !== 'running') return { data: {}, exitCode: page.run.status === 'failed' || page.run.status === 'cancelled' ? 5 : 0, streamed: true }
     await wait(250, context.signal)
   }

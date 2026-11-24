@@ -8,6 +8,7 @@ interface PackageManifest {
   version?: string
   name?: string
   repository?: { url?: string; directory?: string }
+  engines?: Record<string, string>
   dependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
   exports?: Record<string, unknown>
@@ -36,8 +37,9 @@ describe('published root package manifest', () => {
       ],
     })
     expect(manifest.dsh?.client?.inject).not.toContain('@deepseek-ai/dsh-client-runtime')
-    expect(manifest.peerDependencies?.['@deepseek-ai/cordis']).toBe('~4.0.4')
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-typert-protocol']).toBe('>=0.2.0-rc.2 <0.3.0')
+    expect(manifest.engines?.dsh).toBe('0.2.0-rc.2 || 0.2.2-rc.5 || 0.2.3-alpha.2')
+    expect(manifest.peerDependencies?.['@deepseek-ai/cordis']).toBe('~4.0.4 || ~4.1.0 || ~4.2.0-alpha.1')
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-typert-protocol']).toBe(manifest.engines?.dsh)
     expect(manifest.bin).toMatchObject({ adw: 'lib/cli.js', 'agent-workflow': 'lib/cli.js' })
     const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
     expect(patch).toContain("name: '@gm-hz/agent-dag-workflow'")

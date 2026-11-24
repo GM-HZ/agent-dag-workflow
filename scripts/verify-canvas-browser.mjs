@@ -35,21 +35,33 @@ try {
     await page.emulateMedia({ colorScheme: 'light' })
     await page.waitForFunction(() => getComputedStyle(document.querySelector('[data-workflow-studio]')).colorScheme === 'light')
 
-    const name = page.getByRole('textbox', { name: '工作流名称' })
+    const name = page.getByRole('textbox', { name: 'Workflow name' })
     await name.fill('Browser smoke draft')
-    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await page.evaluate(() => { document.documentElement.lang = 'zh-CN' })
+    const chineseName = page.getByRole('textbox', { name: '工作流名称' })
+    await chineseName.waitFor()
+    if (await chineseName.inputValue() !== 'Browser smoke draft') throw new Error('Language change lost the current draft')
+    await page.getByRole('button', { name: '保存', exact: true }).waitFor()
+    await page.getByRole('button', { name: '适应视图', exact: true }).waitFor()
+    await page.evaluate(() => { document.documentElement.lang = 'en-US' })
+    await page.getByRole('button', { name: 'Fit view', exact: true }).waitFor()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
     await page.locator('[data-state="saved"]').waitFor()
     await name.fill('Browser smoke updated')
-    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
     await page.locator('[data-state="saved"]').waitFor()
 
-    await page.getByRole('button', { name: '校验', exact: true }).click()
+    await page.getByRole('button', { name: 'Validate', exact: true }).click()
     await page.locator('[data-state="validated"]').waitFor()
-    await page.getByText('当前模板没有发现结构、依赖或 Schema 问题。', { exact: true }).waitFor()
+    await page.getByText('No structure, dependency, or schema issues found.', { exact: true }).waitFor()
 
-    await page.getByRole('button', { name: '▶ 试运行', exact: true }).click()
+    await page.getByRole('button', { name: '▶ Test run', exact: true }).click()
     await page.locator('.wf-run-state.wf-completed').waitFor()
+    await page.getByText('Run complete', { exact: true }).first().waitFor()
+    await page.evaluate(() => { document.documentElement.lang = 'zh-CN' })
     await page.getByText('运行完成', { exact: true }).first().waitFor()
+    await page.evaluate(() => { document.documentElement.lang = 'en' })
+    await page.getByText('Run complete', { exact: true }).first().waitFor()
     if (await page.locator('.wf-graph-node[data-status="succeeded"]').count() < 4) {
       throw new Error('Trace did not project completed node state back onto the graph')
     }
@@ -62,7 +74,7 @@ try {
     if (smoke.savedName !== 'Browser smoke updated') throw new Error('updated draft did not reach the Canvas API')
     if (consoleErrors.length > 0) throw new Error('browser console errors: ' + consoleErrors.join(' | '))
   }`)
-  process.stdout.write('Canvas browser smoke passed: load, theme, create/update, validate, run, and Trace.\n')
+  process.stdout.write('Canvas browser smoke passed: load, theme, language, create/update, validate, run, and Trace.\n')
 } finally {
   try { runCli('close') } catch { /* preserve the original failure */ }
   stopServer(server)

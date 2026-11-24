@@ -6,6 +6,7 @@ import type {
   CanvasWorkflowNode,
   CanvasWorkflowTemplate,
 } from '../types.js'
+import { canvasText, type CanvasLocale } from './messages.js'
 
 export interface WorkflowFlowNodeData extends Record<string, unknown> {
   readonly template: CanvasWorkflowNode
@@ -144,11 +145,11 @@ export function removeEdge(template: CanvasWorkflowTemplate, edgeId: string): Ca
   return { ...template, spec: { ...template.spec, edges: template.spec.edges.filter(edge => edge.id !== edgeId) } }
 }
 
-export function blankTemplate(seed = Date.now()): CanvasWorkflowTemplate {
+export function blankTemplate(seed = Date.now(), locale: CanvasLocale = 'zh'): CanvasWorkflowTemplate {
   return {
     apiVersion: 'workflow.gm-hz.dev/v1',
     kind: 'WorkflowTemplate',
-    metadata: { id: `workflow-${seed}`, name: '未命名工作流' },
+    metadata: { id: `workflow-${seed}`, name: canvasText(locale)('Untitled workflow') },
     spec: {
       inputSchema: { type: 'object', additionalProperties: true },
       outputSchema: { type: 'object' },

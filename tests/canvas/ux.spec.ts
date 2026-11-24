@@ -18,6 +18,7 @@ describe('Canvas experience model', () => {
   it('provides a dependency-free starter that is ready for a first test run', () => {
     const template = starterTemplate(42)
     expect(template.metadata).toMatchObject({ id: 'hello-workflow-42', name: '第一个工作流' })
+    expect(starterTemplate(42, 'en').metadata).toMatchObject({ id: 'hello-workflow-42', name: 'My first workflow' })
     expect(template.spec.nodes.map(node => node.uses)).toEqual(['core.start@1', 'core.end@1'])
     expect(template.spec.edges).toEqual([{ id: 'start-end', source: 'start', target: 'end' }])
     expect(template.spec.outputs).toEqual({ message: { output: { nodeId: 'end', path: ['message'] } } })
@@ -40,6 +41,7 @@ describe('Canvas experience model', () => {
     expect(hasUnsavedChanges('validated')).toBe(false)
     expect(hasUnsavedChanges('pristine')).toBe(false)
     expect(documentStateLabel('validated-dirty')).toBe('校验通过 · 未保存')
+    expect(documentStateLabel('validated-dirty', 'en')).toBe('Validation passed · unsaved')
   })
 
   it.each([
@@ -53,6 +55,7 @@ describe('Canvas experience model', () => {
     ['tool.call requires a WorkflowToolGateway', 'validation', false],
   ] as const)('classifies %s as an actionable %s error', (message, kind, retryable) => {
     expect(classifyWorkflowError(message)).toMatchObject({ kind, retryable })
+    expect(classifyWorkflowError(message, 'en')).toMatchObject({ kind, retryable, detail: message })
   })
 
   it('projects human-readable trace events and hides persistence noise by default', () => {
@@ -67,6 +70,7 @@ describe('Canvas experience model', () => {
       ], error: 'DSH_TOOL_FAILED',
     }
     expect(visibleTraceEvents(trace).map(event => event.title)).toEqual(['开始运行', '节点执行失败'])
+    expect(visibleTraceEvents(trace, false, 'en').map(event => event.title)).toEqual(['Run started', 'Node failed'])
     expect(visibleTraceEvents(trace, true)).toHaveLength(4)
     expect(visibleTraceEvents(trace)[1]).toMatchObject({ nodeId: 'call', tone: 'danger', detail: 'DSH_TOOL_FAILED' })
   })
@@ -104,7 +108,9 @@ describe('Canvas experience model', () => {
     }
     const tool = { ...start, catalogId: 'tool:web_search', kind: 'tool' as const, uses: 'tool.call@1', title: 'web_search', description: 'Search the web.', role: 'regular' as const }
     expect(definitionDisplayTitle(start)).toBe('开始')
+    expect(definitionDisplayTitle(start, 'en')).toBe('Start')
     expect(definitionDisplayDescription(start)).toContain('工作流输入')
     expect(definitionDisplayTitle(tool)).toBe('web_search')
+    expect(definitionDisplayTitle(tool, 'en')).toBe('web_search')
   })
 })
