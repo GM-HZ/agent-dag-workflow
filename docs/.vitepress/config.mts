@@ -18,7 +18,7 @@ export default defineConfig({
     logo: '/mark.svg',
     siteTitle: 'Agent DAG Workflow',
     nav: [
-      { text: '5 分钟开始', link: '/guide/quickstart' },
+      { text: '快速开始', link: '/#first-run' },
       { text: 'Agent 接入', link: '/guide/codex' },
       { text: 'Examples', link: '/examples/' },
       { text: '架构', link: '/architecture' },
@@ -27,6 +27,7 @@ export default defineConfig({
         items: [
           { text: 'Template v1 协议', link: 'https://github.com/GM-HZ/agent-dag-workflow/blob/main/spec/workflow-template-v1.md' },
           { text: '发布流程', link: '/release' },
+          { text: 'English README', link: 'https://github.com/GM-HZ/agent-dag-workflow/blob/main/README.en.md' },
         ],
       },
     ],

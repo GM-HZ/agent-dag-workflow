@@ -1,43 +1,82 @@
 ---
 layout: home
-
-hero:
-  name: "Agent DAG Workflow"
-  text: "让 Agent 生态拥有稳定的流程内核"
-  tagline: "一份 JSON，连接 CLI、Skill、MCP、DSH、Trigger 与 Canvas。Host 保留 Tool、Agent 和权限；Runtime 负责 DAG、恢复、Trace 与 Replay。"
-  actions:
-    - theme: brand
-      text: 5 分钟运行成功
-      link: /guide/quickstart
-    - theme: alt
-      text: 查看 9 个可执行案例
-      link: /examples/
-
-features:
-  - icon: CORE
-    title: Runtime-centered
-    details: 编译、执行、Journal、Checkpoint 与 Replay 只有一套事实模型。
-  - icon: AGENT
-    title: CLI-native · Skill-on-demand
-    details: 有终端的 Agent 优先使用 CLI；Skill 只在需要时加载，不常驻消耗上下文。
-  - icon: HOST
-    title: 复用现有 Tool 与 Agent
-    details: 不建设 Provider 市场。外部能力继续属于 Host，并经过 requires、Authority 和 Schema。
+description: 安装 Agent DAG Workflow，运行第一个工作流，查看执行记录，再接入 Codex、MCP 或现有应用。
 ---
 
-<section class="home-blueprint">
-  <div class="blueprint-kicker">One durable path</div>
-  <h2>离散能力进入 DAG，动态结果进入审计链。</h2>
-  <div class="flow-rail" aria-label="Workflow execution path">
-    <div class="flow-stop"><b>01</b><strong>Template</strong><span>固定节点、依赖、输入输出与发布修订</span></div>
-    <div class="flow-stop"><b>02</b><strong>Compile</strong><span>拓扑、Binding、Schema 与权限声明 fail closed</span></div>
-    <div class="flow-stop"><b>03</b><strong>Host call</strong><span>Tool、Agent、Approval 只从显式 Gateway 调用</span></div>
-    <div class="flow-stop"><b>04</b><strong>Validate</strong><span>外部结果通过 lossless JSON、expects 与大小门禁</span></div>
-    <div class="flow-stop"><b>05</b><strong>Journal</strong><span>Event 与 Checkpoint 原子提交，可 Trace、恢复和重放</span></div>
+<div class="workflow-home">
+
+<section class="workflow-hero" aria-labelledby="workflow-title">
+  <div class="workflow-intro">
+    <h1 id="workflow-title">Agent DAG<br /> Workflow</h1>
+    <p class="workflow-lead">把 Agent 的工具调用组织成可重复运行的工作流。</p>
+    <p>用一份 JSON 定义步骤和依赖。运行时负责调度、保存执行记录和恢复，工具和权限由你的宿主管理。</p>
+    <div class="workflow-actions">
+
+[运行第一个工作流](#first-run) [查看示例](/examples/)
+
   </div>
-  <div class="audience-grid">
-    <article class="audience-card"><em>调用者</em><h3>运行已有流程</h3><p>只需要搜索、读取 Schema、准备输入和运行固定修订。</p><a href="./guide/quickstart">从一个命令开始 →</a></article>
-    <article class="audience-card"><em>Agent</em><h3>通过 Skill 驱动</h3><p>Codex 使用本地 CLI；没有终端时退回固定数量的 MCP Gateway。</p><a href="./guide/codex">选择 Agent 入口 →</a></article>
-    <article class="audience-card"><em>集成者</em><h3>接入现有生态</h3><p>实现薄 Host Gateway，不复制模型、凭据、MCP 或 Tool 系统。</p><a href="./host-adapter">查看最小接口 →</a></article>
   </div>
+
+  <figure class="workflow-example">
+    <figcaption>示例 <code>script-transform-demo@1</code></figcaption>
+    <ol>
+      <li><code>start</code><span>读取三笔订单</span></li>
+      <li><code>normalize</code><span>整理客户名，计算订单总额</span></li>
+      <li><code>end</code><span>返回整理结果</span></li>
+    </ol>
+    <div class="workflow-output">
+      <span>运行结果节选</span>
+      <pre><code>{"status": "completed", "outputs": {"total": 100}}</code></pre>
+    </div>
+  </figure>
 </section>
+
+<section class="workflow-section" aria-labelledby="first-run">
+
+<h2 id="first-run">本地运行第一个工作流</h2>
+
+需要 Node.js 22.19 或更新版本。下面的 Bash 命令安装 npm 包，并使用包内的订单示例。运行只需本地 SQLite，无需模型账号或 API 密钥。
+
+```bash
+mkdir adw-quickstart
+cd adw-quickstart
+npm install @gm-hz/agent-dag-workflow
+
+examples=./node_modules/@gm-hz/agent-dag-workflow/examples
+npm exec -- adw validate "$examples/script-transform.workflow.json"
+npm exec -- adw draft put "$examples/script-transform.workflow.json"
+npm exec -- adw publish script-transform-demo --expected 1
+npm exec -- adw run script-transform-demo@1 --input "$examples/inputs/script-transform.json"
+```
+
+运行成功后，`data.status` 会显示 `completed`，`data.outputs.total` 为 `100`。在同一目录运行下列命令，把 `RUN_ID` 换成结果里的 `data.runId`，即可查看各步骤的执行记录。
+
+```bash
+npm exec -- adw trace RUN_ID --events
+```
+
+</section>
+
+<section class="workflow-section" aria-labelledby="integrations">
+
+<h2 id="integrations">按使用场景继续</h2>
+
+<div class="workflow-paths">
+
+### 创建自己的流程
+
+编写 JSON 模板，声明输入和依赖，再发布可重复调用的修订。[创作与发布](/guide/authoring)
+
+### 让 Agent 调用流程
+
+在 Codex 中通过 Skill 使用本地命令，或为支持 MCP 的 Agent 启动 Gateway。[Codex、Skill 与 MCP](/guide/codex)
+
+### 集成到现有应用
+
+选择 TypeScript SDK 或 DeepSeek Harness 插件，把现有工具接入工作流。[接入方式](/guide/)
+
+</div>
+
+</section>
+
+</div>

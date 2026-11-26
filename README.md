@@ -1,5 +1,7 @@
 # Agent DAG Workflow
 
+简体中文 · [English](README.en.md)
+
 `@gm-hz/agent-dag-workflow` 是一个轻量、Host-neutral 的 DAG Workflow Runtime。它让 Codex、DSH 或其他 Agent 直接复用已有的 Tool、Skill 与 MCP，把离散调用组织成可保存、校验、恢复、审计和重放的 `WorkflowTemplate` JSON。
 
 它不是另一个 Coze/Dify 平台，也不内建模型 Provider、凭据中心或 Tool 市场。Host 继续负责已有的 Agent/Tool/Skill/MCP 生态；本项目只负责把离散能力变成稳定流程。
