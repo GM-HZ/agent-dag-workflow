@@ -1,6 +1,6 @@
 import type { DatabaseSync, SQLOutputValue } from 'node:sqlite'
 import { snapshotJsonValue, stableJsonStringify } from '../../core/index.js'
-import type { WorkflowIngressRecord, WorkflowIngressStore } from '../../triggers/core/index.js'
+import type { WorkflowIngressListQuery, WorkflowIngressRecord, WorkflowIngressStore } from '../../triggers/core/index.js'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
 export type SqliteWorkflowIngressStoreOptions = SqliteWorkflowOptions
@@ -42,9 +42,15 @@ export class SqliteWorkflowIngressStore implements WorkflowIngressStore {
     return this.#db.prepare(`SELECT record_json FROM workflow_ingress WHERE status = 'received' ORDER BY updated_at, trigger_id`).all()
       .map(row => decode(text(row, 'record_json')))
   }
-  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowIngressRecord[]> {
+  async list(query: WorkflowIngressListQuery = {}): Promise<readonly WorkflowIngressRecord[]> {
     const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
-    return this.#db.prepare('SELECT record_json FROM workflow_ingress ORDER BY updated_at DESC, trigger_id LIMIT ?').all(limit)
+    const authority = query.authorityRef ?? null
+    return this.#db.prepare(`SELECT ingress.record_json FROM workflow_ingress AS ingress
+      WHERE (? IS NULL OR EXISTS (SELECT 1 FROM workflow_bindings AS binding
+        WHERE binding.id = json_extract(ingress.record_json, '$.binding.id')
+          AND binding.revision = json_extract(ingress.record_json, '$.binding.revision')
+          AND json_extract(binding.binding_json, '$.spec.authorityRef') = ?))
+      ORDER BY ingress.updated_at DESC, ingress.trigger_id LIMIT ?`).all(authority, authority, limit)
       .map(row => decode(text(row, 'record_json')))
   }
 

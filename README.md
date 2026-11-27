@@ -4,6 +4,10 @@
 
 `@gm-hz/agent-dag-workflow` 是一个轻量、Host-neutral 的 DAG Workflow Runtime。它让 Codex、DSH 或其他 Agent 直接复用已有的 Tool、Skill 与 MCP，把离散调用组织成可保存、校验、恢复、审计和重放的 `WorkflowTemplate` JSON。
 
+[终端快速开始](docs/guide/quickstart.md) · [Codex / Skill](docs/guide/codex.md) · [DSH / Canvas](docs/guide/dsh.md)
+
+[1.1.0 发布与升级说明](docs/release.md)
+
 它不是另一个 Coze/Dify 平台，也不内建模型 Provider、凭据中心或 Tool 市场。Host 继续负责已有的 Agent/Tool/Skill/MCP 生态；本项目只负责把离散能力变成稳定流程。
 
 ## 为什么这样设计
@@ -71,6 +75,16 @@ import * as DshWorkflow from '@gm-hz/agent-dag-workflow/dsh'
 ```
 
 未导入的 DSH、Canvas、MCP 或 Trigger Adapter 不会自动启动。
+
+## 先跑一次
+
+运行内置的订单整理示例。它用固定输入处理三笔订单，无需模型账号或外部 Tool。
+
+```bash
+npm exec -- adw demo
+```
+
+输出包含总金额 `100`、Run ID 和查询轨迹的命令。运行结果和 Journal 保存在当前目录的 SQLite 数据库里。用 `adw runs` 找回运行，用 `adw trace <runId> --all` 导出一份完整的 Journal 快照。安装与轨迹查询的完整步骤见 [快速开始](docs/guide/quickstart.md)。
 
 ## 最小 SDK 用例
 
@@ -227,13 +241,16 @@ CLI 提供简写 `adw` 和完整命令 `agent-workflow`，二者完全等价。�
 
 ```bash
 adw validate examples/script-transform.workflow.json
+adw validate examples/script-transform.workflow.json --input examples/inputs/script-transform.json
 adw draft put examples/script-transform.workflow.json --db workflows.db
 adw publish script-transform-demo --expected 1 --db workflows.db
 adw search "transform" --db workflows.db
 adw describe script-transform-demo@1 --view schema --db workflows.db
 adw run script-transform-demo@1 --input input.json --db workflows.db
+adw runs --workflow script-transform-demo --db workflows.db
 adw run-get <runId> --db workflows.db
 adw trace <runId> --events --db workflows.db
+adw trace <runId> --all --db workflows.db > run.jsonl
 adw trace <runId> --follow --format jsonl --db workflows.db
 adw replay <runId> --mode recorded --db workflows.db
 adw resume <runId> --db workflows.db
@@ -242,6 +259,8 @@ adw cancel <runId> --reason "operator stop" --db workflows.db
 
 所有非流式命令都返回单个 `agent-workflow.cli/v1` JSON Envelope；`--input -` 从 stdin 读取 JSON，不需要把大型输入塞进 shell 参数。CLI 对每个命令使用严格参数契约，未知、重复或多余参数会在打开数据库前 fail closed。包含 Tool/Agent 节点时，必须显式传入 `--host ./host.mjs`。该模块导出 Gateway、Authority 和可选自定义 Node；CLI 不会隐式读取环境变量来猜测能力或凭据。
 
+`validate` 带上输入时会检查工作流输入、根流程和固定修订子流程所需的宿主接口，以及当前调用者能发现的 Tool。可跳过的分支和无法预先确定是否有条目的循环会报告警告。Tool 调用的最终授权由宿主在执行时判定。
+
 Host 不需要 Provider 层。最小 Tool Adapter、加载时契约校验、Authority 边界和错误排查方式见 [Host Adapter 接入](docs/host-adapter.md)。
 
 后台调用使用 `run ... --detach`，并由 `agent-workflow worker --once` claim/resume。Host 必须提供可恢复的 Authority Resolver，否则 Runtime 会拒绝后台启动。1.0 的 Worker 是单进程、单次 claim/resume 的参考执行器；Core 不内置 `worker_threads`、进程池或分布式调度。需要水平扩展时，由 Host 在共享 Store 上补充 fencing token 与部署级调度约束。
@@ -249,6 +268,8 @@ Host 不需要 Provider 层。最小 Tool Adapter、加载时契约校验、Auth
 ## Codex、Skill 与 MCP
 
 具备终端能力的 Codex 类 Agent 默认使用仓库内的 `workflow-builder` Skill 和 CLI。Skill 只在 Workflow 任务命中时加载，不包含执行逻辑。Codex Plugin 位于 `integrations/codex/agent-dag-workflow`，已按官方 manifest 结构打包同一 Skill。
+
+从 npm 安装包后，在项目根目录运行 `npm exec --no -- adw skill install`。下一次从该项目打开 Codex，即可使用项目的 Skill 和本地 CLI。 [Codex 快速开始](docs/guide/codex.md)
 
 从源码安装 Codex Plugin 时，把该目录作为一个本地 marketplace；安装后新建会话即可按需发现 Skill，且不会常驻启动 MCP：
 
@@ -262,8 +283,8 @@ Plugin 的 wrapper 只发现并调用同一个 `agent-workflow` CLI。卸载 Plu
 没有本地命令能力的 Agent 可以启动一个固定 Tool 数量的 MCP Gateway：
 
 ```bash
-agent-workflow-mcp --db workflows.db --profile invoke
-agent-workflow-mcp --db workflows.db --profile author
+agent-workflow-mcp --config /absolute/project/.agent-dag-workflow.json --profile invoke
+agent-workflow-mcp --config /absolute/project/.agent-dag-workflow.json --doctor
 ```
 
 `invoke` profile 永远只有 `workflow_search`、`workflow_describe`、`workflow_run`、`workflow_run_get`、`workflow_cancel` 和 `workflow_trace` 六个 Tool。`author` 额外提供六个有界的节点、校验、草稿、diff 和发布 Tool。Catalog 中有多少 Workflow 都不会改变 Tool 数量；Agent 只按需读取被选中 Workflow 的 Schema。搜索由 Repository 在已发布 revision 上有界执行，不会读取未发布 Draft 元数据。
@@ -276,7 +297,7 @@ DeepSeek Harness 是一个 Adapter，不是 Core 前提。安装同一个包即�
 dsh plugin --profile web add @gm-hz/agent-dag-workflow
 ```
 
-`1.0.2` 支持 DSH `0.2.0-rc.2`、`0.2.2-rc.5` 和 `0.2.3-alpha.2`，安装器从 `package.json` 的 `engines.dsh` 读取兼容版本。DSH 0.1 可参考本包 `1.0.0` 的安装说明。
+安装器从 `package.json` 的 `engines.dsh` 读取兼容版本。`1.1.0` 的正式发布门禁覆盖 DSH `0.2.0-rc.2` 和 `0.2.2-rc.5`，`0.2.3-alpha.2` 作为预览兼容版本。DSH 0.1 可参考本包 `1.0.0` 的安装说明。
 
 从当前源码验证时只链接仓库根目录：
 
@@ -347,12 +368,12 @@ CLI、固定 MCP Gateway、DSH Plugin、SDK 和 Trigger 最终都调用同一个
 ## 版本与兼容边界
 
 - Template 只接受 `workflow.gm-hz.dev/v1` 和当前节点 `uses@major`，没有旧 API Version、旧节点别名或双解析器。
-- SQLite 只初始化空数据库，或打开 application id 与 schema version 都精确匹配当前实现的数据库；旧、未知或被篡改的数据库会在启动时拒绝。
+- SQLite 会初始化空数据库、打开当前 v12 数据库，或在事务中将项目自身的 v11 数据库升级为 v12。打开时补齐历史索引。其他 schema 或 application id 会被拒绝。升级前可用 `adw backup` 保存快照。
 - 包不导出迁移 API，CLI 也不提供隐式转换命令。升级协议时应先导出当前模板/审计数据，再由明确的独立工具生成并人工校验新模板。
 - 发布修订和历史 Run 永不原地改写。破坏性节点语义使用新的 `uses@major`，并发布新的 Workflow revision。
 - DSH Adapter 的兼容版本由 `engines.dsh` 声明。Core、CLI、MCP 和 Trigger 可以独立于 DSH 使用。
 
-这一边界是 1.0 的刻意约束：Runtime 只执行一种事实模型，避免兼容分支进入调度、恢复和权限路径。
+从 `1.0.2` 升级前，请核对 Webhook 签名、SQLite 备份和自定义 Canvas / DSH 接入的迁移步骤。[1.1.0 升级说明](docs/release.md)
 
 ## 示例与验证
 
@@ -380,4 +401,4 @@ pnpm example:weekly
 
 `pnpm examples:codex` 会通过真实 Codex Plugin wrapper 对清单中的 9 个模板逐一执行 validate、draft、publish、search、describe、run、run-get 和 trace；确定性 Host 让契约回归可在本地与 CI 重复。`pnpm example:weekly` 则单独执行 21 节点的“AI 模型周报”：13 路 Tool 调用、4 次 Agent 结构化处理、确定性合并排序、Top 10 输出和完整 Journal Trace。替换为真实 Host 的方式见 [Showcase 说明](docs/showcase-workflows.md#运行-ai-模型周报)。
 
-项目使用 MIT License。验证命令和发布门禁见 [Core Verification Harness](docs/core-verification-harness.md) 与 [1.0 发布流程](docs/release.md)。
+项目使用 MIT License。验证命令和发布门禁见 [Core Verification Harness](docs/core-verification-harness.md) 与 [发布与升级](docs/release.md)。

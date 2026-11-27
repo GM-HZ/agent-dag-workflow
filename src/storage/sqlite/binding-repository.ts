@@ -2,6 +2,7 @@ import type { DatabaseSync, SQLOutputValue } from 'node:sqlite'
 import { snapshotJsonValue, stableJsonStringify } from '../../core/index.js'
 import {
   WorkflowBindingError,
+  type WorkflowBindingListQuery,
   type WorkflowBindingRepository,
   type WorkflowTriggerBinding,
   type WorkflowTriggerBindingCandidate,
@@ -35,9 +36,15 @@ export class SqliteWorkflowBindingRepository implements WorkflowBindingRepositor
     return row === undefined ? undefined : decode(text(row, 'binding_json'))
   }
 
-  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowTriggerBinding[]> {
+  async list(query: WorkflowBindingListQuery = {}): Promise<readonly WorkflowTriggerBinding[]> {
     const limit = query.limit ?? 100
-    return this.#db.prepare('SELECT binding_json FROM workflow_bindings ORDER BY id, revision DESC LIMIT ?').all(limit)
+    const afterId = query.afterId ?? ''
+    const filter = query.latestOnly === true
+      ? 'AND binding.revision = (SELECT MAX(revision) FROM workflow_bindings WHERE id = binding.id)' : ''
+    const authorityRef = query.authorityRef ?? null
+    return this.#db.prepare(`SELECT binding_json FROM workflow_bindings AS binding WHERE binding.id > ? ${filter}
+      AND (? IS NULL OR json_extract(binding.binding_json, '$.spec.authorityRef') = ?)
+      ORDER BY binding.id, binding.revision DESC LIMIT ?`).all(afterId, authorityRef, authorityRef, limit)
       .map(row => decode(text(row, 'binding_json')))
   }
 }

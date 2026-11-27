@@ -212,6 +212,7 @@ export const toolNodeDefinition: WorkflowNodeDefinition = {
       config: context.config,
       authority: context.authority,
       signal: context.signal,
+      ...(context.reportEvidence === undefined ? {} : { reportEvidence: context.reportEvidence }),
     })
     return { outputs: { result: value } }
   },
@@ -279,6 +280,7 @@ export const agentNodeDefinition: WorkflowNodeDefinition = {
       inputs: context.inputs,
       authority: context.authority,
       signal: context.signal,
+      ...(context.reportEvidence === undefined ? {} : { reportEvidence: context.reportEvidence }),
       ...(outputSchema === undefined ? {} : { outputSchema }),
       ...(tools === undefined ? {} : { tools }),
       ...(skills === undefined ? {} : { skills }),

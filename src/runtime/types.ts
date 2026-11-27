@@ -1,7 +1,10 @@
 import type {
   JsonObject,
   WorkflowEvent,
+  WorkflowDiagnostic,
   WorkflowExecutionPlanSnapshot,
+  WorkflowRunHistoryPage,
+  WorkflowRunHistoryQuery,
   WorkflowRunOrigin,
   WorkflowRunResult,
   WorkflowTemplate,
@@ -24,6 +27,12 @@ export interface WorkflowNodeDescriptor {
 export type WorkflowLaunchTarget =
   | { readonly type: 'published'; readonly id: string; readonly revision: number }
   | { readonly type: 'inline'; readonly template: WorkflowTemplate }
+
+/** Read-only readiness check for one set of proposed inputs and caller scope. */
+export interface WorkflowValidationContext {
+  readonly inputs: JsonObject
+  readonly authority?: unknown
+}
 
 export interface WorkflowLaunchRequest {
   readonly target: WorkflowLaunchTarget
@@ -109,6 +118,18 @@ export interface WorkflowRunSummary {
 export interface WorkflowEventPage {
   readonly events: readonly WorkflowEvent[]
   readonly nextAfterSeq?: number
+  readonly nextBeforeSeq?: number
+}
+
+export interface WorkflowEventQuery {
+  readonly afterSeq?: number
+  readonly limit?: number
+  /** Include only events committed at or before this sequence. */
+  readonly throughSeq?: number
+  readonly window?: 'recent'
+  readonly beforeSeq?: number
+  readonly nodeId?: string
+  readonly failuresOnly?: boolean
 }
 
 export type WorkflowReplayMode = 'inspect' | 'recorded' | 'live'
@@ -130,7 +151,7 @@ export interface WorkflowRuntimeApi {
   readDraft(id: string): Promise<WorkflowDraft>
   getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
   diffDraft(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff>
-  validate(template: WorkflowTemplate): Promise<readonly import('../core/index.js').WorkflowDiagnostic[]>
+  validate(template: WorkflowTemplate, context?: WorkflowValidationContext): Promise<readonly WorkflowDiagnostic[]>
   createDraft(template: WorkflowTemplate): Promise<WorkflowDraft>
   updateDraft(id: string, expectedRevision: number, template: WorkflowTemplate): Promise<WorkflowDraft>
   publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision>
@@ -139,6 +160,7 @@ export interface WorkflowRuntimeApi {
   /** Commits an authoritative terminal cancellation; safe to call after process restart. */
   cancel(request: WorkflowRuntimeCancelRequest): Promise<WorkflowRunResult>
   getRun(runId: string): Promise<WorkflowRunSummary | undefined>
-  readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<WorkflowEventPage>
+  listRuns?(query?: WorkflowRunHistoryQuery): Promise<WorkflowRunHistoryPage>
+  readEvents(runId: string, query?: WorkflowEventQuery): Promise<WorkflowEventPage>
   replay(request: WorkflowReplayRequest): Promise<WorkflowRunHandle>
 }

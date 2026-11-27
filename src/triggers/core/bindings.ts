@@ -7,6 +7,7 @@ import {
   type JsonValue,
 } from '../../core/index.js'
 import type {
+  WorkflowBindingListQuery,
   WorkflowBindingRepository,
   WorkflowBindingTargetCatalog,
   WorkflowTriggerBinding,
@@ -35,9 +36,15 @@ export class WorkflowTriggerDefinitionRegistry {
   register(definition: WorkflowTriggerDefinition): () => void {
     assertUses(definition.uses)
     if (this.#definitions.has(definition.uses)) throw new WorkflowBindingError('BINDING_INVALID', `workflow trigger definition already exists: ${definition.uses}`)
+    const { uses, configSchema, validateConfig } = definition
+    const publicDefinition = snapshotJsonValue({ uses, configSchema } as unknown as JsonValue) as unknown as WorkflowTriggerDefinition
+    const validateSchema = compileJsonValidator(configSchema, `${uses} trigger config`)
     const entry = {
-      definition: snapshotJsonValue(definition as unknown as JsonValue) as unknown as WorkflowTriggerDefinition,
-      validate: compileJsonValidator(definition.configSchema, `${definition.uses} trigger config`),
+      definition: publicDefinition,
+      validate: (value: unknown) => {
+        const diagnostics = validateSchema(value)
+        return diagnostics.length > 0 ? diagnostics : validateConfig?.(value as JsonObject) ?? diagnostics
+      },
     }
     this.#definitions.set(definition.uses, entry)
     return () => { if (this.#definitions.get(definition.uses) === entry) this.#definitions.delete(definition.uses) }
@@ -97,10 +104,11 @@ export class WorkflowBindingCatalog {
     return binding
   }
 
-  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowTriggerBinding[]> {
+  async list(query: WorkflowBindingListQuery = {}): Promise<readonly WorkflowTriggerBinding[]> {
     const limit = query.limit ?? 100
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new WorkflowBindingError('BINDING_INVALID', 'workflow binding list limit must be between 1 and 1000')
-    return this.repository.list({ limit })
+    if (query.afterId !== undefined) assertId(query.afterId)
+    return this.repository.list({ ...query, limit })
   }
 }
 
@@ -124,8 +132,12 @@ export class InMemoryWorkflowBindingRepository implements WorkflowBindingReposit
     return binding === undefined ? undefined : cloneBinding(binding)
   }
 
-  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowTriggerBinding[]> {
-    return [...this.#bindings.values()].flat().sort(compareBindings).slice(0, query.limit ?? 100).map(cloneBinding)
+  async list(query: WorkflowBindingListQuery = {}): Promise<readonly WorkflowTriggerBinding[]> {
+    return [...this.#bindings.entries()]
+      .filter(([id]) => query.afterId === undefined || id > query.afterId)
+      .flatMap(([, revisions]) => query.latestOnly === true ? revisions.slice(-1) : revisions)
+      .filter(binding => query.authorityRef === undefined || binding.spec.authorityRef === query.authorityRef)
+      .sort(compareBindings).slice(0, query.limit ?? 100).map(cloneBinding)
   }
 }
 

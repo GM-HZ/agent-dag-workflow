@@ -37,7 +37,14 @@ export type WorkflowTriggerBindingCandidate = Omit<WorkflowTriggerBinding, 'meta
 export interface WorkflowBindingRepository {
   publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number, publishedAt: number): Promise<WorkflowTriggerBinding>
   get(id: string, revision?: number): Promise<WorkflowTriggerBinding | undefined>
-  list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]>
+  list(query?: WorkflowBindingListQuery): Promise<readonly WorkflowTriggerBinding[]>
+}
+
+export interface WorkflowBindingListQuery {
+  readonly limit?: number
+  readonly latestOnly?: boolean
+  readonly afterId?: string
+  readonly authorityRef?: string
 }
 
 export interface WorkflowBindingTargetCatalog {
@@ -47,6 +54,8 @@ export interface WorkflowBindingTargetCatalog {
 export interface WorkflowTriggerDefinition {
   readonly uses: string
   readonly configSchema: JsonSchema
+  /** Additional static checks, run after JSON Schema validation. */
+  readonly validateConfig?: (config: JsonObject) => readonly string[]
 }
 
 export type WorkflowIngressStatus = 'received' | 'rejected' | 'deduplicated' | 'launched'
@@ -73,5 +82,10 @@ export interface WorkflowIngressStore {
   markRejected(triggerId: string, reasonCode: string): Promise<void>
   get(triggerId: string): Promise<WorkflowIngressRecord | undefined>
   listPending(): Promise<readonly WorkflowIngressRecord[]>
-  list(query?: { readonly limit?: number }): Promise<readonly WorkflowIngressRecord[]>
+  list(query?: WorkflowIngressListQuery): Promise<readonly WorkflowIngressRecord[]>
+}
+
+export interface WorkflowIngressListQuery {
+  readonly limit?: number
+  readonly authorityRef?: string
 }

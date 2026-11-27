@@ -51,7 +51,6 @@ export function WorkflowCanvasOverlay({ remote, session, controller, locale }: W
   retainedSession.current = sessionId
   if (ui.open && sessionId !== undefined) {
     return <WorkflowStudio
-      key={ui.requestId}
       api={api}
       locale={language}
       sessionId={sessionId}

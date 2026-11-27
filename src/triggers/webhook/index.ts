@@ -35,23 +35,31 @@ export class WebhookTriggerAdapter {
 
   accept(request: { readonly body: Uint8Array; readonly headers: Readonly<Record<string, string | undefined>> }): WorkflowTriggerEnvelope {
     if (request.body.byteLength > this.#maxBodyBytes) throw new Error('webhook body exceeds configured limit')
-    const timestamp = required(request.headers['x-workflow-timestamp'], 'x-workflow-timestamp', 32)
+    const timestamp = required(request.headers['x-workflow-timestamp'], 'x-workflow-timestamp', 16)
     const eventId = required(request.headers['x-workflow-event-id'], 'x-workflow-event-id', 512)
-    const signature = required(request.headers['x-workflow-signature'], 'x-workflow-signature', 128)
+    const signature = required(request.headers['x-workflow-signature'], 'x-workflow-signature', 67)
     const occurredAt = Number(timestamp)
-    if (!Number.isSafeInteger(occurredAt) || Math.abs(this.#now() - occurredAt) > this.#toleranceMs) throw new Error('webhook timestamp is invalid or expired')
-    const expected = createHmac('sha256', this.#secret).update(timestamp).update('.').update(request.body).digest('hex')
-    const left = Buffer.from(signature, 'hex')
-    const right = Buffer.from(expected, 'hex')
-    if (left.length !== right.length || !timingSafeEqual(left, right)) throw new Error('webhook signature is invalid')
-    const decoded: unknown = JSON.parse(new TextDecoder().decode(request.body))
-    const payload = snapshotJsonObject(decoded as Record<string, import('../../core/index.js').JsonValue>)
+    const receivedAt = this.#now()
+    if (/[^0-9]/u.test(timestamp) || (timestamp.length > 1 && timestamp.startsWith('0')) || !Number.isSafeInteger(occurredAt)
+      || !Number.isSafeInteger(receivedAt) || receivedAt < 0 || Math.abs(receivedAt - occurredAt) > this.#toleranceMs) {
+      throw new Error('webhook timestamp is invalid or expired')
+    }
+    if (/[^A-Za-z0-9._:-]/u.test(eventId)) throw new Error('webhook event ID is invalid')
+    if (signature.length !== 67 || !/^v1=[0-9a-f]{64}$/u.test(signature)) throw new Error('webhook signature is invalid')
+    // The two canonical header fields cannot contain LF. The rest is the raw body.
+    const expected = createHmac('sha256', this.#secret)
+      .update(`agent-dag-webhook:v1\n${timestamp}\n${eventId}\n`)
+      .update(request.body)
+      .digest()
+    if (!timingSafeEqual(Buffer.from(signature.slice(3), 'hex'), expected)) throw new Error('webhook signature is invalid')
+    const decoded: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(request.body))
+    const payload = snapshotJsonObject(decoded)
     return {
       schemaVersion: 1,
       triggerId: randomUUID(),
       source: 'webhook',
       sourceEventId: eventId,
-      receivedAt: this.#now(),
+      receivedAt,
       occurredAt,
       payload,
       metadata: { signedAt: occurredAt },
@@ -60,7 +68,8 @@ export class WebhookTriggerAdapter {
 }
 
 function required(value: string | undefined, name: string, maxLength: number): string {
-  if (value === undefined || value.length === 0) throw new Error(`webhook header is required: ${name}`)
+  if (value === undefined || value === '') throw new Error(`webhook header is required: ${name}`)
+  if (typeof value !== 'string') throw new Error(`webhook header must have one string value: ${name}`)
   if (value.length > maxLength) throw new Error(`webhook header exceeds configured limit: ${name}`)
   return value
 }

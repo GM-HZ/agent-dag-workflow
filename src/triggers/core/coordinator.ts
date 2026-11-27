@@ -1,14 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import type { WorkflowRunResult } from '../../core/index.js'
-import type { WorkflowRuntimeApi } from '../../runtime/index.js'
-import type { WorkflowResultDeliveryService } from './delivery.js'
+import type { WorkflowRuntimeApi, WorkflowRunSummary } from '../../runtime/index.js'
+import type { WorkflowDeliveryRequest, WorkflowResultDeliveryService } from './delivery.js'
 
 export interface WorkflowRunClaim { readonly runId: string; readonly workerId: string; readonly leaseToken: string; readonly expiresAt: number }
+export class WorkflowRunWorkerError extends Error {
+  constructor(readonly runId: string, readonly phase: 'workflow' | 'delivery', cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'WorkflowRunWorkerError'
+  }
+}
 export interface WorkflowRunCoordinator {
   enqueue(runId: string): Promise<void>
   claim(request: { readonly workerId: string; readonly leaseMs: number }): Promise<WorkflowRunClaim | undefined>
   heartbeat(request: { readonly runId: string; readonly leaseToken: string; readonly leaseMs: number }): Promise<boolean>
   release(request: { readonly runId: string; readonly leaseToken: string }): Promise<void>
+  /** Return a claim to the queue without deleting its durable intent. */
+  requeue?(request: { readonly runId: string; readonly leaseToken: string }): Promise<void>
 }
 
 export class InMemoryWorkflowRunCoordinator implements WorkflowRunCoordinator {
@@ -35,6 +43,11 @@ export class InMemoryWorkflowRunCoordinator implements WorkflowRunCoordinator {
   async release(request: { readonly runId: string; readonly leaseToken: string }): Promise<void> {
     if (this.#claims.get(request.runId)?.leaseToken === request.leaseToken) this.#claims.delete(request.runId)
   }
+  async requeue(request: { readonly runId: string; readonly leaseToken: string }): Promise<void> {
+    if (this.#claims.get(request.runId)?.leaseToken !== request.leaseToken) return
+    this.#claims.delete(request.runId)
+    this.#queued.push(request.runId)
+  }
 }
 
 /** Single-claim reference runner. Host-level worker pools and distributed fencing are intentionally out of scope. */
@@ -49,11 +62,8 @@ export class WorkflowRunWorker {
     assertClaimRequest(request)
     const claim = await this.coordinator.claim({ workerId: request.workerId, leaseMs: request.leaseMs })
     if (claim === undefined) return undefined
-    const summary = await this.runtime.getRun(claim.runId)
-    if (summary === undefined) {
-      await this.coordinator.release({ runId: claim.runId, leaseToken: claim.leaseToken })
-      throw new Error(`claimed workflow run does not exist: ${claim.runId}`)
-    }
+    let keepClaim = true
+    let phase: WorkflowRunWorkerError['phase'] = 'workflow'
     const leaseAbort = new AbortController()
     const signal = request.signal === undefined ? leaseAbort.signal : AbortSignal.any([request.signal, leaseAbort.signal])
     const intervalMs = Math.max(10, Math.floor(request.leaseMs / 3))
@@ -67,29 +77,57 @@ export class WorkflowRunWorker {
         .finally(() => { heartbeatBusy = false })
     }, intervalMs)
     try {
-      const handle = await this.runtime.resume({
-        runId: claim.runId,
-        authorityRef: summary.authorityRef,
-        interruptionSignal: signal,
-      })
-      const result = await handle.result
-      if (summary.deliveryRef !== undefined && this.delivery !== undefined && result.status !== 'paused') {
-        await this.delivery.deliver({
-          runId: result.runId,
-          deliveryRef: summary.deliveryRef,
-          phase: 'terminal',
-          payload: result.status === 'completed'
-            ? { status: result.status, outputs: result.outputs }
-            : { status: result.status, error: result.error, ...(result.needsAttention === undefined ? {} : { needsAttention: result.needsAttention }) },
-        })
+      const summary = await this.runtime.getRun(claim.runId)
+      if (summary === undefined) {
+        keepClaim = false
+        throw new Error(`claimed workflow run does not exist: ${claim.runId}`)
       }
+      const handle = terminal(summary)
+        ? await this.runtime.replay({ runId: claim.runId, mode: 'inspect' })
+        : await this.runtime.resume({ runId: claim.runId, authorityRef: summary.authorityRef, interruptionSignal: signal })
+      const result = await handle.result
+      const latest = await this.runtime.getRun(claim.runId)
+      if (latest === undefined || latest.status === 'running') return result
+      if (terminal(latest) && latest.deliveryRef !== undefined) {
+        phase = 'delivery'
+        if (this.delivery === undefined) throw new Error(`terminal delivery gateway unavailable for run ${claim.runId}`)
+        signal.throwIfAborted()
+        const deliveryRequest = makeTerminalDelivery(latest, latest.deliveryRef)
+        try {
+          if (!await this.delivery.hasRecord(deliveryRequest)) await this.delivery.deliver(deliveryRequest)
+        } catch (error: unknown) {
+          // Transfer custody only after verifying that a recoverable delivery record exists.
+          keepClaim = !await this.delivery.hasRecord(deliveryRequest).catch(() => false)
+          throw error
+        }
+      }
+      keepClaim = false
       return result
+    } catch (error: unknown) {
+      throw new WorkflowRunWorkerError(claim.runId, phase, error)
     } finally {
       clearInterval(heartbeat)
-      await this.coordinator.release({ runId: claim.runId, leaseToken: claim.leaseToken })
-      const latest = await this.runtime.getRun(claim.runId).catch(() => undefined)
-      if (latest?.status === 'running') await this.coordinator.enqueue(claim.runId)
+      const lease = { runId: claim.runId, leaseToken: claim.leaseToken }
+      // Older stores can preserve the row by letting the lease expire instead.
+      if (keepClaim) await this.coordinator.requeue?.(lease)
+      else await this.coordinator.release(lease)
     }
+  }
+}
+
+function terminal(run: WorkflowRunSummary): boolean {
+  return run.status === 'completed' || run.status === 'failed' || run.status === 'cancelled'
+}
+
+function makeTerminalDelivery(run: WorkflowRunSummary, deliveryRef: string): WorkflowDeliveryRequest {
+  if (run.status === 'completed' && run.outputs === undefined) throw new Error(`missing output for completed workflow run ${run.runId}`)
+  return {
+    runId: run.runId,
+    deliveryRef,
+    phase: 'terminal',
+    payload: run.status === 'completed'
+      ? { status: run.status, outputs: run.outputs! }
+      : { status: run.status, error: run.error ?? run.status, ...(run.needsAttention === undefined ? {} : { needsAttention: run.needsAttention }) },
   }
 }
 

@@ -26,7 +26,7 @@ export default defineConfig({
         text: '资源',
         items: [
           { text: 'Template v1 协议', link: 'https://github.com/GM-HZ/agent-dag-workflow/blob/main/spec/workflow-template-v1.md' },
-          { text: '发布流程', link: '/release' },
+          { text: '发布与升级', link: '/release' },
           { text: 'English README', link: 'https://github.com/GM-HZ/agent-dag-workflow/blob/main/README.en.md' },
         ],
       },
@@ -38,6 +38,7 @@ export default defineConfig({
           { text: '先选入口', link: '/guide/' },
           { text: '5 分钟快速开始', link: '/guide/quickstart' },
           { text: 'Codex / Skill', link: '/guide/codex' },
+          { text: 'DSH / Canvas', link: '/guide/dsh' },
         ],
       },
       {
@@ -63,7 +64,7 @@ export default defineConfig({
         items: [
           { text: '存储与运维', link: '/operations' },
           { text: '验证门禁', link: '/core-verification-harness' },
-          { text: '1.0 发布', link: '/release' },
+          { text: '发布与升级', link: '/release' },
         ],
       },
     ],

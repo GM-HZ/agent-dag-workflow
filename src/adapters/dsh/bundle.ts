@@ -1,7 +1,10 @@
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import * as WorkflowCanvas from '../../canvas/index.js'
+import type { WorkflowCapturePolicy } from '../../journal/index.js'
+import { SqliteWorkflowArtifactStore, SqliteWorkflowCronStore } from '../../storage/sqlite/index.js'
+import { createDshCanvasSchedules } from './schedules.js'
 import {
   SqliteWorkflowBindingsService,
   SqliteWorkflowDeliveryRecordsService,
@@ -20,6 +23,8 @@ import {
 export interface Config {
   /** SQLite file path. The DSH bundle patch supplies a durable path under DSH_HOME. */
   readonly databasePath?: string
+  /** Select metadata-only or content capture for audit and recorded replay. */
+  readonly captureMode?: WorkflowCapturePolicy['mode']
 }
 
 export const name = 'gm-hz-agent-dag-workflow'
@@ -30,6 +35,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (typeof path !== 'string' || path.length === 0) {
     throw new Error('agent-dag-workflow databasePath must be a non-empty string')
   }
+  const captureMode = config.captureMode ?? 'standard'
+  if (captureMode !== 'metadata' && captureMode !== 'standard' && captureMode !== 'replayable') throw new Error('invalid workflow capture mode')
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
 
   if (ctx.get('workflowScripts') === undefined) await ctx.plugin(WorkflowScriptRuntimeRegistryService)
@@ -46,9 +53,13 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (agents === undefined || typeof agents.get !== 'function') {
     throw new Error('agent-dag-workflow durable bundle requires the DSH agents service for restart recovery')
   }
+  const artifactStore = new SqliteWorkflowArtifactStore({ path })
+  ctx.effect(() => () => { artifactStore.close() }, 'agent-dag-workflow: close SQLite artifacts')
   await ctx.plugin(DshWorkflow, {
     catalog: 'external',
     runStore: 'external',
+    artifactStore,
+    capturePolicy: { mode: captureMode, maxArtifactBytes: 1024 * 1024 },
     recovery: {
       reference: stableDshAuthorityReference,
       resolve: async authorityRef => {
@@ -65,7 +76,12 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   if (bindings === undefined || ingress === undefined || delivery === undefined) {
     throw new Error('agent-dag-workflow operational services failed to mount')
   }
-  if (ctx.get('workflowCanvas') === undefined) await ctx.plugin(WorkflowCanvas, { bindings, ingress, delivery })
+  if (ctx.get('workflowCanvas') === undefined) {
+    const cronStore = new SqliteWorkflowCronStore({ path })
+    ctx.effect(() => () => cronStore.close(), 'agent-dag-workflow: close SQLite scheduler')
+    await ctx.plugin(WorkflowCanvas, { bindings, ingress, delivery, artifactStore, schedules: createDshCanvasSchedules(ctx, cronStore),
+      storage: path === ':memory:' ? { kind: 'memory' } : { kind: 'sqlite', path: resolve(path) } })
+  }
 }
 
 const DSH_AUTHORITY_PREFIX = 'dsh-session:'

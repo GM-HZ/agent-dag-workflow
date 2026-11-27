@@ -6,6 +6,7 @@ import {
   type WorkflowCatalogSearchResult,
   type WorkflowCatalogSummary,
   type WorkflowDraft,
+  type WorkflowRevisionSummary,
 } from './types.js'
 
 export interface WorkflowCatalogRepository {
@@ -14,6 +15,7 @@ export interface WorkflowCatalogRepository {
   updateDraft(id: string, expectedRevision: number, materialized: MaterializedWorkflowTemplate, now: number): Promise<WorkflowDraft>
   publishDraft(id: string, expectedDraftRevision: number, now: number): Promise<PublishedWorkflowRevision>
   readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined>
+  listRevisions?(id: string, before: number | undefined, limit: number): Promise<readonly WorkflowRevisionSummary[]>
   searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult>
   list(): Promise<readonly WorkflowCatalogSummary[]>
 }
@@ -80,6 +82,15 @@ export class InMemoryWorkflowCatalogRepository implements WorkflowCatalogReposit
     if (revision === undefined) return revisions?.at(-1)
     if (!Number.isSafeInteger(revision) || revision < 1) return undefined
     return revisions?.[revision - 1]
+  }
+
+  async listRevisions(id: string, before: number | undefined, limit: number): Promise<readonly WorkflowRevisionSummary[]> {
+    const revisions = this.published.get(id) ?? []
+    const end = before === undefined ? revisions.length : Math.min(revisions.length, before - 1)
+    return revisions.slice(Math.max(0, end - limit), end).reverse().map(item => ({
+      revision: item.revision, publishedAt: item.publishedAt, sourceDraftRevision: item.sourceDraftRevision,
+      contentHash: item.contentHash, semanticHash: item.semanticHash,
+    }))
   }
 
   async searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult> {

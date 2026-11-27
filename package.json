@@ -1,6 +1,6 @@
 {
   "name": "@gm-hz/agent-dag-workflow",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Host-neutral durable DAG workflows for Agents, Tools, Skills, MCP, triggers, replay, and visual Canvas",
   "type": "module",
   "packageManager": "pnpm@11.5.2",
@@ -26,6 +26,8 @@
     "typecheck": "pnpm generate:typert && tsc -p tsconfig.json --noEmit && tsc -p config/typescript/tests/core.json --noEmit && tsc -p config/typescript/tests/catalog.json --noEmit && tsc -p config/typescript/tests/dsh.json --noEmit && tsc -p config/typescript/tests/sqlite.json --noEmit && tsc -p config/typescript/tests/canvas.json --noEmit && tsc -p config/typescript/tests/verification.json --noEmit",
     "verify:core": "pnpm generate:typert && tsc -p config/typescript/tests/verification.json --noEmit && vitest --config config/vitest.ts run tests/verification",
     "verify:canvas-browser": "node scripts/verify-canvas-browser.mjs",
+    "verify:dsh-native": "node scripts/verify-dsh-native.mjs",
+    "verify:upgrade": "node scripts/verify-workflow-upgrade.mjs",
     "verify:pack": "pnpm build && node scripts/verify-packed-install.mjs"
   },
   "main": "lib/index.js",
@@ -133,6 +135,7 @@
     "integrations/codex/agent-dag-workflow",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "dsh": {

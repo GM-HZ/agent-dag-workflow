@@ -33,6 +33,8 @@ export interface CompiledWorkflow {
   readonly edges: ReadonlyMap<string, WorkflowEdgeTemplate>
   readonly order: readonly string[]
   readonly startNodeId: string
+  /** Nodes reached irrespective of which declared output ports are selected. */
+  readonly guaranteedNodes: ReadonlySet<string>
   readonly semanticHash: string
   readonly requirements: readonly WorkflowRequirement[]
   readonly validateWorkflowInputs: (value: unknown) => readonly string[]
@@ -220,12 +222,12 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
     if (!canReachEnd.has(nodeId)) diagnostics.push(diagnostic('NODE_CANNOT_REACH_END', 'node has no path to an end node', nodeId))
   }
 
-  if (order.length === nodesById.size) {
+  const acyclic = order.length === nodesById.size
+  const guaranteedNodes = startNodeId === undefined || !acyclic
+    ? new Set<string>() : computeGuaranteedNodes(order, outgoing, definitions, startNodeId)
+  if (acyclic) {
     const ancestors = computeAncestors(order, incoming)
     const dominators = startNodeId === undefined ? new Map<string, ReadonlySet<string>>() : computeDominators(order, incoming, startNodeId)
-    const guaranteedNodes = startNodeId === undefined
-      ? new Set<string>()
-      : computeGuaranteedNodes(order, outgoing, definitions, startNodeId)
     for (const [nodeId, node] of nodesById) {
       validateBindings(
         node.inputs,
@@ -312,6 +314,7 @@ export function compileWorkflow(candidate: WorkflowTemplate, registry: WorkflowN
       edges: edgesById,
       order,
       startNodeId,
+      guaranteedNodes,
       semanticHash: materializeWorkflowTemplate(template).semanticHash,
       requirements: Object.freeze([...declaredRequirements.values()]),
       validateWorkflowInputs,

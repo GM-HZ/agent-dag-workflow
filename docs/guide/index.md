@@ -4,9 +4,10 @@
 
 | 你的环境 | 首选入口 | 原因 |
 | --- | --- | --- |
-| 本地终端、Codex、CI | `adw` CLI | 零常驻上下文，契约最完整 |
-| 只能使用 MCP 的 Agent | 固定 MCP Gateway | Workflow 数量不会增加 MCP Tool 数量 |
-| DeepSeek Harness | DSH Plugin | 复用 Session、Tool、Agent、Skill 与 Canvas |
+| 本地终端、CI | [终端快速开始](./quickstart) | 运行内置示例或发布自己的订单流程 |
+| Codex | [项目 Skill](./codex) | 使用项目 npm 安装的 CLI |
+| 只能使用 MCP 的 Agent | [固定 MCP Gateway](./codex#mcp-only-agent) | 与 CLI 显式共享项目配置 |
+| DeepSeek Harness | [DSH / Canvas](./dsh) | 复用 Session、Tool、Agent、Skill 与 Canvas |
 | 应用代码 | TypeScript SDK | 直接嵌入 Runtime 与 Store |
 | Cron、Webhook、消息平台 | Trigger Binding | 外部协议不进入 DAG 图 |
 

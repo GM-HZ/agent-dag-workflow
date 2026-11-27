@@ -128,6 +128,28 @@ export interface WorkflowNodeExecutionResult {
   readonly selectedPorts?: readonly string[]
 }
 
+export interface WorkflowHostUsage {
+  readonly inputTokens?: number
+  readonly outputTokens?: number
+  readonly totalTokens?: number
+  readonly cacheReadTokens?: number
+  readonly cacheWriteTokens?: number
+}
+
+/** Bounded metadata about an invocation; response bodies and credentials are not evidence fields. */
+export interface WorkflowHostInvocationEvidence {
+  readonly childRunId?: string
+  readonly traceId?: string
+  readonly spanId?: string
+  readonly modelId?: string
+  readonly toolVersion?: string
+  readonly durationMs?: number
+  readonly usage?: WorkflowHostUsage
+}
+
+/** Returns false for malformed metadata, conflicting identifiers or a settled invocation. */
+export type WorkflowHostEvidenceReporter = (evidence: WorkflowHostInvocationEvidence) => boolean
+
 export interface WorkflowToolRequest {
   readonly runId: string
   readonly nodeId: string
@@ -137,6 +159,7 @@ export interface WorkflowToolRequest {
   readonly config: JsonObject
   readonly authority: unknown
   readonly signal: AbortSignal
+  readonly reportEvidence?: WorkflowHostEvidenceReporter
 }
 
 export interface WorkflowToolGateway {
@@ -164,6 +187,7 @@ export interface WorkflowAgentRequest {
   readonly skills?: readonly string[]
   readonly authority: unknown
   readonly signal: AbortSignal
+  readonly reportEvidence?: WorkflowHostEvidenceReporter
 }
 
 export interface WorkflowAgentResult {
@@ -261,6 +285,8 @@ export interface WorkflowNodeExecutionContext {
   readonly subworkflowMaxDepth: number
   readonly progress?: JsonValue
   checkpointProgress(progress: JsonValue): Promise<void>
+  /** Available while a live external node is executing. */
+  readonly reportEvidence?: WorkflowHostEvidenceReporter
   readonly authority: unknown
 }
 
@@ -336,7 +362,7 @@ export type WorkflowEdgeStatus = 'unknown' | 'taken' | 'skipped'
 export type WorkflowEventType =
   | 'run.accepted' | 'run.queued' | 'run.started' | 'run.resumed' | 'run.completed' | 'run.failed' | 'run.cancelled' | 'run.paused'
   | 'node.ready' | 'node.started' | 'node.waiting' | 'node.progress' | 'node.output-validated' | 'node.output-committed'
-  | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention' | 'node.failed'
+  | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention' | 'node.failed' | 'node.retry-scheduled'
   | 'capability.requested' | 'capability.completed' | 'capability.replayed' | 'capability.failed'
   | 'edge.taken' | 'edge.skipped' | 'checkpoint.committed'
 
@@ -396,14 +422,17 @@ export type WorkflowEvent = WorkflowEventEnvelope & (
   | { readonly seq: number; readonly type: 'run.failed'; readonly runId: string; readonly error: string }
   | { readonly seq: number; readonly type: 'run.cancelled'; readonly runId: string; readonly reason: string }
   | { readonly seq: number; readonly type: 'run.paused'; readonly runId: string; readonly reason: string }
-  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.completed' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.ready' | 'node.started' | 'node.waiting' | 'node.skipped' | 'node.cancelled' | 'node.needs-attention'; readonly runId: string; readonly nodeId: string }
+  | { readonly seq: number; readonly type: 'node.completed'; readonly runId: string; readonly nodeId: string; readonly selectedPorts?: readonly string[]; readonly durationMs?: number }
   | { readonly seq: number; readonly type: 'node.progress'; readonly runId: string; readonly nodeId: string; readonly progress: JsonValue }
   | { readonly seq: number; readonly type: 'node.output-validated'; readonly runId: string; readonly nodeId: string }
   | { readonly seq: number; readonly type: 'node.output-committed'; readonly runId: string; readonly nodeId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer }
-  | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string }
-  | { readonly seq: number; readonly type: 'capability.requested' | 'capability.replayed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string }
-  | { readonly seq: number; readonly type: 'capability.completed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer }
-  | { readonly seq: number; readonly type: 'capability.failed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly error: string }
+  | { readonly seq: number; readonly type: 'node.failed'; readonly runId: string; readonly nodeId: string; readonly error: string; readonly errorCode?: string; readonly durationMs?: number }
+  | { readonly seq: number; readonly type: 'node.retry-scheduled'; readonly runId: string; readonly nodeId: string; readonly error: string; readonly errorCode: string; readonly durationMs: number; readonly nextAttempt: number; readonly retryMode: Exclude<NodeRetryMode, 'never'> }
+  | { readonly seq: number; readonly type: 'capability.requested'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly inputHash?: string }
+  | { readonly seq: number; readonly type: 'capability.replayed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly sourceRunId?: string; readonly sourceEventId?: string; readonly inputHash?: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer; readonly hostEvidence?: WorkflowHostInvocationEvidence }
+  | { readonly seq: number; readonly type: 'capability.completed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly dataHash?: string; readonly artifact?: WorkflowArtifactPointer; readonly hostEvidence?: WorkflowHostInvocationEvidence }
+  | { readonly seq: number; readonly type: 'capability.failed'; readonly runId: string; readonly nodeId: string; readonly invocationId: string; readonly error: string; readonly hostEvidence?: WorkflowHostInvocationEvidence }
   | { readonly seq: number; readonly type: 'edge.taken' | 'edge.skipped'; readonly runId: string; readonly edgeId: string }
   | { readonly seq: number; readonly type: 'checkpoint.committed'; readonly runId: string; readonly checkpointSeq: number }
 )
@@ -459,6 +488,32 @@ export interface WorkflowExecutionPlanSnapshot {
   readonly replayable: boolean
 }
 
+export interface WorkflowRecordedNodeResult {
+  readonly outputs: JsonObject
+  readonly selectedPorts: readonly string[]
+  readonly inputHash: string
+  readonly sourceEventId: string
+  readonly dataHash?: string
+  readonly artifact?: WorkflowArtifactPointer
+  readonly hostEvidence?: WorkflowHostInvocationEvidence
+}
+
+/** Frozen evidence of the completed source run, used only for no-live-call replay. */
+export interface WorkflowRecordedReplay {
+  readonly sourceRunId: string
+  readonly semanticHash: string
+  readonly nodeResults: Readonly<Record<string, WorkflowRecordedNodeResult>>
+  readonly nodeStates: Readonly<Record<string, WorkflowNodeStatus>>
+  readonly edgeStates: Readonly<Record<string, WorkflowEdgeStatus>>
+  readonly outputs: JsonObject
+}
+
+/** An approved, offline replacement for one external node in a candidate run. */
+export type WorkflowRecordedFixture = { readonly expectedInputs?: JsonObject } & (
+  | { readonly outputs: JsonObject; readonly selectedPorts: readonly string[]; readonly failure?: never }
+  | { readonly outputs?: never; readonly selectedPorts?: never; readonly failure: { readonly code: string; readonly message: string } }
+)
+
 /** Low-level engine request used by WorkflowRuntime after launch policy and plan resolution. */
 export interface WorkflowEngineStartRequest {
   readonly runId?: string
@@ -468,8 +523,11 @@ export interface WorkflowEngineStartRequest {
   readonly plan?: WorkflowExecutionPlanSnapshot
   readonly idempotencyKey?: string
   readonly deliveryRef?: string
-  /** Internal recorded-replay source. External nodes are satisfied from these committed outputs. */
+  /** Legacy unversioned replay input. A missing external output cannot fall back to execution. */
   readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
+  readonly recordedReplay?: WorkflowRecordedReplay
+  /** Enabling fixtures disables all live execution gateways, including for missing entries. */
+  readonly recordedFixtures?: Readonly<Record<string, WorkflowRecordedFixture>>
   readonly signal?: AbortSignal
   /** Executor ownership signal. Aborting it leaves the durable Run recoverable. */
   readonly interruptionSignal?: AbortSignal
@@ -479,6 +537,7 @@ export interface WorkflowEngineStartRequest {
 export interface WorkflowResumeRequest {
   readonly runId: string
   readonly execution: WorkflowExecutionContext
+  readonly recordedReplay?: WorkflowRecordedReplay
   readonly signal?: AbortSignal
   /** Executor ownership signal. Aborting it leaves the durable Run recoverable. */
   readonly interruptionSignal?: AbortSignal
@@ -522,6 +581,13 @@ export interface WorkflowRunCheckpoint {
   readonly error?: string
 }
 
+interface WorkflowRunLaunchRecord {
+  readonly idempotencyKey?: string
+  readonly deliveryRef?: string
+  readonly executionMode?: 'foreground' | 'background'
+  readonly recordedReplay?: true
+}
+
 export interface WorkflowRunRecord {
   readonly runId: string
   readonly template: WorkflowTemplate
@@ -529,7 +595,7 @@ export interface WorkflowRunRecord {
   readonly plan: WorkflowExecutionPlanSnapshot
   readonly inputs: JsonObject
   readonly execution: Omit<WorkflowExecutionContext, 'authority'>
-  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string; readonly executionMode?: 'foreground' | 'background' }
+  readonly launch: WorkflowRunLaunchRecord
   readonly createdAt: number
   readonly checkpoint: WorkflowRunCheckpoint
   readonly events: readonly WorkflowEvent[]
@@ -541,8 +607,46 @@ export interface WorkflowRunMetadata {
   readonly semanticHash: string
   readonly plan: WorkflowExecutionPlanSnapshot
   readonly execution: Omit<WorkflowExecutionContext, 'authority'>
-  readonly launch: { readonly idempotencyKey?: string; readonly deliveryRef?: string; readonly executionMode?: 'foreground' | 'background' }
+  readonly launch: WorkflowRunLaunchRecord
   readonly createdAt: number
+}
+
+export interface WorkflowRunHistoryCursor {
+  readonly updatedAt: number
+  readonly runId: string
+}
+
+/** A metadata-only page ordered by the cursor fields in descending order. */
+export interface WorkflowRunHistoryQuery {
+  readonly authorityRef?: string
+  readonly templateId?: string
+  readonly status?: PersistedWorkflowRunStatus
+  readonly query?: string
+  readonly revision?: number
+  readonly origin?: string
+  readonly from?: number
+  readonly through?: number
+  readonly after?: WorkflowRunHistoryCursor
+  readonly limit?: number
+}
+
+export interface WorkflowRunHistoryItem {
+  readonly runId: string
+  readonly templateId: string
+  readonly templateName: string
+  readonly revision?: number
+  readonly authorityRef: string
+  readonly origin: WorkflowRunOrigin
+  readonly status: PersistedWorkflowRunStatus
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly checkpointSeq: number
+  readonly needsAttention: boolean
+}
+
+export interface WorkflowRunHistoryPage {
+  readonly items: readonly WorkflowRunHistoryItem[]
+  readonly nextAfter?: WorkflowRunHistoryCursor
 }
 
 export interface WorkflowRunStore {
@@ -551,6 +655,20 @@ export interface WorkflowRunStore {
   loadRun(runId: string): Promise<WorkflowRunRecord | undefined>
   getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined>
   getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
+  getRunStatus?(runId: string): Promise<PersistedWorkflowRunStatus | undefined>
   readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]>
+  queryEvents?(runId: string, query: WorkflowRunEventWindow): Promise<readonly WorkflowEvent[]>
+  listRuns?(query?: WorkflowRunHistoryQuery): Promise<WorkflowRunHistoryPage>
   listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]>
+}
+
+/** Store-level query for an authorized Journal window. The caller owns authorization. */
+export interface WorkflowRunEventWindow {
+  readonly afterSeq: number
+  readonly throughSeq?: number
+  readonly beforeSeq?: number
+  readonly limit: number
+  readonly descending: boolean
+  readonly nodeId?: string
+  readonly failuresOnly?: boolean
 }

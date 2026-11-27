@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import { InMemoryWorkflowCatalogRepository } from '../../src/catalog/repository.js'
@@ -14,7 +17,8 @@ import {
 } from '../../src/core/index.js'
 import { WorkflowLiveEventBus, WorkflowRuntime, type WorkflowLiveEvent } from '../../src/runtime/index.js'
 import { InMemoryWorkflowArtifactStore, type WorkflowArtifactStore } from '../../src/journal/index.js'
-import { toolWorkflowTemplate } from './fixtures.js'
+import { SqliteWorkflowRunStore } from '../../src/storage/sqlite/index.js'
+import { branchingWorkflowTemplate, toolWorkflowTemplate } from './fixtures.js'
 import { InMemoryWorkflowRunCoordinator, WorkflowRunWorker } from '../../src/triggers/core/index.js'
 
 function setup() {
@@ -162,15 +166,33 @@ describe('host-neutral WorkflowRuntime', () => {
     expect(execute).toHaveBeenCalledTimes(2)
   })
 
-  it('uses explicit effects metadata to record and replay custom external nodes', async () => {
+  it('replays only the executed route through a workflow with skipped external nodes', async () => {
+    const { runtime, execute } = setup()
+    const source = await runtime.launch({
+      target: { type: 'inline', template: branchingWorkflowTemplate() }, inputs: { enabled: true }, authorityRef: 'user:1', origin: { type: 'sdk' },
+    })
+    const original = await source.result
+    expect(original).toMatchObject({ status: 'completed', nodeStates: { disabled: 'skipped' } })
+    const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    const recorded = await replay.result
+    expect(recorded).toMatchObject({ status: 'completed', outputs: { answer: true }, edgeStates: original.edgeStates, nodeStates: original.nodeStates })
+    expect(recorded.events).not.toContainEqual(expect.objectContaining({ type: 'capability.requested' }))
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
+  it('replays explicit external output ports and preserves evidence on replay of replay', async () => {
     const nodes = new WorkflowNodeRegistry()
     registerCoreNodes(nodes)
     let effects = 0
     nodes.register({
       type: 'custom.external', version: 1, title: 'External', description: 'Custom external effect',
       configSchema: { type: 'object', additionalProperties: false }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
-      outputPorts: ['success'], capabilities: [], effects: 'external', retry: 'never', implementationDigest: 'custom-external-v1',
-      async execute() { effects++; return { outputs: { value: `effect-${effects}` } } },
+      outputPorts: ['left', 'right'], capabilities: [], effects: 'external', retry: 'never', implementationDigest: 'custom-external-v1',
+      async execute(context) {
+        effects++
+        context.reportEvidence?.({ toolVersion: 'external@1.2.3' })
+        return { outputs: { value: `effect-${effects}` }, selectedPorts: ['left'] }
+      },
     })
     const template: WorkflowTemplate = {
       apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'custom-external', name: 'Custom external' },
@@ -181,22 +203,209 @@ describe('host-neutral WorkflowRuntime', () => {
           { id: 'external', uses: 'custom.external@1', with: {}, inputs: {} },
           { id: 'end', uses: 'core.end@1', with: {}, inputs: { value: { output: { nodeId: 'external', path: ['value'] } } } },
         ],
-        edges: [{ id: 'a', source: 'start', target: 'external' }, { id: 'b', source: 'external', target: 'end' }],
+        edges: [
+          { id: 'a', source: 'start', target: 'external' },
+          { id: 'b', source: 'external', target: 'end', sourcePort: 'left' },
+          { id: 'c', source: 'external', target: 'end', sourcePort: 'right' },
+        ],
         outputs: { value: { output: { nodeId: 'end', path: ['value'] } } },
       },
     }
+    const runs = new class extends InMemoryWorkflowRunStore {
+      legacyRunId?: string
+      override async loadRun(runId: string) {
+        const record = await super.loadRun(runId)
+        return record === undefined || runId !== this.legacyRunId ? record : {
+          ...record,
+          events: record.events.map(event => {
+            if (event.type !== 'node.completed') return event
+            const { selectedPorts: _selected, ...original } = event
+            const { selectedPorts: _payloadPorts, ...payload } = event.payload
+            return { ...original, payload }
+          }),
+        }
+      }
+    }()
     const runtime = new WorkflowRuntime({
       nodes,
       catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes),
-      runStore: new InMemoryWorkflowRunStore(),
+      runStore: runs,
       artifactStore: new InMemoryWorkflowArtifactStore(),
       capturePolicy: { mode: 'replayable', maxArtifactBytes: 4096 },
     })
     const source = await runtime.launch({ target: { type: 'inline', template }, inputs: {}, authorityRef: 'test:external', authority: {}, origin: { type: 'sdk' } })
-    expect(await source.result).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' } })
+    const original = await source.result
+    expect(original).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' }, edgeStates: { b: 'taken', c: 'skipped' } })
     const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
-    expect(await replay.result).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' } })
+    const replayed = await replay.result
+    expect(replayed).toMatchObject({ status: 'completed', outputs: { value: 'effect-1' }, edgeStates: original.edgeStates })
+    const sourceCapability = original.events.find(event => event.type === 'capability.completed')!
+    const replayedCapability = replayed.events.find(event => event.type === 'capability.replayed')!
+    expect(replayedCapability.payload).toMatchObject({
+      sourceRunId: source.runId, sourceEventId: sourceCapability.eventId, artifact: sourceCapability.artifact,
+      hostEvidence: { toolVersion: 'external@1.2.3' },
+    })
+    const again = await runtime.replay({ runId: replay.runId, mode: 'recorded' })
+    const againResult = await again.result
+    expect(againResult).toMatchObject({ status: 'completed', edgeStates: original.edgeStates })
+    expect(againResult.events.find(event => event.type === 'capability.replayed')?.payload).toMatchObject({
+      sourceRunId: replay.runId, sourceEventId: replayedCapability.eventId, artifact: sourceCapability.artifact,
+      hostEvidence: { toolVersion: 'external@1.2.3' },
+    })
+    runs.legacyRunId = source.runId
+    const legacy = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    expect(await legacy.result).toMatchObject({ status: 'completed', edgeStates: original.edgeStates })
     expect(effects).toBe(1)
+  })
+
+  it('resumes an interrupted recorded replay after reopening SQLite without dispatching a Tool', async () => {
+    class InterruptedReplayStore extends SqliteWorkflowRunStore {
+      armed = true
+      override async commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void> {
+        if (this.armed && events.some(event => event.type === 'capability.replayed')) {
+          this.armed = false
+          throw new Error('simulated interruption while committing replayed output')
+        }
+        return super.commit(runId, expectedSeq, checkpoint, events)
+      }
+    }
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const execute = vi.fn(async () => ({ echo: 'recorded' }))
+    const options = {
+      nodes, catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes), services: { tools: { execute } },
+    }
+    const authority = { authorityRef: 'user:1', authority: {} }
+    const root = await mkdtemp(join(tmpdir(), 'workflow-recorded-recovery-'))
+    const path = join(root, 'runs.sqlite')
+    try {
+      let replayRunId: string
+      const writer = new InterruptedReplayStore({ path })
+      try {
+        const runtime = new WorkflowRuntime({ ...options, runStore: writer })
+        const source = await runtime.launch({
+          target: { type: 'inline', template: toolWorkflowTemplate() }, inputs: { message: 'recorded' }, ...authority, origin: { type: 'sdk' },
+        })
+        expect(await source.result).toMatchObject({ status: 'completed' })
+        const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+        replayRunId = replay.runId
+        expect(await replay.result).toMatchObject({ status: 'failed', error: 'simulated interruption while committing replayed output' })
+        expect(await writer.getCheckpoint(replayRunId)).toMatchObject({ status: 'running', nodeStates: { call: 'running' } })
+        expect((await writer.getRunMetadata(replayRunId))?.launch.recordedReplay).toBe(true)
+      } finally {
+        writer.close()
+      }
+      const reader = new SqliteWorkflowRunStore({ path })
+      try {
+        const restarted = new WorkflowRuntime({ ...options, runStore: reader })
+        const resumed = await restarted.resume({ runId: replayRunId, ...authority })
+        expect(await resumed.result).toMatchObject({ status: 'completed', outputs: { answer: 'recorded' } })
+        expect(execute).toHaveBeenCalledOnce()
+        expect((await reader.loadRun(replayRunId))?.events).not.toContainEqual(expect.objectContaining({ type: 'capability.requested' }))
+      } finally {
+        reader.close()
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed when a deterministic node drives recorded replay outside the source route', async () => {
+    const standardNodes = new WorkflowNodeRegistry()
+    registerCoreNodes(standardNodes)
+    const nodes = new WorkflowNodeRegistry()
+    let selected = true
+    let conditionOutput = true
+    for (const definition of standardNodes.list()) nodes.register(definition.type !== 'core.condition' ? definition : {
+      ...definition,
+      async execute() { return { outputs: { result: conditionOutput }, selectedPorts: [selected ? 'true' : 'false'] } },
+    })
+    const runStore = new InMemoryWorkflowRunStore()
+    const execute = vi.fn(async () => ({}))
+    const options = { nodes, catalog: new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes), runStore, services: { tools: { execute } } }
+    const runtime = new WorkflowRuntime(options)
+    const base = branchingWorkflowTemplate()
+    const template: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        nodes: base.spec.nodes.map(node => node.id === 'enabled'
+          ? { ...node, inputs: { value: { output: { nodeId: 'choose', path: ['result'] } } } }
+          : node),
+      },
+    }
+    const source = await runtime.launch({
+      target: { type: 'inline', template },
+      inputs: { enabled: true }, authorityRef: 'user:1', authority: {}, origin: { type: 'sdk' },
+    })
+    expect(await source.result).toMatchObject({ status: 'completed' })
+    // Simulate a misdeclared deterministic implementation changing its route
+    // without updating its implementation digest.
+    conditionOutput = false
+    const changedInputs = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    expect(await changedInputs.result).toMatchObject({ status: 'failed', error: expect.stringContaining('inputs diverged from the source for node enabled') })
+    selected = false
+    const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    expect(await replay.result).toMatchObject({ status: 'failed', error: expect.stringContaining('outside the source path: disabled') })
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
+  it('reuses committed subworkflow and foreach results without creating or dispatching child runs', async () => {
+    const { runtime, catalog, runs, execute } = setup()
+    const base = toolWorkflowTemplate()
+    const child: WorkflowTemplate = {
+      ...base,
+      metadata: { id: 'recorded-child', name: 'Recorded child' },
+      spec: {
+        ...base.spec,
+        inputSchema: { type: 'object' },
+        nodes: base.spec.nodes.map(node => node.id === 'call' ? { ...node, inputs: { message: { literal: 'child value' } } } : node),
+      },
+    }
+    const draft = await catalog.createDraft(child)
+    await catalog.publish(draft.id, draft.revision)
+    const childConfig = { templateId: child.metadata.id, revision: 1 }
+    const values = {
+      child: { output: { nodeId: 'child', path: [] } },
+      items: { output: { nodeId: 'foreach', path: ['results'] } },
+    } as const
+    const parent: WorkflowTemplate = {
+      apiVersion: base.apiVersion, kind: base.kind, metadata: { id: 'recorded-parent', name: 'Recorded parent' },
+      spec: {
+        inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+        requires: [{ kind: 'capability', uses: 'gateway.workflow.call' }, { kind: 'workflow', uses: 'recorded-child@1' }],
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'child', uses: 'workflow.call@1', with: childConfig, inputs: {} },
+          { id: 'foreach', uses: 'core.foreach@1', with: childConfig, inputs: { items: { literal: [1, 2] } } },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: values },
+        ],
+        edges: [
+          { id: 'a', source: 'start', target: 'child' }, { id: 'b', source: 'start', target: 'foreach' },
+          { id: 'c', source: 'child', target: 'end' }, { id: 'd', source: 'foreach', target: 'end' },
+        ],
+        outputs: {
+          child: { output: { nodeId: 'end', path: ['child'] } },
+          items: { output: { nodeId: 'end', path: ['items'] } },
+        },
+      },
+    }
+    const source = await runtime.launch({
+      target: { type: 'inline', template: parent }, inputs: {}, authorityRef: 'user:1', origin: { type: 'sdk' },
+    })
+    const original = await source.result
+    if (original.status !== 'completed') throw new Error(original.error)
+    expect(execute).toHaveBeenCalledTimes(3)
+    const replay = await runtime.replay({ runId: source.runId, mode: 'recorded' })
+    expect(await replay.result).toMatchObject({
+      status: 'completed', outputs: original.outputs,
+      events: expect.arrayContaining([
+        expect.objectContaining({ type: 'capability.replayed', nodeId: 'child' }),
+        expect.objectContaining({ type: 'capability.replayed', nodeId: 'foreach' }),
+      ]),
+    })
+    expect(execute).toHaveBeenCalledTimes(3)
+    expect((await runs.listRuns({ templateId: child.metadata.id })).items).toHaveLength(3)
   })
 
   it('deduplicates concurrent SDK launches within one runtime authority scope', async () => {

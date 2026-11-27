@@ -25,6 +25,8 @@ adw trace <runId> --events --db output/example-regression.db \
 
 `deterministic-host.mjs` 只提供示例清单声明的 Tool、Agent 和 Approval fixture，不访问网络、文件、凭据或真实外部系统。它用于契约回归，不代表真实业务结果。
 
+`order-normalization/` 是单独的故障复盘示例，围绕一次真实的运行失败生成用例，并比较候选和基线。 [订单整理回归](../docs/examples/order-normalization.md)
+
 单独运行 AI 模型周报仍可使用：
 
 ```bash

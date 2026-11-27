@@ -3,6 +3,7 @@ import { WorkflowAccessError, WorkflowAgentAccess } from '../../access/index.js'
 import { WorkflowTemplateCatalog } from '../../catalog/index.js'
 import { WorkflowNodeRegistry, registerCoreNodes, type WorkflowEngineServices } from '../../core/index.js'
 import { WorkflowRuntime, type WorkflowRuntimeOptions } from '../../runtime/index.js'
+import type { WorkflowResultDeliveryGateway } from '../../triggers/core/index.js'
 import {
   SqliteWorkflowArtifactStore,
   SqliteWorkflowCatalogRepository,
@@ -15,14 +16,28 @@ export interface WorkflowCliHost {
   readonly authority?: unknown
   readonly services?: WorkflowEngineServices
   readonly authorityResolver?: WorkflowRuntimeOptions['authorityResolver']
+  readonly delivery?: WorkflowResultDeliveryGateway
+  notify?(notice: WorkflowCliNotice): void | Promise<void>
   registerNodes?(registry: WorkflowNodeRegistry): void | Promise<void>
   dispose?(): void | Promise<void>
+}
+
+export interface WorkflowCliNotice {
+  readonly type: 'run.failed' | 'run.paused' | 'run.recovery-required' | 'schedule.missed' | 'delivery.pending'
+  readonly message: string
+  readonly runId?: string
+  readonly bindingId?: string
+  readonly invocationId?: string
 }
 
 export interface WorkflowCliApplication {
   readonly runtime: WorkflowRuntime
   readonly access: WorkflowAgentAccess
   readonly coordinator: SqliteWorkflowRunCoordinator
+  readonly runStore: SqliteWorkflowRunStore
+  readonly artifactStore: SqliteWorkflowArtifactStore
+  readonly nodes: WorkflowNodeRegistry
+  readonly catalog: WorkflowTemplateCatalog
   readonly host: WorkflowCliHost
   close(): Promise<void>
 }
@@ -60,6 +75,10 @@ export async function createWorkflowCliApplication(options: {
     runtime,
     access: new WorkflowAgentAccess(runtime),
     coordinator,
+    runStore,
+    artifactStore,
+    nodes,
+    catalog,
     host,
     async close() {
       if (closed) return
@@ -93,7 +112,9 @@ export function validateWorkflowCliHost(value: unknown, source = 'CLI Host modul
   }
   optionalFunction(host, 'registerNodes', source)
   optionalFunction(host, 'dispose', source)
+  optionalFunction(host, 'notify', source)
   optionalMethodObject(host, 'authorityResolver', ['resolve'], source)
+  optionalMethodObject(host, 'delivery', ['deliver'], source)
   if (host.services !== undefined) {
     if (!isRecord(host.services)) hostInvalid(source, 'services must be an object')
     const services = host.services as Record<string, unknown>

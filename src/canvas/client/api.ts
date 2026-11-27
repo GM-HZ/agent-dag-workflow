@@ -9,17 +9,30 @@ import type {
   CanvasDraftReadRequest,
   CanvasDraftRunRequest,
   CanvasDraftUpdateRequest,
+  CanvasJsonObject,
   CanvasNodeDefinition,
   CanvasPublishedRevision,
+  CanvasRevisionsPage,
+  CanvasRevisionsRequest,
   CanvasResumeRequest,
+  CanvasRunDetails,
+  CanvasRunExportRequest,
+  CanvasRunReceipt,
+  CanvasRunStartRequest,
+  CanvasRunHistoryPage,
+  CanvasRunHistoryRequest,
   CanvasRunRequest,
+  CanvasScheduleRunRequest,
+  CanvasScheduleRunReceipt,
   CanvasRunResult,
   CanvasTemplateDiff,
   CanvasTemplateRequest,
+  CanvasStarterWorkflow,
   CanvasTrace,
   CanvasTraceRequest,
   CanvasWorkflowDiagnostic,
   CanvasWorkflowDraft,
+  CanvasWorkflowContext,
 } from '../types.js'
 import { classifyWorkflowError, type WorkflowErrorPresentation } from './ux.js'
 
@@ -45,18 +58,29 @@ export class WorkflowCanvasRequestError extends Error {
 export interface WorkflowCanvasRemoteNamespace {
   nodes(sessionId: string): Promise<RemoteResult<readonly CanvasNodeDefinition[]>>
   templates(sessionId: string): Promise<RemoteResult<readonly CanvasCatalogSummary[]>>
+  context(sessionId: string): Promise<RemoteResult<CanvasWorkflowContext>>
+  starterOrders(sessionId: string): Promise<RemoteResult<CanvasStarterWorkflow>>
   operations(sessionId: string, request: CanvasListRequest): Promise<RemoteResult<CanvasOperationsSnapshot>>
+  runSchedule(sessionId: string, request: CanvasScheduleRunRequest): Promise<RemoteResult<CanvasScheduleRunReceipt>>
+  listRuns(sessionId: string, request: CanvasRunHistoryRequest): Promise<RemoteResult<CanvasRunHistoryPage>>
   createDraft(sessionId: string, request: CanvasDraftCreateRequest): Promise<RemoteResult<CanvasWorkflowDraft>>
   readDraft(sessionId: string, request: CanvasDraftReadRequest): Promise<RemoteResult<CanvasWorkflowDraft>>
+  readPublished(sessionId: string, request: { readonly id: string; readonly revision: number }): Promise<RemoteResult<CanvasPublishedRevision>>
+  revisions(sessionId: string, request: CanvasRevisionsRequest): Promise<RemoteResult<CanvasRevisionsPage>>
   updateDraft(sessionId: string, request: CanvasDraftUpdateRequest): Promise<RemoteResult<CanvasWorkflowDraft>>
   validate(sessionId: string, request: CanvasTemplateRequest): Promise<RemoteResult<{ readonly diagnostics: readonly CanvasWorkflowDiagnostic[] }>>
   diff(sessionId: string, request: CanvasDraftDiffRequest): Promise<RemoteResult<CanvasTemplateDiff>>
   publish(sessionId: string, request: CanvasDraftPublishRequest): Promise<RemoteResult<CanvasPublishedRevision>>
   run(sessionId: string, request: CanvasRunRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   runDraft(sessionId: string, request: CanvasDraftRunRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
+  startRun(sessionId: string, request: CanvasRunStartRequest): Promise<RemoteResult<CanvasRunReceipt>>
+  resumeRun(sessionId: string, request: CanvasResumeRequest): Promise<RemoteResult<CanvasRunReceipt>>
   resume(sessionId: string, request: CanvasResumeRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   cancel(sessionId: string, request: CanvasCancelRequest, signal?: AbortSignal): Promise<RemoteResult<CanvasRunResult>>
   trace(sessionId: string, request: CanvasTraceRequest): Promise<RemoteResult<CanvasTrace>>
+  runDetails(sessionId: string, request: { readonly runId: string }): Promise<RemoteResult<CanvasRunDetails>>
+  exportCase(sessionId: string, request: CanvasRunExportRequest): Promise<RemoteResult<CanvasJsonObject>>
+  exportEvidence(sessionId: string, request: CanvasRunExportRequest): Promise<RemoteResult<CanvasJsonObject>>
 }
 
 export interface WorkflowCanvasClientApi {

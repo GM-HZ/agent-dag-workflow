@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, WORKFLOW_TEMPLATE_API_VERSION, type JsonObject, type JsonValue } from '../../core/index.js'
+import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, WORKFLOW_TEMPLATE_API_VERSION, WorkflowExecutionError, type JsonObject, type JsonValue } from '../../core/index.js'
 import type { WorkflowRuntimeApi } from '../../runtime/index.js'
 import type { WorkflowIngressRecord, WorkflowIngressStore, WorkflowInputMappingValue, WorkflowTriggerBinding, WorkflowTriggerEnvelope } from './types.js'
 
@@ -31,11 +31,25 @@ export class WorkflowTriggerIngress {
 
   async recoverPending(): Promise<readonly WorkflowIngressRecord[]> {
     const recovered: WorkflowIngressRecord[] = []
+    const failures: Error[] = []
     for (const record of await this.store.listPending()) {
-      const binding = await this.resolveBinding(record.binding.id, record.binding.revision)
-      recovered.push(await this.#launch(binding, record))
+      try {
+        const binding = await this.resolveBinding(record.binding.id, record.binding.revision)
+        recovered.push(await this.#launch(binding, record))
+      } catch (error: unknown) {
+        failures.push(new Error(`workflow ingress ${record.triggerId} recovery failed`, { cause: error }))
+      }
     }
+    if (failures.length > 0) throw new AggregateError(failures, 'pending workflow ingress recovery failed')
     return recovered
+  }
+
+  /** Recover one admitted occurrence using the binding revision recorded at admission. */
+  async recoverOccurrence(triggerId: string): Promise<WorkflowIngressRecord> {
+    const record = await this.store.get(triggerId)
+    if (record === undefined) throw new Error(`workflow ingress occurrence not found: ${triggerId}`)
+    if (record.status !== 'received') return record
+    return this.#launch(await this.resolveBinding(record.binding.id, record.binding.revision), record)
   }
 
   async #launch(binding: WorkflowTriggerBinding, record: WorkflowIngressRecord): Promise<WorkflowIngressRecord> {
@@ -46,20 +60,25 @@ export class WorkflowTriggerIngress {
       await this.store.markRejected(record.triggerId, reasonCode(error))
       return (await this.store.get(record.triggerId))!
     }
-    // Runtime/queue failures are infrastructure or deployment failures. Keep
-    // the accepted ingress pending so recoverPending can retry the same
-    // authority-scoped idempotent launch instead of misclassifying it as a
-    // permanently rejected external event.
-    const handle = await this.runtime.launch({
-      target: { type: 'published', id: binding.spec.workflow.id, revision: binding.spec.workflow.revision },
-      inputs,
-      authorityRef: binding.spec.authorityRef,
-      origin: { type: 'trigger', source: record.source, sourceRef: record.sourceEventId },
-      idempotencyKey: record.dedupeKey,
-      executionMode: 'background',
-      ...(binding.spec.deliveryRef === undefined ? {} : { deliveryRef: binding.spec.deliveryRef }),
-    })
-    const runId = handle.runId
+    let runId: string
+    try {
+      const handle = await this.runtime.launch({
+        target: { type: 'published', id: binding.spec.workflow.id, revision: binding.spec.workflow.revision },
+        inputs,
+        authorityRef: binding.spec.authorityRef,
+        origin: { type: 'trigger', source: record.source, sourceRef: record.sourceEventId },
+        idempotencyKey: record.dedupeKey,
+        executionMode: 'background',
+        ...(binding.spec.deliveryRef === undefined ? {} : { deliveryRef: binding.spec.deliveryRef }),
+      })
+      runId = handle.runId
+    } catch (error: unknown) {
+      // Keep infrastructure failures pending for another idempotent launch.
+      if (!(error instanceof WorkflowExecutionError)
+        || (error.code !== 'WORKFLOW_INPUT_INVALID' && error.code !== 'WORKFLOW_INPUT_TOO_LARGE')) throw error
+      await this.store.markRejected(record.triggerId, `INGRESS_${error.code}`)
+      return (await this.store.get(record.triggerId))!
+    }
     try {
       await this.store.markLaunched(record.triggerId, runId)
     } catch (error: unknown) {

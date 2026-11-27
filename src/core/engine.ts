@@ -1,28 +1,33 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { resolveWorkflowBindings } from './bindings.js'
 import type { CompiledWorkflow, CompiledWorkflowNode } from './compiler.js'
 import { compileWorkflowOrThrow } from './compiler.js'
 import { createScopedWorkflowCapabilityResolver } from './capabilities.js'
 import { WorkflowExecutionError, WorkflowPauseError } from './errors.js'
-import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
+import { createHostEvidenceCollector, validateHostEvidence } from './host-evidence.js'
+import { snapshotJsonObject, snapshotJsonValue, stableJsonStringify } from './json.js'
 import { DEFAULT_WORKFLOW_POLICIES, effectiveWorkflowPolicies, normalizeWorkflowDeploymentLimits } from './limits.js'
+import { buildRecordedReplay, isRecordedReplayOrigin, replayValueHash } from './replay.js'
 import type { WorkflowNodeRegistry } from './registry.js'
 import type {
   JsonObject,
   JsonValue,
   PersistedWorkflowRunStatus,
-  WorkflowBinding,
   WorkflowCancelRequest,
   WorkflowDataCapture,
   WorkflowDeploymentLimits,
   WorkflowEdgeStatus,
   WorkflowEvent,
   WorkflowEventInput,
+  WorkflowHostInvocationEvidence,
   WorkflowInvocationRequest,
   WorkflowEngineServices,
   WorkflowExecutionPlanSnapshot,
   WorkflowNodeExecutionResult,
   WorkflowNodeServices,
   WorkflowNodeStatus,
+  WorkflowRecordedFixture,
+  WorkflowRecordedReplay,
   WorkflowResumeRequest,
   WorkflowEngineRun,
   WorkflowRunCheckpoint,
@@ -42,9 +47,16 @@ interface NodeCompletionSuccess {
   readonly nodeId: string
   readonly ok: true
   readonly result: WorkflowNodeExecutionResult
-  readonly capability?: {
-    readonly type: 'capability.completed' | 'capability.replayed'
+  readonly durationMs: number
+  readonly capability?: { readonly type: 'capability.completed'; readonly invocationId: string; readonly hostEvidence?: WorkflowHostInvocationEvidence } | {
+    readonly type: 'capability.replayed'
     readonly invocationId: string
+    readonly sourceRunId?: string
+    readonly sourceEventId?: string
+    readonly inputHash?: string
+    readonly dataHash?: string
+    readonly artifact?: import('./types.js').WorkflowArtifactPointer
+    readonly hostEvidence?: WorkflowHostInvocationEvidence
   }
 }
 
@@ -52,6 +64,7 @@ interface NodeCompletionFailure {
   readonly nodeId: string
   readonly ok: false
   readonly error: unknown
+  readonly durationMs: number
 }
 
 class WorkflowCommitFailure extends Error {
@@ -62,6 +75,10 @@ class WorkflowCommitFailure extends Error {
 }
 
 type NodeCompletion = NodeCompletionSuccess | NodeCompletionFailure
+type RecordedExecution =
+  | { readonly evidence: WorkflowRecordedReplay; readonly fixtures?: never; readonly legacyOutputs?: never }
+  | { readonly evidence?: never; readonly fixtures: Readonly<Record<string, WorkflowRecordedFixture>>; readonly legacyOutputs?: never }
+  | { readonly evidence?: never; readonly fixtures?: never; readonly legacyOutputs: Readonly<Record<string, JsonObject>> }
 
 interface RuntimeState {
   readonly nodeStates: Map<string, WorkflowNodeStatus>
@@ -124,6 +141,10 @@ export class DagWorkflowEngine {
   }
 
   async queue(request: WorkflowEngineStartRequest): Promise<WorkflowEngineRun> {
+    if (request.recordedReplay !== undefined || request.recordedNodeOutputs !== undefined || request.recordedFixtures !== undefined
+      || isRecordedReplayOrigin(request.execution.origin)) {
+      throw new WorkflowExecutionError('RECORDED_REPLAY_QUEUE_UNSUPPORTED', 'recorded replay must start with its evidence outside the background queue')
+    }
     if (this.#runStore === undefined) throw new WorkflowExecutionError('RUN_STORE_MISSING', 'background queue requires a WorkflowRunStore')
     const workflow = compileWorkflowOrThrow(request.template, this.#registry, { deploymentLimits: this.#deploymentLimits })
     const inputs = snapshotJsonObject(request.inputs)
@@ -217,6 +238,7 @@ export class DagWorkflowEngine {
     const createdAt = this.#now()
     const plan = request.plan ?? createInlineExecutionPlan(workflow, this.#registry)
     assertExecutionPlan(plan, workflow, this.#registry)
+    const recorded = recordedExecution(request, workflow.semanticHash)
     state.nodeStates.set(workflow.startNodeId, 'ready')
     state.ready.push(workflow.startNodeId)
     const initialCheckpoint = checkpointOf(id, workflow.semanticHash, state, createdAt, 0)
@@ -236,6 +258,7 @@ export class DagWorkflowEngine {
       launch: {
         ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
         ...(request.deliveryRef === undefined ? {} : { deliveryRef: request.deliveryRef }),
+        ...(recorded === undefined ? {} : { recordedReplay: true }),
         executionMode: 'foreground',
       },
       createdAt,
@@ -254,7 +277,7 @@ export class DagWorkflowEngine {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
-      ...(request.recordedNodeOutputs === undefined ? {} : { recordedNodeOutputs: request.recordedNodeOutputs }),
+      ...(recorded === undefined ? {} : { recorded }),
       checkpointMaxBytes: this.#deploymentLimits.maxCheckpointBytes,
       initialEvents: [{ type: 'run.accepted', ...inputCapture }, { type: 'run.queued' }, { type: 'run.started' }, { type: 'node.ready', nodeId: workflow.startNodeId }],
       initializeStart: false,
@@ -277,6 +300,7 @@ export class DagWorkflowEngine {
     if (state.status === 'completed' || state.status === 'failed' || state.status === 'cancelled') {
       return terminalRun(record.runId, state)
     }
+    const recorded = await this.#resumeRecordedExecution(record, request.recordedReplay)
 
     const attentionEvents: WorkflowEventInput[] = []
     const explicitFailures: string[] = []
@@ -287,7 +311,7 @@ export class DagWorkflowEngine {
       if (resolution === 'fail') {
         state.nodeStates.set(nodeId, 'failed')
         explicitFailures.push(nodeId)
-      } else if (resolution === 'retry' || ((status === 'running' || status === 'waiting') && definition.retry !== 'never')) {
+      } else if (resolution === 'retry' || recorded !== undefined || ((status === 'running' || status === 'waiting') && definition.retry !== 'never')) {
         state.nodeStates.set(nodeId, 'ready')
         if (!state.ready.includes(nodeId)) state.ready.push(nodeId)
         attentionEvents.push({ type: 'node.ready', nodeId })
@@ -345,6 +369,7 @@ export class DagWorkflowEngine {
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.onEvent === undefined ? {} : { onEvent: request.onEvent }),
+      ...(recorded === undefined ? {} : { recorded }),
       checkpointMaxBytes: Math.max(
         this.#deploymentLimits.maxCheckpointBytes,
         checkpointSizeWithReadyReserve(record.checkpoint, workflow.order) + CHECKPOINT_RECOVERY_RESERVE_BYTES,
@@ -352,6 +377,25 @@ export class DagWorkflowEngine {
       initialEvents: [...recoveredInitialEvents, ...attentionEvents],
       initializeStart: false,
     })
+  }
+
+  async #resumeRecordedExecution(record: WorkflowRunRecord, supplied: WorkflowRecordedReplay | undefined): Promise<RecordedExecution | undefined> {
+    if (!isRecordedReplayOrigin(record.execution.origin)) {
+      if (supplied !== undefined || record.launch.recordedReplay === true) {
+        throw new WorkflowExecutionError('RECORDED_SOURCE_MISSING', 'recorded replay cannot resume without its persisted source')
+      }
+      return undefined
+    }
+    const sourceRunId = record.execution.origin.sourceRef
+    let evidence = supplied
+    if (evidence === undefined && sourceRunId !== undefined && sourceRunId !== record.runId) {
+      const source = await this.#runStore!.loadRun(sourceRunId)
+      if (source?.execution.authorityRef === record.execution.authorityRef) evidence = buildRecordedReplay(source, this.#registry)
+    }
+    if (evidence === undefined || evidence.sourceRunId !== sourceRunId || evidence.semanticHash !== record.semanticHash) {
+      throw new WorkflowExecutionError('RECORDED_SOURCE_MISSING', 'recorded replay cannot resume without its matching source evidence')
+    }
+    return { evidence }
   }
 
   async cancel(request: WorkflowCancelRequest): Promise<WorkflowEngineRun> {
@@ -441,7 +485,7 @@ export class DagWorkflowEngine {
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
     readonly checkpointMaxBytes: number
-    readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
+    readonly recorded?: RecordedExecution
   }): WorkflowEngineRun {
     const controller = new AbortController()
     let cancelReason = 'cancelled'
@@ -508,10 +552,9 @@ export class DagWorkflowEngine {
     readonly initialEvents: readonly WorkflowEventInput[]
     readonly initializeStart: boolean
     readonly checkpointMaxBytes: number
-    readonly recordedNodeOutputs?: Readonly<Record<string, JsonObject>>
+    readonly recorded?: RecordedExecution
   }): Promise<WorkflowRunResult> {
     const { id: runId, workflow, inputs: workflowInputs, state, authority, controller, onEvent, execution, plan } = options
-    const services = this.#services
     let commitTail = Promise.resolve()
     const commit = async (
       events: readonly WorkflowEventInput[],
@@ -618,7 +661,7 @@ export class DagWorkflowEngine {
               },
               item.attempt,
               commit,
-              options.recordedNodeOutputs,
+              options.recorded,
             ))
           }
         }
@@ -642,18 +685,26 @@ export class DagWorkflowEngine {
           const failedNode = workflow.nodes.get(completion.nodeId)!
           const maxAttempts = failedNode.template.policy?.retry?.maxAttempts ?? 1
           const attempts = state.nodeAttempts.get(completion.nodeId) ?? 1
+          const error = renderError(completion.error)
+          const errorCode = completion.error instanceof WorkflowExecutionError ? completion.error.code : 'NODE_EXECUTION_FAILED'
+          const durationMs = completion.durationMs
           if (attempts < maxAttempts && failedNode.definition.retry !== 'never') {
             state.nodeStates.set(completion.nodeId, 'ready')
             if (!state.ready.includes(completion.nodeId)) state.ready.push(completion.nodeId)
             sortReady(state.ready, workflow)
-            await commit([{ type: 'node.ready', nodeId: completion.nodeId }])
+            await commit([
+              {
+                type: 'node.retry-scheduled', nodeId: completion.nodeId, error, errorCode, durationMs,
+                nextAttempt: attempts + 1, retryMode: failedNode.definition.retry,
+              },
+              { type: 'node.ready', nodeId: completion.nodeId },
+            ])
             continue
           }
-          const error = renderError(completion.error)
           state.nodeStates.set(completion.nodeId, 'failed')
           controller.abort(`node ${completion.nodeId} failed`)
           const cancelled = await settleActive(active)
-          return finishFailure(error, completion.nodeId, cancelled)
+          return finishFailure(error, completion.nodeId, cancelled, [], { errorCode, durationMs })
         }
 
         if (options.interruptionReason() !== undefined) {
@@ -682,19 +733,19 @@ export class DagWorkflowEngine {
           controller.abort(`node ${completion.nodeId} failed`)
           const cancelled = await settleActive(active)
           return finishFailure(message, completion.nodeId, cancelled, completion.capability?.type === 'capability.completed'
-            ? [{ type: 'capability.failed', nodeId: completion.nodeId, invocationId: completion.capability.invocationId, error: message }]
+            ? [{
+                type: 'capability.failed', nodeId: completion.nodeId, invocationId: completion.capability.invocationId, error: message,
+                ...(completion.capability.hostEvidence === undefined ? {} : { hostEvidence: completion.capability.hostEvidence }),
+              }]
             : [])
         }
         const events: WorkflowEventInput[] = [
           ...(completion.capability === undefined ? [] : [{
-            type: completion.capability.type,
-            nodeId: completion.nodeId,
-            invocationId: completion.capability.invocationId,
-            ...capabilityCapture,
-          } as WorkflowEventInput]),
+            ...completion.capability, nodeId: completion.nodeId, ...capabilityCapture,
+          }]),
           { type: 'node.output-validated', nodeId: completion.nodeId },
           { type: 'node.output-committed', nodeId: completion.nodeId, ...nodeCapture },
-          { type: 'node.completed', nodeId: completion.nodeId },
+          { type: 'node.completed', nodeId: completion.nodeId, selectedPorts: completion.result.selectedPorts ?? ['success'], durationMs: completion.durationMs },
         ]
         settleOutgoingEdges(completion.nodeId, completion.result.selectedPorts ?? ['success'], events)
         await commit(events)
@@ -703,7 +754,15 @@ export class DagWorkflowEngine {
       const unresolved = [...state.nodeStates].filter(([, status]) => status === 'pending' || status === 'ready' || status === 'running' || status === 'waiting')
       if (unresolved.length > 0) return finishFailure(`scheduler stopped with unresolved nodes: ${unresolved.map(([id]) => id).join(', ')}`)
 
-      const outputs = snapshotJsonObject(await resolveBindings(workflow.template.spec.outputs, undefined))
+      const outputs = snapshotJsonObject(resolveWorkflowBindings(workflow.template.spec.outputs, workflowInputs, nodeId => state.nodeOutputs.get(nodeId)))
+      const source = options.recorded?.evidence
+      if (source !== undefined && (
+        stableJsonStringify(Object.fromEntries(state.nodeStates)) !== stableJsonStringify(source.nodeStates)
+        || stableJsonStringify(Object.fromEntries(state.edgeStates)) !== stableJsonStringify(source.edgeStates)
+        || stableJsonStringify(outputs) !== stableJsonStringify(source.outputs)
+      )) {
+        return finishFailure('recorded replay diverged from the source run path or outputs')
+      }
       const outputErrors = workflow.validateWorkflowOutputs(outputs)
       if (outputErrors.length > 0) return finishFailure(`workflow output is invalid: ${outputErrors.join('; ')}`)
       assertOutputSize(outputs, policies.maxOutputBytes, 'workflow result')
@@ -750,12 +809,13 @@ export class DagWorkflowEngine {
       failedNodeId?: string,
       cancelled: readonly string[] = [],
       prefix: readonly WorkflowEventInput[] = [],
+      attempt?: { readonly errorCode: string; readonly durationMs: number },
     ): Promise<WorkflowRunFailure> {
       state.status = 'failed'
       state.error = error
       const events: WorkflowEventInput[] = [
         ...prefix,
-        ...(failedNodeId === undefined ? [] : [{ type: 'node.failed' as const, nodeId: failedNodeId, error }]),
+        ...(failedNodeId === undefined ? [] : [{ type: 'node.failed' as const, nodeId: failedNodeId, error, ...attempt }]),
         ...cancelled.map(nodeId => ({ type: 'node.cancelled' as const, nodeId })),
         { type: 'run.failed', error },
       ]
@@ -845,21 +905,6 @@ export class DagWorkflowEngine {
       for (const target of new Set(node.outgoing.map(edge => edge.target))) reconcileNode(target, events)
     }
 
-    async function resolveBindings(bindings: Readonly<Record<string, WorkflowBinding>>, nodeId: string | undefined): Promise<JsonObject> {
-      const result: JsonObject = {}
-      for (const [name, binding] of Object.entries(bindings)) result[name] = await resolveBinding(binding, nodeId)
-      return result
-    }
-
-    async function resolveBinding(binding: WorkflowBinding, nodeId: string | undefined): Promise<JsonValue> {
-      if ('literal' in binding) return snapshotJsonValue(binding.literal)
-      if ('input' in binding) {
-        return snapshotJsonValue(readPath(workflowInputs, binding.input.path, 'workflow input'))
-      }
-      const source = state.nodeOutputs.get(binding.output.nodeId)
-      if (source === undefined) throw executionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.nodeId}`, nodeId)
-      return snapshotJsonValue(readPath(source, binding.output.path, binding.output.nodeId))
-    }
   }
 
   async #commit(
@@ -946,11 +991,17 @@ export class DagWorkflowEngine {
     checkpointProgress: (progress: JsonValue) => Promise<void>,
     attempt: number,
     commit: (events: readonly WorkflowEventInput[]) => Promise<void>,
-    recordedNodeOutputs?: Readonly<Record<string, JsonObject>>,
+    recorded?: RecordedExecution,
   ): Promise<NodeCompletion> {
+    const startedAt = this.#now()
+    const durationMs = () => Math.max(0, this.#now() - startedAt)
     try {
-      const resolvedInputs = resolveNodeInputs(node, workflowInputs, state.nodeOutputs)
-      const inputs = snapshotJsonObject(resolvedInputs)
+      if (recorded?.evidence !== undefined && recorded.evidence.nodeStates[node.template.id] !== 'succeeded') {
+        throw new WorkflowExecutionError('RECORDED_ROUTE_DIVERGED', `recorded replay reached a node outside the source path: ${node.template.id}`)
+      }
+      const inputs = snapshotJsonObject(resolveWorkflowBindings(
+        node.template.inputs, workflowInputs, id => state.nodeOutputs.get(id), node.template.id,
+      ))
       const inputErrors = node.validateInputs(inputs)
       if (inputErrors.length > 0) throw new WorkflowExecutionError('NODE_INPUT_INVALID', inputErrors.join('; '), { nodeId: node.template.id })
       const timeoutSignal = node.template.policy?.timeoutMs === undefined
@@ -958,25 +1009,49 @@ export class DagWorkflowEngine {
         : AbortSignal.any([runSignal, AbortSignal.timeout(node.template.policy.timeoutMs)])
       const invocationId = `${runId}:${node.template.id}`
       const external = node.definition.effects === 'external'
-      const recorded = external ? recordedNodeOutputs?.[node.template.id] : undefined
-      if (recorded !== undefined) {
-        const outputs = snapshotJsonObject(recorded)
+      if (external && recorded !== undefined) {
+        const evidence = recorded.evidence
+        const result = evidence === undefined ? undefined : ownValue(evidence.nodeResults, node.template.id)
+        const inputHash = replayValueHash(inputs)
+        if (result !== undefined && result.inputHash !== inputHash) {
+          throw new WorkflowExecutionError('RECORDED_INPUT_MISMATCH', `recorded replay inputs diverged from the source for node ${node.template.id}`)
+        }
+        const fixture = ownValue(recorded.fixtures, node.template.id)
+        if (fixture?.expectedInputs !== undefined && stableJsonStringify(fixture.expectedInputs) !== stableJsonStringify(inputs)) {
+          throw new WorkflowExecutionError('RECORDED_INPUT_MISMATCH', `recorded fixture inputs do not match node ${node.template.id}`)
+        }
+        if (fixture?.failure !== undefined) {
+          throw new WorkflowExecutionError(fixture.failure.code, fixture.failure.message, { nodeId: node.template.id })
+        }
+        const value = result?.outputs ?? fixture?.outputs ?? ownValue(recorded.legacyOutputs, node.template.id)
+        if (value === undefined) throw new WorkflowExecutionError('RECORDED_OUTPUT_MISSING', `recorded replay has no committed outputs for ${node.template.id}`)
+        const outputs = snapshotJsonObject(value)
         const outputErrors = node.validateOutputs(outputs)
         if (outputErrors.length > 0) throw new WorkflowExecutionError('RECORDED_OUTPUT_INVALID', outputErrors.join('; '), { nodeId: node.template.id })
         const expectationErrors = node.validateExpectation?.(outputs) ?? []
         if (expectationErrors.length > 0) throw new WorkflowExecutionError('RECORDED_OUTPUT_INVALID', expectationErrors.join('; '), { nodeId: node.template.id })
         assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `recorded node ${node.template.id} output`)
-        const selectedPorts = node.template.uses === 'human.approval@1'
-          ? [outputs.approved === true ? 'approved' : 'rejected']
-          : undefined
+        const selectedPorts = result?.selectedPorts ?? fixture?.selectedPorts ?? (node.template.uses === 'human.approval@1'
+          ? [outputs.approved === true ? 'approved' : 'rejected'] : ['success'])
+        assertSelectedPorts(node, selectedPorts)
+        const hostEvidence = validateHostEvidence(result?.hostEvidence)
         return {
           nodeId: node.template.id,
           ok: true,
-          result: { outputs, ...(selectedPorts === undefined ? {} : { selectedPorts }) },
-          capability: { type: 'capability.replayed', invocationId },
+          durationMs: durationMs(),
+          result: { outputs, selectedPorts },
+          capability: {
+            type: 'capability.replayed', invocationId, inputHash,
+            ...(evidence === undefined ? {} : { sourceRunId: evidence.sourceRunId }),
+            ...(result === undefined ? {} : { sourceEventId: result.sourceEventId }),
+            ...(result?.dataHash === undefined ? {} : { dataHash: result.dataHash }),
+            ...(result?.artifact === undefined ? {} : { artifact: result.artifact }),
+            ...(hostEvidence === undefined ? {} : { hostEvidence }),
+          },
         }
       }
-      if (external) await commit([{ type: 'capability.requested', nodeId: node.template.id, invocationId }])
+      if (external) await commit([{ type: 'capability.requested', nodeId: node.template.id, invocationId, inputHash: replayValueHash(inputs) }])
+      const evidenceCollector = external ? createHostEvidenceCollector() : undefined
       try {
         const execution = Promise.resolve(node.definition.execute({
           runId,
@@ -987,19 +1062,21 @@ export class DagWorkflowEngine {
           config: node.template.with,
           signal: timeoutSignal,
           capabilities: createScopedWorkflowCapabilityResolver(
-            this.#services.capabilities,
+            recorded === undefined ? this.#services.capabilities : undefined,
             node.definition.capabilities,
             node.template.id,
           ),
-          services: scopeNodeServices(this.#services, node.definition.capabilities),
+          services: recorded === undefined ? scopeNodeServices(this.#services, node.definition.capabilities) : {},
           requirements: node.requirements,
           depth: state.depth,
           subworkflowMaxDepth,
           ...(state.nodeProgress.get(node.template.id) === undefined ? {} : { progress: state.nodeProgress.get(node.template.id)! }),
           checkpointProgress,
-          authority,
+          ...(evidenceCollector === undefined ? {} : { reportEvidence: evidenceCollector.report }),
+          authority: recorded === undefined ? authority : undefined,
         }))
         const rawResult = await awaitExecutionOrAbort(execution, timeoutSignal, runSignal, node.template.id)
+        const hostEvidence = evidenceCollector?.close()
         const outputs = snapshotJsonObject(rawResult.outputs)
         const result: WorkflowNodeExecutionResult = {
           outputs,
@@ -1011,33 +1088,67 @@ export class DagWorkflowEngine {
         if (expectationErrors.length > 0) {
           throw new WorkflowExecutionError('NODE_OUTPUT_EXPECTATION_FAILED', expectationErrors.join('; '), { nodeId: node.template.id })
         }
-        const selected = result.selectedPorts ?? ['success']
-        if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
-          throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
-        }
+        assertSelectedPorts(node, result.selectedPorts ?? ['success'])
         assertOutputSize(outputs, Math.min(maxOutputBytes, node.template.expects?.maxBytes ?? maxOutputBytes), `node ${node.template.id} output`)
         return {
           nodeId: node.template.id,
           ok: true,
+          durationMs: durationMs(),
           result,
           ...(external ? {
             capability: {
               type: 'capability.completed' as const,
               invocationId,
+              ...(hostEvidence === undefined ? {} : { hostEvidence }),
             },
           } : {}),
         }
       } catch (error: unknown) {
+        const hostEvidence = evidenceCollector?.close()
         if (error instanceof WorkflowCommitFailure) throw error
         if (external && !runSignal.aborted) {
-          await commit([{ type: 'capability.failed', nodeId: node.template.id, invocationId, error: renderError(error) }])
+          await commit([{
+            type: 'capability.failed', nodeId: node.template.id, invocationId, error: renderError(error),
+            ...(hostEvidence === undefined ? {} : { hostEvidence }),
+          }])
         }
         throw error
       }
     } catch (error: unknown) {
       if (error instanceof WorkflowCommitFailure) throw error
-      return { nodeId: node.template.id, ok: false, error }
+      return { nodeId: node.template.id, ok: false, error, durationMs: durationMs() }
     }
+  }
+}
+
+function recordedExecution(request: WorkflowEngineStartRequest, semanticHash: string): RecordedExecution | undefined {
+  const evidence = request.recordedReplay
+  const fixtures = request.recordedFixtures
+  const legacyOutputs = request.recordedNodeOutputs
+  const origin = request.execution.origin
+  if (evidence !== undefined) {
+    if (fixtures !== undefined || legacyOutputs !== undefined || !isRecordedReplayOrigin(origin)
+      || evidence.sourceRunId !== origin.sourceRef || evidence.semanticHash !== semanticHash) {
+      throw new WorkflowExecutionError('RECORDED_SOURCE_INVALID', 'recorded replay evidence does not match the requested source and template')
+    }
+    return { evidence }
+  }
+  if (isRecordedReplayOrigin(origin)) throw new WorkflowExecutionError('RECORDED_SOURCE_MISSING', 'recorded replay requires committed source evidence')
+  if (fixtures !== undefined) {
+    if (legacyOutputs !== undefined) throw new WorkflowExecutionError('RECORDED_SOURCE_INVALID', 'recorded fixtures and legacy replay inputs cannot be combined')
+    return { fixtures: snapshotJsonValue(fixtures as unknown as JsonValue) as unknown as Readonly<Record<string, WorkflowRecordedFixture>> }
+  }
+  if (legacyOutputs !== undefined) return { legacyOutputs }
+  return undefined
+}
+
+function ownValue<T>(record: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  return record !== undefined && Object.hasOwn(record, key) ? record[key] : undefined
+}
+
+function assertSelectedPorts(node: CompiledWorkflowNode, selected: readonly string[]): void {
+  if (selected.length === 0 || new Set(selected).size !== selected.length || selected.some(port => !node.definition.outputPorts.includes(port))) {
+    throw new WorkflowExecutionError('NODE_PORT_INVALID', `node selected invalid output ports: ${selected.join(', ')}`, { nodeId: node.template.id })
   }
 }
 
@@ -1255,44 +1366,6 @@ function attentionNodeIds(state: RuntimeState): string[] {
 
 function sortReady(ready: string[], workflow: CompiledWorkflow): void {
   ready.sort((left, right) => workflow.order.indexOf(left) - workflow.order.indexOf(right))
-}
-
-function resolveNodeInputs(
-  node: CompiledWorkflowNode,
-  workflowInputs: JsonObject,
-  nodeOutputs: ReadonlyMap<string, JsonObject>,
-): JsonObject {
-  const result: JsonObject = {}
-  for (const [name, binding] of Object.entries(node.template.inputs)) {
-    if ('literal' in binding) result[name] = snapshotJsonValue(binding.literal)
-    else if ('input' in binding) {
-      result[name] = snapshotJsonValue(readPath(workflowInputs, binding.input.path, 'workflow input'))
-    } else {
-      const source = nodeOutputs.get(binding.output.nodeId)
-      if (source === undefined) throw new WorkflowExecutionError('BINDING_SOURCE_UNAVAILABLE', `output is unavailable from node ${binding.output.nodeId}`, { nodeId: node.template.id })
-      result[name] = snapshotJsonValue(readPath(source, binding.output.path, binding.output.nodeId))
-    }
-  }
-  return result
-}
-
-function readPath(root: JsonValue, path: readonly (string | number)[], sourceNodeId: string): JsonValue {
-  let value: JsonValue | undefined = root
-  for (const segment of path) {
-    if (typeof segment === 'number') {
-      if (!Array.isArray(value) || segment >= value.length) throw new WorkflowExecutionError('BINDING_PATH_INVALID', `path does not exist on node ${sourceNodeId}`)
-      value = value[segment]
-    } else {
-      if (value === undefined || !isJsonObject(value) || !(segment in value)) throw new WorkflowExecutionError('BINDING_PATH_INVALID', `path does not exist on node ${sourceNodeId}`)
-      value = value[segment]
-    }
-  }
-  if (value === undefined) throw new WorkflowExecutionError('BINDING_PATH_INVALID', `path does not exist on node ${sourceNodeId}`)
-  return value
-}
-
-function executionError(code: string, message: string, nodeId: string | undefined): WorkflowExecutionError {
-  return new WorkflowExecutionError(code, message, nodeId === undefined ? undefined : { nodeId })
 }
 
 function assertOutputSize(value: JsonValue, maxBytes: number, label: string): void {

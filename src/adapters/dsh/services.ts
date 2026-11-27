@@ -17,6 +17,7 @@ import {
   type WorkflowScriptRuntimeDefinition,
   type WorkflowScriptRuntimeDisposer,
   type WorkflowRunCheckpoint,
+  type WorkflowRunEventWindow,
   type WorkflowRunRecord,
   type WorkflowRunMetadata,
   type WorkflowRunResult,
@@ -30,19 +31,24 @@ import {
   type WorkflowCatalogRepository,
   type WorkflowCatalogSummary,
   type WorkflowDraft,
+  type WorkflowRevisionPage,
   type WorkflowTemplateDiff,
 } from '../../catalog/index.js'
-import type { WorkflowDiagnostic, WorkflowTemplate } from '../../core/index.js'
+import type { JsonObject, WorkflowDiagnostic, WorkflowRunHistoryPage, WorkflowRunHistoryQuery, WorkflowTemplate } from '../../core/index.js'
 import { WorkflowRuntime, type WorkflowRunHandle } from '../../runtime/index.js'
 import {
   InMemoryWorkflowBindingRepository,
   InMemoryWorkflowDeliveryStore,
   InMemoryWorkflowIngressStore,
   WorkflowBindingCatalog,
+  WorkflowBindingError,
   WorkflowTriggerDefinitionRegistry,
+  type WorkflowBindingListQuery,
   type WorkflowBindingRepository,
+  type WorkflowDeliveryListQuery,
   type WorkflowDeliveryRecord,
   type WorkflowDeliveryStore,
+  type WorkflowIngressListQuery,
   type WorkflowIngressRecord,
   type WorkflowIngressStore,
   type WorkflowTriggerBinding,
@@ -53,13 +59,13 @@ import type {
   DshAgentLike,
   DshDagWorkflowResumeRequest,
   DshDagWorkflowStartRequest,
-  DshToolBatchRuntimeLike,
-  DshToolRuntimeLike,
+  DshToolBatchRegistryLike,
+  DshToolRegistryLike,
   DshApprovalRuntimeLike,
   DshWorkflowPluginConfig,
   DshWorkflowRun,
 } from './types.js'
-import { executeDshTool, startDshSubagent, type DshSubagents } from './runtime-api.js'
+import { executeDshTool, selectDshSubagent, startDshSubagent, type DshSubagents } from './runtime-api.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -91,7 +97,7 @@ export abstract class WorkflowBindingsService extends Service {
   constructor(ctx: Context) { super(ctx, 'workflowBindings') }
   abstract publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number): Promise<WorkflowTriggerBinding>
   abstract get(id: string, revision?: number): Promise<WorkflowTriggerBinding>
-  abstract list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]>
+  abstract list(query?: WorkflowBindingListQuery): Promise<readonly WorkflowTriggerBinding[]>
 }
 
 export class RepositoryWorkflowBindingsService extends WorkflowBindingsService {
@@ -103,7 +109,7 @@ export class RepositoryWorkflowBindingsService extends WorkflowBindingsService {
   }
   publish(candidate: WorkflowTriggerBindingCandidate, expectedRevision: number): Promise<WorkflowTriggerBinding> { return this.catalog.publish(candidate, expectedRevision) }
   get(id: string, revision?: number): Promise<WorkflowTriggerBinding> { return this.catalog.get(id, revision) }
-  list(query?: { readonly limit?: number }): Promise<readonly WorkflowTriggerBinding[]> { return this.catalog.list(query) }
+  list(query?: WorkflowBindingListQuery): Promise<readonly WorkflowTriggerBinding[]> { return this.catalog.list(query) }
 }
 
 export class InMemoryWorkflowBindingsService extends RepositoryWorkflowBindingsService {
@@ -117,31 +123,38 @@ export abstract class WorkflowIngressRecordsService extends Service implements W
   abstract markRejected(triggerId: string, reasonCode: string): Promise<void>
   abstract get(triggerId: string): Promise<WorkflowIngressRecord | undefined>
   abstract listPending(): Promise<readonly WorkflowIngressRecord[]>
-  abstract list(query?: { readonly limit?: number }): Promise<readonly WorkflowIngressRecord[]>
+  abstract list(query?: WorkflowIngressListQuery): Promise<readonly WorkflowIngressRecord[]>
 }
 
 export class InMemoryWorkflowIngressRecordsService extends WorkflowIngressRecordsService {
-  private readonly store = new InMemoryWorkflowIngressStore()
+  private readonly store = new InMemoryWorkflowIngressStore(async ({ id, revision }) => {
+    try { return (await this.ctx.get('workflowBindings')?.get(id, revision))?.spec.authorityRef }
+    catch (error: unknown) {
+      if (error instanceof WorkflowBindingError && error.code === 'BINDING_NOT_FOUND') return undefined
+      throw error
+    }
+  })
   acceptOrGet(record: WorkflowIngressRecord) { return this.store.acceptOrGet(record) }
   markLaunched(triggerId: string, runId: string) { return this.store.markLaunched(triggerId, runId) }
   markRejected(triggerId: string, reasonCode: string) { return this.store.markRejected(triggerId, reasonCode) }
   get(triggerId: string) { return this.store.get(triggerId) }
   listPending() { return this.store.listPending() }
-  list(query?: { readonly limit?: number }) { return this.store.list(query) }
+  list(query?: WorkflowIngressListQuery) { return this.store.list(query) }
 }
 
 export abstract class WorkflowDeliveryRecordsService extends Service implements WorkflowDeliveryStore {
   constructor(ctx: Context) { super(ctx, 'workflowDelivery') }
   abstract get(invocationId: string): Promise<WorkflowDeliveryRecord | undefined>
   abstract save(record: WorkflowDeliveryRecord, expectedAttempts: number): Promise<void>
-  abstract listAttention(query?: { readonly limit?: number }): Promise<readonly WorkflowDeliveryRecord[]>
+  abstract listAttention(query?: WorkflowDeliveryListQuery): Promise<readonly WorkflowDeliveryRecord[]>
 }
 
 export class InMemoryWorkflowDeliveryRecordsService extends WorkflowDeliveryRecordsService {
-  private readonly store = new InMemoryWorkflowDeliveryStore()
+  private readonly store = new InMemoryWorkflowDeliveryStore(async runId =>
+    (await this.ctx.get('workflowRuns')?.getRunMetadata(runId))?.execution.authorityRef)
   get(invocationId: string) { return this.store.get(invocationId) }
   save(record: WorkflowDeliveryRecord, expectedAttempts: number) { return this.store.save(record, expectedAttempts) }
-  listAttention(query?: { readonly limit?: number }) { return this.store.listAttention(query) }
+  listAttention(query?: WorkflowDeliveryListQuery) { return this.store.listAttention(query) }
 }
 
 export class WorkflowCapabilityRegistryService extends Service {
@@ -186,7 +199,7 @@ export class WorkflowScriptRuntimeRegistryService extends Service {
 }
 
 type DshRuntimeContext = Context & {
-  readonly tools: DshToolRuntimeLike | DshToolBatchRuntimeLike
+  readonly tools: DshToolRegistryLike | DshToolBatchRegistryLike
   readonly subagents: DshSubagents
   readonly approval: DshApprovalRuntimeLike
 }
@@ -222,9 +235,13 @@ export abstract class DagWorkflowEngineService extends Service {
   }
 
   abstract start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun>
+  abstract validate(template: WorkflowTemplate, inputs: JsonObject, parent: object): Promise<readonly WorkflowDiagnostic[]>
   abstract resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun>
   abstract cancel(request: import('./types.js').DshDagWorkflowCancelRequest): Promise<WorkflowRunResult>
   abstract owns(runId: string, parent: object): Promise<boolean>
+  abstract authorityRefFor?(parent: object): string | undefined
+  abstract listRuns?(query: Omit<WorkflowRunHistoryQuery, 'authorityRef'>, parent: object): Promise<WorkflowRunHistoryPage>
+  abstract isActive?(runId: string): boolean
 }
 
 export abstract class WorkflowRunsService extends Service implements WorkflowRunStore {
@@ -236,9 +253,12 @@ export abstract class WorkflowRunsService extends Service implements WorkflowRun
   abstract commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]): Promise<void>
   abstract loadRun(runId: string): Promise<WorkflowRunRecord | undefined>
   abstract getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined>
+  async getRunInputs(runId: string): Promise<JsonObject | undefined> { return (await this.loadRun(runId))?.inputs }
   abstract getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined>
   abstract readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]>
+  abstract queryEvents?(runId: string, query: WorkflowRunEventWindow): Promise<readonly WorkflowEvent[]>
   abstract listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]>
+  abstract listRuns?(query?: WorkflowRunHistoryQuery): Promise<WorkflowRunHistoryPage>
 }
 
 export class InMemoryWorkflowRunsService extends WorkflowRunsService {
@@ -252,7 +272,9 @@ export class InMemoryWorkflowRunsService extends WorkflowRunsService {
   async getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined> { return this.store.getRunMetadata(runId) }
   async getCheckpoint(runId: string): Promise<WorkflowRunCheckpoint | undefined> { return this.store.getCheckpoint(runId) }
   async readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }): Promise<readonly WorkflowEvent[]> { return this.store.readEvents(runId, query) }
+  queryEvents(runId: string, query: WorkflowRunEventWindow) { return this.store.queryEvents(runId, query) }
   async listRecoverableRuns(): Promise<readonly WorkflowRunRecord[]> { return this.store.listRecoverableRuns() }
+  listRuns(query?: WorkflowRunHistoryQuery) { return this.store.listRuns(query) }
 }
 
 export abstract class WorkflowTemplatesService extends Service {
@@ -267,6 +289,7 @@ export abstract class WorkflowTemplatesService extends Service {
   abstract diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff>
   abstract publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision>
   abstract getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision>
+  abstract listRevisions?(id: string, query?: { readonly before?: number; readonly limit?: number }): Promise<WorkflowRevisionPage>
   abstract list(): Promise<readonly WorkflowCatalogSummary[]>
 }
 
@@ -287,6 +310,7 @@ export abstract class RepositoryWorkflowTemplatesService extends WorkflowTemplat
   async diff(id: string, candidate: WorkflowTemplate): Promise<WorkflowTemplateDiff> { return this.catalog.diff(id, candidate) }
   async publish(id: string, expectedDraftRevision: number): Promise<PublishedWorkflowRevision> { return this.catalog.publish(id, expectedDraftRevision) }
   async getPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision> { return this.catalog.getPublished(id, revision) }
+  listRevisions(id: string, query?: { readonly before?: number; readonly limit?: number }) { return this.catalog.listRevisions(id, query) }
   async list(): Promise<readonly WorkflowCatalogSummary[]> { return this.catalog.list() }
 }
 
@@ -303,6 +327,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
 
   private readonly runtime: WorkflowRuntime
   private readonly active = new Map<string, DshWorkflowRun>()
+  private readonly resuming = new Set<string>()
   private readonly authorityRefs = new WeakMap<object, string>()
   constructor(ctx: Context, private readonly config: DshWorkflowPluginConfig = {}) {
     super(ctx)
@@ -311,17 +336,23 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     const services: WorkflowEngineServices = {
       capabilities: ctx.workflowCapabilities.registry,
       tools: {
+        list: async authority => {
+          if (!isDshAgentLike(authority)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'Tool discovery requires the owning DSH Agent')
+          return tools.schemas(authority).map(schema => ({
+            uses: schema.name, title: schema.name, description: schema.description,
+            inputSchema: schema.parameters, idempotency: 'never',
+          }))
+        },
         execute: async request => {
           if (!isDshAgentLike(request.authority)) {
             throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'tool.call requires the owning DSH Agent', { nodeId: request.nodeId })
           }
+          const started = performance.now()
           const result = await executeDshTool(tools, {
-            callId: request.invocationId,
-            name: request.uses,
-            arguments: request.inputs,
-            signal: request.signal,
-            agent: request.authority,
-          })
+            callId: request.invocationId, name: request.uses, arguments: request.inputs,
+            signal: request.signal, agent: request.authority,
+          }).finally(() => { request.reportEvidence?.({ durationMs: performance.now() - started }) })
+          if (result.workflowEvidence !== undefined) request.reportEvidence?.(result.workflowEvidence)
           if (result.isError) {
             throw new WorkflowExecutionError('DSH_TOOL_FAILED', renderError(result.error), { nodeId: request.nodeId })
           }
@@ -333,6 +364,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
           if (!isDshAgentLike(request.authority)) {
             throw new WorkflowExecutionError('DSH_AGENT_MISSING', 'agent.run requires the owning DSH Agent', { nodeId: request.nodeId })
           }
+          const started = performance.now()
           const run = await startDshSubagent(runtime.subagents, {
             label: request.nodeId,
             prompt: [{ type: 'text', text: renderDshAgentPrompt(request.prompt, request.skills) }],
@@ -340,6 +372,7 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
             signal: request.signal,
             ...(request.outputSchema === undefined ? {} : { outputSchema: request.outputSchema }),
           }, request.tools)
+          request.reportEvidence?.({ childRunId: run.id })
           let execution: Awaited<typeof run.result> | undefined
           let executionError: unknown
           try {
@@ -347,6 +380,8 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
           } catch (error: unknown) {
             executionError = error
           }
+          request.reportEvidence?.({ durationMs: performance.now() - started })
+          if (execution?.workflowEvidence !== undefined) request.reportEvidence?.(execution.workflowEvidence)
           let disposalError: unknown
           try {
             await run.dispose()
@@ -396,12 +431,34 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       catalog: ctx.workflowTemplates as unknown as WorkflowTemplateCatalog,
       runStore: ctx.workflowRuns,
       services,
+      ...(config.artifactStore === undefined ? {} : { artifactStore: config.artifactStore }),
+      ...(config.capturePolicy === undefined ? {} : { capturePolicy: config.capturePolicy }),
+      checkNodeReadiness: node => {
+        if (node.uses !== 'agent.run@1') return undefined
+        try {
+          selectDshSubagent(runtime.subagents, {
+            nodeId: node.id,
+            outputSchema: node.with.outputSchema !== undefined,
+            depthLimit: false,
+            toolFilter: node.with.tools !== undefined,
+          })
+          return undefined
+        } catch (error: unknown) {
+          if (!(error instanceof WorkflowExecutionError)) throw error
+          return { code: error.code, severity: 'error', message: error.message }
+        }
+      },
     })
     ctx.effect(() => async () => {
       const runs = [...this.active.values()]
       await Promise.all(runs.map(run => run.dispose()))
       this.active.clear()
     }, 'agent-dag-workflow: active runs')
+  }
+
+  async validate(template: WorkflowTemplate, inputs: JsonObject, parent: object): Promise<readonly WorkflowDiagnostic[]> {
+    if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
+    return this.runtime.validate(template, { inputs, authority: parent })
   }
 
   async start(request: DshDagWorkflowStartRequest): Promise<DshWorkflowRun> {
@@ -414,40 +471,54 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
       inputs: request.inputs,
       authorityRef,
       authority: parent,
-      origin: { type: 'host', source: 'dsh' },
+      origin: request.origin ?? { type: 'host', source: 'dsh' },
+      ...(request.idempotencyKey === undefined ? {} : { idempotencyKey: request.idempotencyKey }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       onEvent: observe,
     })
-    const run = adaptRunHandle(handle)
-    this.active.set(run.id, run)
-    void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
-    return run
+    return this.track(handle)
   }
 
   async resume(request: DshDagWorkflowResumeRequest): Promise<DshWorkflowRun> {
     const parent = request.parent
     if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
-    const record = await this.ctx.workflowRuns.loadRun(request.runId)
+    const record = await this.ctx.workflowRuns.getRunMetadata(request.runId)
     if (record === undefined) throw new WorkflowExecutionError('RUN_NOT_FOUND', `workflow run not found: ${request.runId}`)
     const authorityRef = this.authorityReference(parent)
     if (record.execution.authorityRef !== authorityRef) {
       throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'resume owner does not match the persisted run authority')
     }
-    if (this.active.has(request.runId)) throw new WorkflowExecutionError('RUN_ACTIVE', `workflow run is already active: ${request.runId}`)
+    if (this.isActive(request.runId)) throw new WorkflowExecutionError('RUN_ACTIVE', `workflow run is already active: ${request.runId}`)
     const observe = createRunObserver(this.ctx, parent, request.onEvent)
-    const handle = await this.runtime.resume({
-      runId: request.runId,
-      authorityRef,
-      authority: parent,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
-      ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
-      ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
-      onEvent: observe,
-    })
+    this.resuming.add(request.runId)
+    try {
+      return this.track(await this.runtime.resume({
+        runId: request.runId,
+        authorityRef,
+        authority: parent,
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
+        ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
+        onEvent: observe,
+      }))
+    } finally {
+      this.resuming.delete(request.runId)
+    }
+  }
+
+  isActive(runId: string): boolean { return this.active.has(runId) || this.resuming.has(runId) }
+
+  private track(handle: WorkflowRunHandle): DshWorkflowRun {
+    const current = this.active.get(handle.runId)
+    if (current !== undefined) return current
     const run = adaptRunHandle(handle)
     this.active.set(run.id, run)
-    void run.result.then(() => { if (this.active.get(run.id) === run) this.active.delete(run.id) })
+    const clear = () => { if (this.active.get(run.id) === run) this.active.delete(run.id) }
+    void run.result.then(clear, error => {
+      clear()
+      this.ctx.logger.error(`agent-dag-workflow: run ${run.id} execution stopped: ${renderError(error)}`)
+    })
     return run
   }
 
@@ -469,6 +540,17 @@ export class DshDagWorkflowEngineService extends DagWorkflowEngineService {
     if (!isDshAgentLike(parent)) return false
     const metadata = await this.ctx.workflowRuns.getRunMetadata(runId)
     return metadata !== undefined && metadata.execution.authorityRef === this.authorityReference(parent)
+  }
+
+  authorityRefFor(parent: object): string | undefined {
+    return isDshAgentLike(parent) ? this.authorityReference(parent) : undefined
+  }
+
+  async listRuns(query: Omit<WorkflowRunHistoryQuery, 'authorityRef'>, parent: object): Promise<WorkflowRunHistoryPage> {
+    if (!isDshAgentLike(parent)) throw new WorkflowExecutionError('DSH_AGENT_INVALID', 'parent must expose a DSH Session')
+    const authorityRef = this.authorityReference(parent)
+    const page = await this.runtime.listRuns({ ...query, authorityRef })
+    return { ...page, items: page.items.filter(item => item.authorityRef === authorityRef) }
   }
 
   private authorityReference(parent: DshAgentLike): string {

@@ -1,9 +1,11 @@
 import { snapshotJsonValue } from '../../core/index.js'
-import type { WorkflowIngressRecord, WorkflowIngressStore } from './types.js'
+import type { WorkflowIngressListQuery, WorkflowIngressRecord, WorkflowIngressStore } from './types.js'
 
 export class InMemoryWorkflowIngressStore implements WorkflowIngressStore {
   readonly #records = new Map<string, WorkflowIngressRecord>()
   readonly #dedupe = new Map<string, string>()
+
+  constructor(private readonly bindingOwner?: (binding: WorkflowIngressRecord['binding']) => Promise<string | undefined>) {}
 
   async acceptOrGet(record: WorkflowIngressRecord): Promise<{ readonly record: WorkflowIngressRecord; readonly accepted: boolean }> {
     const priorId = this.#dedupe.get(record.dedupeKey)
@@ -29,9 +31,13 @@ export class InMemoryWorkflowIngressStore implements WorkflowIngressStore {
   async markRejected(triggerId: string, reasonCode: string): Promise<void> { this.#transition(triggerId, { status: 'rejected', reasonCode }) }
   async get(triggerId: string): Promise<WorkflowIngressRecord | undefined> { return this.#records.get(triggerId) }
   async listPending(): Promise<readonly WorkflowIngressRecord[]> { return [...this.#records.values()].filter(item => item.status === 'received') }
-  async list(query: { readonly limit?: number } = {}): Promise<readonly WorkflowIngressRecord[]> {
+  async list(query: WorkflowIngressListQuery = {}): Promise<readonly WorkflowIngressRecord[]> {
     const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
-    return [...this.#records.values()].sort((left, right) => right.receivedAt - left.receivedAt || left.triggerId.localeCompare(right.triggerId)).slice(0, limit)
+    const rows = [...this.#records.values()]
+    const scoped = query.authorityRef === undefined ? rows : await Promise.all(rows.map(async row =>
+      await this.bindingOwner?.(row.binding) === query.authorityRef ? row : undefined))
+    return scoped.filter(row => row !== undefined)
+      .sort((left, right) => right.receivedAt - left.receivedAt || left.triggerId.localeCompare(right.triggerId)).slice(0, limit)
   }
 
   #transition(triggerId: string, change: { readonly status: 'launched'; readonly runId: string } | { readonly status: 'rejected'; readonly reasonCode: string }): void {

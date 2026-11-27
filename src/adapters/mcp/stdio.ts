@@ -1,9 +1,12 @@
+import { createRequire } from 'node:module'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { workflowAccessErrorShape } from '../../access/index.js'
 import { isJsonObject, snapshotJsonObject, snapshotJsonValue, stableJsonStringify, type JsonObject, type JsonValue } from '../../core/index.js'
 import type { WorkflowMcpCallContext, WorkflowMcpGateway } from './index.js'
+
+const packageManifest = createRequire(import.meta.url)('../../../package.json') as { readonly version: string }
 
 export interface WorkflowMcpSdkServerOptions {
   readonly name?: string
@@ -13,7 +16,7 @@ export interface WorkflowMcpSdkServerOptions {
 
 export function createWorkflowMcpSdkServer(gateway: WorkflowMcpGateway, options: WorkflowMcpSdkServerOptions): Server {
   const server = new Server(
-    { name: options.name ?? 'agent-dag-workflow', version: options.version ?? '1.0.2' },
+    { name: options.name ?? 'agent-dag-workflow', version: options.version ?? packageManifest.version },
     {
       capabilities: { tools: {} },
       instructions: 'Search and describe one published workflow before running its exact id@revision. Tool count is constant and independent of catalog size.',

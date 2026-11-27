@@ -78,7 +78,10 @@ export class WorkflowMcpGateway {
         ...(args.query === undefined ? {} : { query: text(args.query, 'query') }),
         ...(args.limit === undefined ? {} : { limit: integer(args.limit, 'limit', 1) }),
       }, accessContext) as unknown as JsonValue)
-      case 'workflow_validate': return snapshotJsonValue(await this.access.validate(template(args.template, 'template'), accessContext) as unknown as JsonValue)
+      case 'workflow_validate': return snapshotJsonValue(await this.access.validate(
+        template(args.template, 'template'), accessContext,
+        args.inputs === undefined ? undefined : object(args.inputs, 'inputs'),
+      ) as unknown as JsonValue)
       case 'workflow_draft_get': return snapshotJsonValue(await this.access.getDraft(
         text(args.id, 'id'), accessContext, args.includeTemplate === undefined ? true : boolean(args.includeTemplate, 'includeTemplate'),
       ) as unknown as JsonValue)
@@ -138,8 +141,9 @@ const AUTHOR_TOOLS: readonly WorkflowMcpToolDescriptor[] = Object.freeze([
   descriptor('workflow_nodes_list', 'Search registered workflow NodeDefinitions and their exact schemas.', 'author', {
     query: { type: 'string', maxLength: 256 }, limit: { type: 'integer', minimum: 1, maximum: 100 },
   }),
-  descriptor('workflow_validate', 'Validate one complete host-neutral WorkflowTemplate.', 'author', {
+  descriptor('workflow_validate', 'Validate a WorkflowTemplate. Provide inputs to also check readiness for the current host and caller.', 'author', {
     template: { type: 'object' },
+    inputs: { type: 'object' },
   }, ['template']),
   descriptor('workflow_draft_get', 'Read one draft and its CAS revision.', 'author', {
     id: workflowId, includeTemplate: { type: 'boolean', default: true },

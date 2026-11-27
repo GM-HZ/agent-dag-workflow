@@ -41,11 +41,11 @@ export default defineConfig({
     name: 'agent-dag-workflow-global-css',
     resolveId(source: string) {
       if (!source.endsWith('.css')) return null
-      return `${CSS_PREFIX}${require.resolve(source)}${CSS_SUFFIX}`
+      return `${CSS_PREFIX}${source}${CSS_SUFFIX}`
     },
     async load(id: string) {
       if (!id.startsWith(CSS_PREFIX)) return null
-      const filename = id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length)
+      const filename = require.resolve(id.slice(CSS_PREFIX.length, -CSS_SUFFIX.length))
       this.addWatchFile(filename)
       const css = await readFile(filename, 'utf8')
       return [

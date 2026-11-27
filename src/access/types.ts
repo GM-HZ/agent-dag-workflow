@@ -5,6 +5,9 @@ import type {
   WorkflowDiagnostic,
   WorkflowEvent,
   WorkflowRunOrigin,
+  WorkflowRunHistoryItem,
+  WorkflowRunHistoryPage,
+  WorkflowRunHistoryQuery,
   WorkflowRunResult,
   WorkflowTemplate,
 } from '../core/index.js'
@@ -18,7 +21,7 @@ export interface AgentAccessContext {
 }
 
 export type WorkflowAccessOperation =
-  | 'search' | 'describe' | 'run' | 'run.get' | 'trace' | 'replay' | 'resume' | 'cancel'
+  | 'search' | 'describe' | 'run' | 'run.get' | 'run.list' | 'trace' | 'replay' | 'resume' | 'cancel'
   | 'nodes.list' | 'validate' | 'draft.get' | 'draft.put' | 'diff' | 'publish'
 
 export interface WorkflowAccessAuthorizationRequest {
@@ -98,6 +101,7 @@ export type WorkflowAgentRunResult =
 
 export interface WorkflowRunProjection {
   readonly runId: string
+  /** Exact published ref for catalog runs, or the template ID for an inline run. */
   readonly ref: string
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'
   readonly semanticHash: string
@@ -115,7 +119,14 @@ export interface WorkflowTraceRequest {
   readonly runId: string
   readonly view?: 'summary' | 'events'
   readonly afterSeq?: number
+  readonly throughSeq?: number
   readonly limit?: number
+}
+
+export type WorkflowRunHistoryRequest = Omit<WorkflowRunHistoryQuery, 'authorityRef'>
+export interface WorkflowRunHistoryProjection {
+  readonly items: readonly Omit<WorkflowRunHistoryItem, 'authorityRef'>[]
+  readonly nextAfter?: WorkflowRunHistoryPage['nextAfter']
 }
 
 export interface WorkflowTraceProjection {
@@ -177,12 +188,13 @@ export interface WorkflowAgentAccessApi {
   describe(request: WorkflowDescribeRequest, context: AgentAccessContext): Promise<WorkflowDescription>
   run(request: WorkflowAgentRunRequest, context: AgentAccessContext): Promise<WorkflowAgentRunResult>
   getRun(runId: string, context: AgentAccessContext): Promise<WorkflowRunProjection>
+  listRuns?(request: WorkflowRunHistoryRequest, context: AgentAccessContext): Promise<WorkflowRunHistoryProjection>
   trace(request: WorkflowTraceRequest, context: AgentAccessContext): Promise<WorkflowTraceProjection>
   replay(runId: string, mode: 'inspect' | 'recorded' | 'live', context: AgentAccessContext): Promise<WorkflowRunResult>
   resume(runId: string, context: AgentAccessContext, unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>): Promise<WorkflowRunResult>
   cancel(runId: string, context: AgentAccessContext, reason?: string): Promise<WorkflowRunResult>
   listNodes(request: WorkflowNodeSearchRequest, context: AgentAccessContext): Promise<WorkflowNodeSearchResult>
-  validate(template: WorkflowTemplate, context: AgentAccessContext): Promise<WorkflowValidationResult>
+  validate(template: WorkflowTemplate, context: AgentAccessContext, inputs?: JsonObject): Promise<WorkflowValidationResult>
   getDraft(id: string, context: AgentAccessContext, includeTemplate?: boolean): Promise<WorkflowDraftProjection>
   putDraft(template: WorkflowTemplate, context: AgentAccessContext, expectedRevision?: number): Promise<WorkflowDraftProjection>
   diff(id: string, candidate: WorkflowTemplate, context: AgentAccessContext): Promise<WorkflowTemplateDiff>

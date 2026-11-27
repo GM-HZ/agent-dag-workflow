@@ -13,6 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-dsh:
+    uses: ./.github/workflows/verify-native-dsh.yml
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -26,6 +29,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+      - run: node examples/run-codex-examples.mjs
+      - run: pnpm verify:upgrade
       - run: pnpm exec playwright-cli install-browser --with-deps chromium
       - run: pnpm verify:canvas-browser
       - run: pnpm verify:pack

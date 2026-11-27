@@ -4,7 +4,9 @@ import manifest from '../../examples/manifest.json'
 
 # 9 个可执行 Examples
 
-这里不是模板陈列柜。每个案例都绑定输入、期望输出、确定性 Host 和固定发布修订，并在 CI 中通过 Codex Plugin wrapper 完整执行。
+每个案例都绑定输入、期望输出、确定性 Host 和固定发布修订，并在 CI 中通过 Codex Plugin wrapper 完整执行。只安装了 npm 包时，可先用 [快速开始](../guide/quickstart) 运行内置订单示例。
+
+在源码仓库中回归全部案例：
 
 ```bash
 pnpm examples:codex
@@ -17,6 +19,10 @@ pnpm examples:codex
     <div class="example-tags"><span v-for="capability in example.capabilities" :key="capability">{{ capability }}</span></div>
   </article>
 </div>
+
+## 从订单失败到候选回归
+
+用真实运行日志保留一次订单整理失败，再用离线样本检查候选修复和正常订单。 [订单整理回归](./order-normalization.md)
 
 ## 回归到底验证什么
 

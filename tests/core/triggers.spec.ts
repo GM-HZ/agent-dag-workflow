@@ -7,6 +7,8 @@ import { DingTalkTriggerAdapter, DingTalkWorkflowChannel, DingTalkWorkflowRouter
 import { InMemoryWorkflowRunStore, registerCoreNodes, WorkflowNodeRegistry, type WorkflowTemplate } from '../../src/core/index.js'
 import { InMemoryWorkflowCatalogRepository, WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import { WorkflowRuntime } from '../../src/runtime/index.js'
+import { SqliteWorkflowIngressStore } from '../../src/storage/sqlite/index.js'
+import { toolWorkflowTemplate } from './fixtures.js'
 
 const binding: WorkflowTriggerBinding = {
   apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowBinding', metadata: { id: 'hook', revision: 1 },
@@ -14,6 +16,16 @@ const binding: WorkflowTriggerBinding = {
     workflow: { id: 'target', revision: 3 }, trigger: { uses: 'webhook@1', with: {} },
     inputMapping: { message: { payload: { path: ['text'] } } }, authorityRef: 'service:hook',
   },
+}
+
+function signedWebhook(body: Uint8Array, timestamp: string, eventId: string) {
+  const digest = createHmac('sha256', 'webhook-test-secret')
+    .update(`agent-dag-webhook:v1\n${timestamp}\n${eventId}\n`)
+    .update(body)
+    .digest('hex')
+  return { body, headers: {
+    'x-workflow-timestamp': timestamp, 'x-workflow-event-id': eventId, 'x-workflow-signature': `v1=${digest}`,
+  } }
 }
 
 describe('workflow binding catalog', () => {
@@ -104,22 +116,71 @@ describe('trigger ingress', () => {
     expect(await store.get('bad-mapping')).toEqual(record)
   })
 
-  it('validates HMAC webhooks and timezone cron schedules', () => {
+  it('validates the versioned webhook signature and canonical headers', () => {
     expect(() => new WebhookTriggerAdapter({ secret: '' })).toThrow(/secret/)
     expect(() => new WebhookTriggerAdapter({ secret: 'secret', maxBodyBytes: 0 })).toThrow(/maxBodyBytes/)
     expect(() => new WebhookTriggerAdapter({ secret: 'secret', toleranceMs: -1 })).toThrow(/toleranceMs/)
     const now = 1_800_000_000_000
     const body = new TextEncoder().encode('{"text":"hello"}')
     const timestamp = String(now)
-    const signature = createHmac('sha256', 'secret').update(timestamp).update('.').update(body).digest('hex')
-    const adapter = new WebhookTriggerAdapter({ secret: 'secret', now: () => now })
-    expect(adapter.accept({ body, headers: {
-      'x-workflow-timestamp': timestamp, 'x-workflow-event-id': 'event-1', 'x-workflow-signature': signature,
-    } })).toMatchObject({ source: 'webhook', sourceEventId: 'event-1', payload: { text: 'hello' } })
-    expect(() => adapter.accept({ body, headers: {
-      'x-workflow-timestamp': timestamp, 'x-workflow-event-id': 'event-1', 'x-workflow-signature': '00',
-    } })).toThrow(/signature/)
+    const eventId = 'orders.created:evt_123'
+    const request = signedWebhook(body, timestamp, eventId)
+    const adapter = new WebhookTriggerAdapter({ secret: 'webhook-test-secret', now: () => now })
+    expect(adapter.accept(request)).toMatchObject({
+      source: 'webhook', sourceEventId: eventId, receivedAt: now, occurredAt: now, payload: { text: 'hello' },
+    })
 
+    const legacySignature = createHmac('sha256', 'webhook-test-secret').update(timestamp + '.').update(body).digest('hex')
+    for (const signature of [legacySignature, 'v1=00', `v1=${'0'.repeat(64)}`]) {
+      expect(() => adapter.accept({ body, headers: { ...request.headers, 'x-workflow-signature': signature } })).toThrow(/signature/)
+    }
+    expect(() => adapter.accept(signedWebhook(body, '0' + timestamp, eventId))).toThrow(/timestamp/)
+    expect(() => adapter.accept(signedWebhook(body, String(now - 300_001), eventId))).toThrow(/timestamp/)
+    expect(() => adapter.accept(signedWebhook(body, timestamp, 'order event'))).toThrow(/event ID/)
+  })
+
+  it('runs one workflow for a valid webhook and a signed redelivery of the same event', async () => {
+    let now = 1_800_000_000_000
+    const adapter = new WebhookTriggerAdapter({ secret: 'webhook-test-secret', now: () => now })
+    const eventId = 'orders.created:evt_456'
+    const body = new TextEncoder().encode('{\n  "text": "已接单"\n}')
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const schema = { type: 'object', required: ['message'], properties: { message: { type: 'string' } } }
+    const draft = await catalog.createDraft({
+      apiVersion: 'workflow.gm-hz.dev/v1', kind: 'WorkflowTemplate', metadata: { id: 'webhook-flow', name: 'Receive webhook' },
+      spec: {
+        inputSchema: schema, outputSchema: schema,
+        nodes: [
+          { id: 'start', uses: 'core.start@1', with: {}, inputs: {} },
+          { id: 'end', uses: 'core.end@1', with: {}, inputs: { message: { input: { path: ['message'] } } } },
+        ],
+        edges: [{ id: 'start-end', source: 'start', target: 'end' }],
+        outputs: { message: { output: { nodeId: 'end', path: ['message'] } } },
+      },
+    })
+    const release = await catalog.publish(draft.id, draft.revision)
+    const scopedBinding = { ...binding, spec: { ...binding.spec, workflow: { id: release.id, revision: release.revision } } }
+    const runStore = new InMemoryWorkflowRunStore()
+    const queue = new InMemoryWorkflowRunCoordinator()
+    const runtime = new WorkflowRuntime({ nodes, catalog, runStore, queue, authorityResolver: { async resolve(ref) { return { ref } } } })
+    const ingress = new WorkflowTriggerIngress(runtime, new InMemoryWorkflowIngressStore(), async () => scopedBinding)
+
+    const first = await ingress.ingest(scopedBinding, adapter.accept(signedWebhook(body, String(now), eventId)))
+    expect(first).toMatchObject({ status: 'launched', sourceEventId: eventId, runId: expect.any(String) })
+    now += 1000
+    const second = await ingress.ingest(scopedBinding, adapter.accept(signedWebhook(body, String(now), eventId)))
+    expect(second).toMatchObject({ status: 'deduplicated', runId: first.runId, duplicateCount: 1 })
+    const worker = new WorkflowRunWorker(runtime, queue)
+    await expect(worker.runOnce({ workerId: 'webhook-test', leaseMs: 1000 }))
+      .resolves.toMatchObject({ status: 'completed', runId: first.runId, outputs: { message: '已接单' } })
+    await expect(worker.runOnce({ workerId: 'webhook-test', leaseMs: 1000 })).resolves.toBeUndefined()
+    expect((await runtime.listRuns()).items).toHaveLength(1)
+  })
+
+  it('validates timezone cron schedules', () => {
+    const now = 1_800_000_000_000
     const cron = createCronTrigger({ expression: '0 9 * * 1', timezone: 'Asia/Shanghai' })
     expect(cron.matches(new Date('2026-08-31T01:00:00.000Z'))).toBe(true)
     expect(cron.matches(new Date('2026-08-31T02:00:00.000Z'))).toBe(false)
@@ -159,6 +220,9 @@ describe('trigger ingress', () => {
     const second = service.deliver(request)
     await vi.waitFor(() => expect(deliver).toHaveBeenCalledTimes(1))
     expect(await deliveryStore.listAttention()).toEqual([expect.objectContaining({ status: 'pending', attempts: 1 })])
+    const other = new WorkflowResultDeliveryService({ deliver }, deliveryStore, () => 201)
+    expect(await other.retry(workflowDeliveryInvocationId(request))).toMatchObject({ status: 'pending', attempts: 1 })
+    expect(deliver).toHaveBeenCalledTimes(1)
     release()
     await expect(Promise.all([first, second])).resolves.toEqual([
       expect.objectContaining({ status: 'delivered', attempts: 1 }),
@@ -205,6 +269,56 @@ describe('trigger ingress', () => {
     expect(await store.get('queue-gap')).toMatchObject({ status: 'received' })
     await expect(ingress.recoverPending()).resolves.toEqual([expect.objectContaining({ status: 'launched', runId: 'recovered-run' })])
     expect(launch).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects permanent input errors and recovers later entries despite a transient failure', async () => {
+    const nodes = new WorkflowNodeRegistry()
+    registerCoreNodes(nodes)
+    const catalog = new WorkflowTemplateCatalog(new InMemoryWorkflowCatalogRepository(), nodes)
+    const draft = await catalog.createDraft(toolWorkflowTemplate())
+    const release = await catalog.publish(draft.id, draft.revision)
+    const readyAuthorities = new Set<string>()
+    const runtime = new WorkflowRuntime({
+      nodes, catalog, runStore: new InMemoryWorkflowRunStore(), queue: new InMemoryWorkflowRunCoordinator(),
+      deploymentLimits: { maxInputBytes: 64 },
+      authorityResolver: { async resolve(ref) { return readyAuthorities.has(ref) ? { ref } : undefined } },
+    })
+    const primary = { ...binding, spec: { ...binding.spec, workflow: { id: release.id, revision: release.revision } } }
+    const transient = {
+      ...primary, metadata: { id: 'transient-hook', revision: 1 }, spec: { ...primary.spec, authorityRef: 'service:transient' },
+    }
+    const envelope = (id: string, receivedAt: number, value: string | number) => ({
+      schemaVersion: 1 as const, triggerId: id, source: 'webhook', sourceEventId: id, receivedAt, payload: { text: value },
+    })
+    const store = new SqliteWorkflowIngressStore({ path: ':memory:' })
+    try {
+      const ingress = new WorkflowTriggerIngress(runtime, store, async id => id === transient.metadata.id ? transient : primary)
+      const invalid = envelope('invalid-first', 100, 12)
+      await expect(ingress.ingest(primary, invalid)).rejects.toThrow('workflow authority is unavailable')
+      await expect(ingress.ingest(transient, envelope('transient-second', 101, 'valid'))).rejects.toThrow('workflow authority is unavailable')
+      await expect(ingress.ingest(primary, envelope('valid-third', 102, 'valid'))).rejects.toThrow('workflow authority is unavailable')
+
+      readyAuthorities.add(primary.spec.authorityRef)
+      const recovery = ingress.recoverPending()
+      await expect(recovery).rejects.toBeInstanceOf(AggregateError)
+      await expect(recovery).rejects.toMatchObject({ errors: [expect.objectContaining({
+        message: expect.stringContaining('transient-second'),
+        cause: expect.objectContaining({ message: expect.stringContaining('workflow authority is unavailable') }),
+      })] })
+      expect(await store.get('invalid-first')).toMatchObject({ status: 'rejected', reasonCode: 'INGRESS_WORKFLOW_INPUT_INVALID' })
+      expect(await store.get('valid-third')).toMatchObject({ status: 'launched', runId: expect.any(String) })
+      expect((await store.listPending()).map(record => record.triggerId)).toEqual(['transient-second'])
+
+      await expect(ingress.ingest(primary, { ...invalid, triggerId: 'invalid-duplicate', receivedAt: 103 }))
+        .resolves.toMatchObject({ status: 'deduplicated', reasonCode: 'INGRESS_WORKFLOW_INPUT_INVALID', duplicateCount: 1 })
+      await expect(ingress.ingest(primary, envelope('oversized', 104, 'x'.repeat(100))))
+        .resolves.toMatchObject({ status: 'rejected', reasonCode: 'INGRESS_WORKFLOW_INPUT_TOO_LARGE' })
+      readyAuthorities.add(transient.spec.authorityRef)
+      await expect(ingress.recoverPending()).resolves.toEqual([expect.objectContaining({ triggerId: 'transient-second', status: 'launched' })])
+      expect(await store.listPending()).toEqual([])
+    } finally {
+      store.close()
+    }
   })
 
   it('claims one recoverable run and resumes it through the shared Runtime API', async () => {

@@ -1,7 +1,13 @@
 import { DatabaseSync } from 'node:sqlite'
+import { WORKFLOW_JOURNAL_FAILURE_TYPES } from '../../core/run-store.js'
 
-export const SQLITE_SCHEMA_VERSION = 11
+export const JOURNAL_NODE_ID = `COALESCE(json_extract(event_json, '$.node.id'), json_extract(event_json, '$.nodeId'))`
+export const JOURNAL_FAILURE_EVENT = `json_extract(event_json, '$.type') IN (${WORKFLOW_JOURNAL_FAILURE_TYPES.map(type => `'${type}'`).join(',')})`
+
+export const SQLITE_SCHEMA_VERSION = 12
 export const SQLITE_APPLICATION_ID = 1_146_308_695
+const SCHEMA_V11_TABLES = 'workflow_artifacts,workflow_bindings,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs'
+const SCHEMA_V12_TABLES = 'workflow_artifacts,workflow_bindings,workflow_cron_schedules,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs'
 
 export interface SqliteWorkflowOptions {
   readonly path: string
@@ -49,14 +55,39 @@ function initializeOrValidate(db: DatabaseSync): void {
     createRunQueueTables(db)
     createDeliveryTables(db)
     createBindingTables(db)
+    createCronTables(db)
     db.exec(`PRAGMA application_id = ${SQLITE_APPLICATION_ID}; PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
+  } else if (version === 11 && applicationId === SQLITE_APPLICATION_ID) {
+    assertTableNames(db, SCHEMA_V11_TABLES)
+    createCronTables(db)
+    db.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION};`)
   } else if (version !== SQLITE_SCHEMA_VERSION || applicationId !== SQLITE_APPLICATION_ID) {
     throw new Error(`workflow database has version/application ${version}/${applicationId}; expected ${SQLITE_SCHEMA_VERSION}/${SQLITE_APPLICATION_ID}`)
   }
-  const names = tableNames(db)
-  if (names.join(',') !== 'workflow_artifacts,workflow_bindings,workflow_delivery,workflow_drafts,workflow_ingress,workflow_revisions,workflow_run_events,workflow_run_queue,workflow_runs') {
-    throw new Error('workflow database required schema objects do not match this build')
-  }
+  assertTableNames(db, SCHEMA_V12_TABLES)
+  // Additive indexes work with existing v12 databases and older builds.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS workflow_runs_history_updated
+      ON workflow_runs(updated_at DESC, run_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_runs_history_authority
+      ON workflow_runs(json_extract(execution_json, '$.authorityRef'), updated_at DESC, run_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_runs_history_workflow
+      ON workflow_runs(json_extract(execution_json, '$.authorityRef'), json_extract(template_json, '$.metadata.id'), updated_at DESC, run_id DESC);
+    CREATE INDEX IF NOT EXISTS workflow_run_events_by_node ON workflow_run_events(run_id, ${JOURNAL_NODE_ID}, seq);
+    CREATE INDEX IF NOT EXISTS workflow_run_events_failures ON workflow_run_events(run_id, seq) WHERE ${JOURNAL_FAILURE_EVENT};
+  `)
+}
+
+function assertTableNames(db: DatabaseSync, expected: string): void {
+  if (tableNames(db).join(',') !== expected) throw new Error('workflow database required schema objects do not match this build')
+}
+
+function createCronTables(db: DatabaseSync): void {
+  db.exec(`CREATE TABLE workflow_cron_schedules (
+    binding_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    state_json TEXT NOT NULL
+  ) STRICT;`)
 }
 
 function createBindingTables(db: DatabaseSync): void {

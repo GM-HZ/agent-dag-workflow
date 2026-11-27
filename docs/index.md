@@ -73,7 +73,7 @@ npm exec -- adw trace RUN_ID --events
 
 ### 集成到现有应用
 
-选择 TypeScript SDK 或 DeepSeek Harness 插件，把现有工具接入工作流。[接入方式](/guide/)
+选择 TypeScript SDK 或 DeepSeek Harness 插件，把现有工具接入工作流。[接入方式](/guide/) · [DSH / Canvas](/guide/dsh)
 
 </div>
 

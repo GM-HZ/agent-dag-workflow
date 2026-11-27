@@ -9,7 +9,13 @@ permissions:
   id-token: write
 
 jobs:
+  native-dsh:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/verify-native-dsh.yml
+
   npm:
+    needs: native-dsh
     runs-on: ubuntu-latest
     environment: npm
     steps:
@@ -28,6 +34,8 @@ jobs:
       - name: Verify immutable release identity
         run: node -e "const p=require('./package.json');if(process.env.GITHUB_REF_NAME!=='v'+p.version)throw new Error('tag '+process.env.GITHUB_REF_NAME+' does not match package '+p.version)"
       - run: pnpm check
+      - run: node examples/run-codex-examples.mjs
+      - run: pnpm verify:upgrade
       - run: pnpm exec playwright-cli install-browser --with-deps chromium
       - run: pnpm verify:canvas-browser
       - run: pnpm verify:pack

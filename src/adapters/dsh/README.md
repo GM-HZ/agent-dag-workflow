@@ -84,3 +84,4 @@ Session event 类型注册，也没有为 `Session.append()` 提供 `ignorable` 
 因此插件不会向 owning Session 写自定义事件，避免会话重载时被判定为不兼容。
 
 Cordis Service 不能使用 JavaScript 原生 `#private` 字段：服务由 Proxy 暴露，方法中的 `this` 是代理。实现统一使用 TypeScript `private`，这个约束也适用于后续 Catalog、Store 和 Canvas RPC service。
+DSH Bundle 默认用本地 SQLite 保存 Journal 和小于或等于 1 MiB 的 JSON 产物。可在 Bundle 配置中选择 `captureMode: metadata` 只保存产物哈希，或选择 `replayable` 对离线回放强制要求原始产物。运行输入、Checkpoint 和 Journal 仍按各自的持久化契约保存。Canvas 导出支持字段脱敏和显式包含产物内容。

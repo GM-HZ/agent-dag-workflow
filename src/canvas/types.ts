@@ -1,3 +1,5 @@
+import type { WorkflowArtifactStore } from '../journal/index.js'
+
 export type CanvasJsonPrimitive = string | number | boolean | null
 export type CanvasJsonValue = CanvasJsonPrimitive | CanvasJsonObject | readonly CanvasJsonValue[]
 export interface CanvasJsonObject { [key: string]: CanvasJsonValue }
@@ -52,10 +54,11 @@ export interface CanvasWorkflowRequirement {
 }
 
 export type WorkflowCanvasAction =
-  | 'nodes:list' | 'templates:list'
+  | 'nodes:list' | 'templates:list' | 'revisions:list' | 'revision:read'
   | 'draft:create' | 'draft:read' | 'draft:update' | 'draft:validate' | 'draft:diff' | 'draft:publish'
-  | 'run:start' | 'run:resume' | 'run:cancel' | 'run:trace'
+  | 'run:start' | 'run:resume' | 'run:cancel' | 'run:trace' | 'run:list' | 'run:export'
   | 'bindings:list' | 'ingress:list' | 'delivery:list'
+  | 'context:read' | 'schedule:run'
 
 /** Minimal host surface required by Canvas. It deliberately does not depend on DSH. */
 export interface WorkflowCanvasSessionLike {
@@ -94,9 +97,66 @@ export interface WorkflowCanvasConfig {
     request: WorkflowCanvasAuthorizationRequest,
   ) => Promise<WorkflowCanvasPrincipal | undefined> | WorkflowCanvasPrincipal | undefined
   /** Optional host-neutral operations adapters. Canvas remains usable without a trigger deployment. */
-  readonly bindings?: { list(): Promise<readonly CanvasWorkflowTriggerBinding[]> }
-  readonly ingress?: { list(query?: { readonly limit?: number }): Promise<readonly CanvasWorkflowIngressRecord[]> }
-  readonly delivery?: { listAttention(query?: { readonly limit?: number }): Promise<readonly CanvasWorkflowDeliveryRecord[]> }
+  readonly bindings?: {
+    list(query: CanvasOperationsQuery & { readonly latestOnly: true }): Promise<readonly CanvasWorkflowTriggerBinding[]>
+    get(id: string, revision: number): Promise<CanvasWorkflowTriggerBinding | undefined>
+  }
+  readonly ingress?: { list(query: CanvasOperationsQuery): Promise<readonly CanvasWorkflowIngressRecord[]> }
+  readonly delivery?: { listAttention(query: CanvasOperationsQuery): Promise<readonly CanvasWorkflowDeliveryRecord[]> }
+  readonly artifactStore?: WorkflowArtifactStore
+  readonly storage?: CanvasWorkflowContext['storage']
+  readonly schedules?: WorkflowCanvasScheduleHost
+}
+
+export interface WorkflowCanvasScheduleHost {
+  inspect(id: string, revision: number, principal: WorkflowCanvasPrincipal): Promise<CanvasScheduleSummary | undefined>
+  runNow(request: CanvasScheduleRunRequest, principal: WorkflowCanvasPrincipal): Promise<CanvasScheduleRunReceipt>
+}
+
+export interface CanvasScheduleRunRequest {
+  readonly id: string
+  readonly revision: number
+  readonly requestId: string
+  readonly requestedAt: number
+}
+
+export interface CanvasScheduleRunReceipt {
+  readonly status: 'launched' | 'rejected' | 'skipped-overlap' | 'skipped-misfire'
+  readonly runId?: string
+  readonly reasonCode?: string
+}
+
+export interface CanvasScheduleSummary {
+  readonly expression: string
+  readonly timezone: string
+  readonly nextRunAt?: number
+  readonly lastTickAt?: number
+  readonly lastDecision?: CanvasScheduleRunReceipt & { readonly scheduledAt: number; readonly manual: boolean }
+  readonly lastRun?: { readonly runId: string; readonly status: CanvasTrace['status']; readonly error?: string }
+  readonly unavailable?: boolean
+}
+
+export interface CanvasWorkflowContext {
+  readonly sessionId: string
+  readonly authorityRef?: string
+  readonly storage?: { readonly kind: 'sqlite' | 'memory'; readonly path?: string }
+}
+
+export interface CanvasStarterWorkflow {
+  readonly template: CanvasWorkflowTemplate
+  readonly inputs: CanvasJsonObject
+}
+
+export interface CanvasRunExportRequest {
+  readonly runId: string
+  readonly redactFields?: readonly string[]
+  readonly includeArtifacts?: boolean
+}
+
+/** Host-owned scope. Apply it before limiting results. */
+export interface CanvasOperationsQuery {
+  readonly authorityRef: string
+  readonly limit: number
 }
 
 export interface CanvasWorkflowTriggerBinding {
@@ -153,9 +213,19 @@ export interface CanvasWorkflowDeliveryRecord {
 }
 
 export interface CanvasOperationsSnapshot {
-  readonly bindings: readonly CanvasWorkflowTriggerBinding[]
-  readonly ingress: readonly CanvasWorkflowIngressRecord[]
-  readonly deliveryAttention: readonly CanvasWorkflowDeliveryRecord[]
+  readonly bindings: readonly {
+    readonly metadata: CanvasWorkflowTriggerBinding['metadata']
+    readonly spec: {
+      readonly workflow: CanvasWorkflowTriggerBinding['spec']['workflow']
+      readonly trigger: { readonly uses: string }
+      readonly enabled: boolean
+    }
+    readonly schedule?: CanvasScheduleSummary
+  }[]
+  readonly ingress: readonly Pick<CanvasWorkflowIngressRecord,
+    'triggerId' | 'binding' | 'source' | 'sourceEventId' | 'status' | 'reasonCode' | 'runId' | 'receivedAt' | 'duplicateCount'>[]
+  readonly deliveryAttention: readonly Pick<CanvasWorkflowDeliveryRecord,
+    'invocationId' | 'runId' | 'phase' | 'status' | 'attempts' | 'updatedAt'>[]
 }
 
 export interface CanvasListRequest { readonly limit?: number }
@@ -233,11 +303,41 @@ export interface CanvasDraftUpdateRequest {
   readonly expectedRevision: number
   readonly template: CanvasWorkflowTemplate
 }
-export interface CanvasTemplateRequest { readonly template: CanvasWorkflowTemplate }
+export interface CanvasTemplateRequest {
+  readonly template: CanvasWorkflowTemplate
+  /** Include run input and current session readiness in addition to design validation. */
+  readonly inputs?: CanvasJsonObject
+}
 export interface CanvasDraftDiffRequest { readonly id: string; readonly candidate: CanvasWorkflowTemplate }
 export interface CanvasDraftPublishRequest { readonly id: string; readonly expectedRevision: number }
 export interface CanvasRunRequest { readonly id: string; readonly revision: number; readonly inputs: CanvasJsonObject }
 export interface CanvasDraftRunRequest { readonly template: CanvasWorkflowTemplate; readonly inputs: CanvasJsonObject }
+export interface CanvasRunStartRequest {
+  readonly target: { readonly type: 'draft'; readonly template: CanvasWorkflowTemplate }
+    | { readonly type: 'published'; readonly id: string; readonly revision: number }
+  readonly inputs: CanvasJsonObject
+  readonly requestId: string
+}
+export interface CanvasRunReceipt { readonly runId: string; readonly status: 'accepted' }
+export interface CanvasRunDetails {
+  readonly runId: string
+  readonly template: CanvasWorkflowTemplate
+  readonly inputs: CanvasJsonObject
+  readonly revision?: number
+  readonly nodeInputs?: Readonly<Record<string, CanvasJsonObject>>
+  readonly origin?: { readonly type: string; readonly source?: string; readonly sourceRef?: string }
+  readonly relatedRuns?: readonly { readonly nodeId: string; readonly runId: string; readonly kind: 'agent' | 'subworkflow' }[]
+}
+export interface CanvasPublishedReadRequest { readonly id: string; readonly revision: number }
+export interface CanvasRevisionsRequest { readonly id: string; readonly limit?: number; readonly before?: number }
+export interface CanvasRevisionSummary {
+  readonly revision: number
+  readonly publishedAt: number
+  readonly contentHash: string
+  readonly semanticHash: string
+  readonly sourceDraftRevision: number
+}
+export interface CanvasRevisionsPage { readonly items: readonly CanvasRevisionSummary[]; readonly nextBefore?: number }
 export interface CanvasResumeRequest {
   readonly runId: string
   readonly unknownNodeResolutions?: Readonly<Record<string, 'retry' | 'fail'>>
@@ -247,6 +347,43 @@ export interface CanvasTraceRequest {
   readonly runId: string
   readonly afterSeq?: number
   readonly limit?: number
+  readonly throughSeq?: number
+  /** For later pages of an export, omit repeated checkpoint state and outputs. */
+  readonly eventsOnly?: boolean
+  readonly window?: 'recent'
+  readonly beforeSeq?: number
+  readonly nodeId?: string
+  readonly failuresOnly?: boolean
+}
+
+export interface CanvasRunHistoryCursor { readonly updatedAt: number; readonly runId: string }
+export interface CanvasRunHistoryRequest {
+  readonly templateId?: string
+  readonly status?: CanvasTrace['status']
+  readonly query?: string
+  readonly revision?: number
+  readonly origin?: string
+  readonly from?: number
+  readonly through?: number
+  readonly limit?: number
+  readonly after?: CanvasRunHistoryCursor
+}
+export interface CanvasRunHistoryItem {
+  readonly runId: string
+  readonly templateId: string
+  readonly templateName: string
+  readonly revision?: number
+  readonly origin: { readonly type: string; readonly source?: string; readonly sourceRef?: string }
+  readonly status: CanvasTrace['status']
+  readonly createdAt: number
+  readonly updatedAt: number
+  readonly checkpointSeq: number
+  readonly needsAttention: boolean
+  readonly active?: boolean
+}
+export interface CanvasRunHistoryPage {
+  readonly items: readonly CanvasRunHistoryItem[]
+  readonly nextAfter?: CanvasRunHistoryCursor
 }
 
 export interface CanvasRunResult {
@@ -260,9 +397,13 @@ export interface CanvasRunResult {
 export interface CanvasTrace {
   readonly runId: string
   readonly templateId: string
+  readonly revision?: number
+  readonly origin?: CanvasRunHistoryItem['origin']
   readonly semanticHash: string
   readonly createdAt: number
+  readonly updatedAt?: number
   readonly status: 'running' | 'completed' | 'failed' | 'cancelled' | 'paused'
+  readonly active?: boolean
   readonly checkpointSeq: number
   readonly nodeStates: Readonly<Record<string, string>>
   readonly edgeStates: Readonly<Record<string, string>>
@@ -270,5 +411,8 @@ export interface CanvasTrace {
   readonly nodeProgress: Readonly<Record<string, CanvasJsonValue>>
   readonly events: readonly CanvasJsonObject[]
   readonly nextAfterSeq?: number
+  readonly nextBeforeSeq?: number
+  readonly outputs?: CanvasJsonObject
   readonly error?: string
+  readonly needsAttention?: readonly string[]
 }

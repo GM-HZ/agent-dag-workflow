@@ -9,6 +9,7 @@ import type {
   CanvasWorkflowTemplate,
 } from '../types.js'
 import { canvasText, type CanvasLocale, type CanvasMessage } from './messages.js'
+import type { PendingDraftField } from './draft-fields.js'
 
 export type WorkflowDocumentState = 'pristine' | 'unsaved' | 'dirty' | 'saved' | 'validated' | 'validated-dirty' | 'published'
 export type WorkflowConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected'
@@ -43,6 +44,7 @@ export interface WorkflowRecoverySnapshot {
   readonly template: CanvasWorkflowTemplate
   readonly draft?: CanvasWorkflowDraft
   readonly inputsText: string
+  readonly pendingFields?: readonly PendingDraftField[]
   readonly savedAt: number
 }
 
@@ -136,6 +138,16 @@ export function diagnosticTitle(diagnostic: CanvasWorkflowDiagnostic, locale: Ca
     UNKNOWN_NODE_TYPE: t('Node type unavailable'),
     UNKNOWN_OUTPUT_PORT: t('Output port does not exist'),
     UNKNOWN_WORKFLOW_INPUT: t('Workflow input does not exist'),
+    CANVAS_RUN_INPUT_JSON_INVALID: t('Run input must be a valid JSON object.'),
+    WORKFLOW_INPUT_INVALID: t('Run input does not match the workflow schema'),
+    WORKFLOW_INPUT_TOO_LARGE: t('Run input exceeds the size limit'),
+    WORKFLOW_TOOL_UNAVAILABLE: t('Tool unavailable in this session'),
+    WORKFLOW_TOOL_VISIBILITY_UNKNOWN: t('Tool availability could not be verified'),
+    TOOL_GATEWAY_MISSING: t('Tool gateway unavailable'),
+    AGENT_GATEWAY_MISSING: t('Agent gateway unavailable'),
+    APPROVAL_GATEWAY_MISSING: t('Approval gateway unavailable'),
+    DSH_SUBAGENT_TOOL_FILTER_UNSUPPORTED: t('This DSH version cannot restrict child agent tools'),
+    AGENT_TARGET_UNAVAILABLE: t('Agent target unavailable'),
     UNKNOWN_BINDING_NODE: t('Binding references an unknown node'),
     WORKFLOW_SCHEMA_INVALID: t('Invalid workflow schema'),
     WORKFLOW_OUTPUT_BINDING_INVALID: t('Invalid workflow output binding'),
@@ -161,15 +173,18 @@ export function traceEventPresentation(event: CanvasJsonObject, locale: CanvasLo
     'node.waiting': [t('Awaiting human input'), 'warning'], 'node.progress': [t('Node progress saved'), 'active'],
     'node.completed': [t('Node completed'), 'success'], 'node.skipped': [t('Node skipped'), 'neutral'],
     'node.cancelled': [t('Node canceled'), 'warning'], 'node.needs-attention': [t('Node needs attention'), 'warning'],
+    'node.retry-scheduled': [t('Node retry scheduled'), 'warning'],
     'node.failed': [t('Node failed'), 'danger'], 'edge.taken': [t('Edge taken'), 'active'],
     'edge.skipped': [t('Edge skipped'), 'neutral'], 'checkpoint.committed': [t('Checkpoint saved'), 'neutral'],
     'capability.requested': [t('External capability requested'), 'active'], 'capability.completed': [t('External capability completed'), 'success'],
     'capability.replayed': [t('Recorded result reused'), 'neutral'], 'capability.failed': [t('External capability failed'), 'danger'],
   }
   const [title, tone] = labels[type] ?? [type, 'neutral']
+  const detail = error ?? nodeId ?? edgeId ?? (typeof event.runId === 'string' ? event.runId : t('Workflow'))
+  const duration = typeof event.durationMs === 'number' ? t('{duration} ms', { duration: event.durationMs }) : undefined
   return {
     seq, title, tone,
-    detail: error ?? nodeId ?? edgeId ?? (typeof event.runId === 'string' ? event.runId : t('Workflow')),
+    detail: duration === undefined ? detail : `${detail} · ${duration}`,
     ...(nodeId === undefined ? {} : { nodeId }),
     infrastructure: type === 'checkpoint.committed' || type.startsWith('edge.'),
   }
@@ -201,9 +216,10 @@ export function visibleTraceEvents(trace: CanvasTrace, includeInfrastructure = f
   return trace.events.map(event => traceEventPresentation(event, locale)).filter(event => includeInfrastructure || !event.infrastructure)
 }
 
-export function workflowFailurePresentation(trace: CanvasTrace | undefined, locale: CanvasLocale = 'zh'): WorkflowErrorPresentation | undefined {
-  if (trace?.error === undefined) return undefined
-  return classifyWorkflowError(trace.error, locale)
+export function runStatusLabel(status: CanvasTrace['status'] | undefined, language: CanvasLocale): string {
+  const t = canvasText(language)
+  if (status === undefined) return t('No runs yet')
+  return { running: t('Running'), completed: t('Run complete'), failed: t('Run failed'), cancelled: t('Canceled'), paused: t('Paused') }[status]
 }
 
 export function recoveryStorageKey(sessionId: string): string {
@@ -221,7 +237,10 @@ export function parseRecoverySnapshot(source: string | null): WorkflowRecoverySn
     if (!isRecord(value) || value.version !== 1 || typeof value.inputsText !== 'string'
       || typeof value.savedAt !== 'number' || !isTemplate(value.template)) return undefined
     const draft = isDraft(value.draft) ? value.draft : undefined
-    return { version: 1, template: value.template, inputsText: value.inputsText, savedAt: value.savedAt, ...(draft === undefined ? {} : { draft }) }
+    const pendingFields = Array.isArray(value.pendingFields) ? value.pendingFields.filter((item): item is PendingDraftField =>
+      isRecord(item) && typeof item.id === 'string' && typeof item.text === 'string' && (item.nodeId === undefined || typeof item.nodeId === 'string')) : []
+    return { version: 1, template: value.template, inputsText: value.inputsText, savedAt: value.savedAt,
+      ...(pendingFields.length === 0 ? {} : { pendingFields }), ...(draft === undefined ? {} : { draft }) }
   } catch { return undefined }
 }
 
@@ -242,7 +261,7 @@ export function starterTemplate(seed = Date.now(), locale: CanvasLocale = 'zh'):
     metadata: { id: `hello-workflow-${seed}`, name: t('My first workflow'), description: t('Accept a message and return it unchanged through an auditable DAG.') },
     spec: {
       inputSchema: {
-        type: 'object', additionalProperties: false, required: ['message'],
+        type: 'object', additionalProperties: false, required: ['message'], examples: [starterInputs(locale)],
         properties: { message: { type: 'string', description: t('Message to pass to the workflow') } },
       },
       outputSchema: {
@@ -258,6 +277,10 @@ export function starterTemplate(seed = Date.now(), locale: CanvasLocale = 'zh'):
     },
     layout: { canvas: { positions: { start: { x: 180, y: 220 }, end: { x: 540, y: 220 } } } },
   }
+}
+
+export function starterInputs(locale: CanvasLocale): CanvasJsonObject {
+  return { message: canvasText(locale)('Hello, DSH Workflow') }
 }
 
 export function definitionGroup(definition: CanvasNodeDefinition): 'nodes' | 'tools' {

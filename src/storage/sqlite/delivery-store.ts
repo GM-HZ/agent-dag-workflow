@@ -1,6 +1,6 @@
 import type { DatabaseSync, SQLOutputValue } from 'node:sqlite'
 import { snapshotJsonValue, stableJsonStringify } from '../../core/index.js'
-import type { WorkflowDeliveryRecord, WorkflowDeliveryStore } from '../../triggers/core/index.js'
+import type { WorkflowDeliveryListQuery, WorkflowDeliveryRecord, WorkflowDeliveryStore } from '../../triggers/core/index.js'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
 export type SqliteWorkflowDeliveryStoreOptions = SqliteWorkflowOptions
@@ -31,10 +31,16 @@ export class SqliteWorkflowDeliveryStore implements WorkflowDeliveryStore {
     })
   }
 
-  async listAttention(query: { readonly limit?: number } = {}): Promise<readonly WorkflowDeliveryRecord[]> {
+  async listAttention(query: WorkflowDeliveryListQuery = {}): Promise<readonly WorkflowDeliveryRecord[]> {
     const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
-    return this.#db.prepare(`SELECT record_json FROM workflow_delivery WHERE status IN ('pending', 'unknown')
-      ORDER BY updated_at, invocation_id LIMIT ?`).all(limit).map(row => decode(text(row, 'record_json')))
+    const dueAt = query.dueAt ?? null
+    const authority = query.authorityRef ?? null
+    return this.#db.prepare(`SELECT delivery.record_json FROM workflow_delivery AS delivery WHERE status IN ('pending', 'unknown')
+      AND (? IS NULL OR (COALESCE(json_extract(delivery.record_json, '$.manualRetryRequired'), 0) = 0
+        AND COALESCE(json_extract(delivery.record_json, '$.nextAttemptAt'), 0) <= ?))
+      AND (? IS NULL OR EXISTS (SELECT 1 FROM workflow_runs AS run
+        WHERE run.run_id = json_extract(delivery.record_json, '$.runId') AND json_extract(run.execution_json, '$.authorityRef') = ?))
+      ORDER BY delivery.updated_at, delivery.invocation_id LIMIT ?`).all(dueAt, dueAt, authority, authority, limit).map(row => decode(text(row, 'record_json')))
   }
 }
 

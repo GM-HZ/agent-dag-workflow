@@ -9,6 +9,7 @@ import {
   type WorkflowCatalogRepository,
   type WorkflowCatalogSummary,
   type WorkflowDraft,
+  type WorkflowRevisionSummary,
 } from '../../catalog/index.js'
 import { openWorkflowDatabase, transaction, type SqliteWorkflowOptions } from './database.js'
 
@@ -75,6 +76,19 @@ export class SqliteWorkflowCatalogRepository implements WorkflowCatalogRepositor
 
   async readPublished(id: string, revision?: number): Promise<PublishedWorkflowRevision | undefined> {
     return this.readPublishedSync(id, revision)
+  }
+
+  async listRevisions(id: string, before: number | undefined, limit: number): Promise<readonly WorkflowRevisionSummary[]> {
+    return this.db.prepare(`SELECT revision, source_draft_revision, published_at, content_hash, semantic_hash
+      FROM workflow_revisions WHERE id = ? AND (? IS NULL OR revision < ?) ORDER BY revision DESC LIMIT ?`)
+      .all(id, before ?? null, before ?? null, limit).map(value => {
+        const row = rowRecord(value)
+        return {
+          revision: integerColumn(row, 'revision'), sourceDraftRevision: integerColumn(row, 'source_draft_revision'),
+          publishedAt: integerColumn(row, 'published_at'), contentHash: stringColumn(row, 'content_hash'),
+          semanticHash: stringColumn(row, 'semantic_hash'),
+        }
+      })
   }
 
   async searchPublished(request: WorkflowCatalogSearchRequest): Promise<WorkflowCatalogSearchResult> {

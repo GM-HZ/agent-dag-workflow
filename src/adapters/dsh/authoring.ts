@@ -128,15 +128,17 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
         ? ctx.workflowTemplates.createDraft(template)
         : ctx.workflowTemplates.updateDraft(template.metadata.id, expectedRevision, template)))
     }),
-    tool('workflow_draft_validate', 'Validate the current immutable draft by id without resending the complete template.', {
+    tool('workflow_draft_validate', 'Validate the current draft by id. Provide inputs to also check readiness in the calling Agent scope.', {
       id: { ...idProperty, required: true },
-    }, async args => {
+      inputs: { type: 'object' },
+    }, async (args, execution) => {
       const draft = await ctx.workflowTemplates.readDraft(stringArg(args, 'id'))
-      return { revision: draft.revision, diagnostics: snapshotJsonValue(await ctx.workflowTemplates.validate(draft.template)) }
+      return { revision: draft.revision, diagnostics: snapshotJsonValue(await validateTemplate(ctx, draft.template, args, execution)) }
     }, true),
-    tool('workflow_validate', 'Compile a candidate workflow and return stable diagnostics. Never infer success from an empty tool error.', {
+    tool('workflow_validate', 'Compile a candidate workflow. Provide inputs to also check readiness in the calling Agent scope.', {
       template: { ...templateProperty, required: true },
-    }, async args => ({ diagnostics: snapshotJsonValue(await ctx.workflowTemplates.validate(templateArg(args, 'template'))) }), true),
+      inputs: { type: 'object' },
+    }, async (args, execution) => ({ diagnostics: snapshotJsonValue(await validateTemplate(ctx, templateArg(args, 'template'), args, execution)) }), true),
     tool('workflow_diff', 'Compare a candidate against the current draft and separate semantic, layout, node, and edge changes.', {
       id: { ...idProperty, required: true },
       candidate: { ...templateProperty, required: true },
@@ -173,6 +175,12 @@ export function workflowToolDefinitions(ctx: Context): readonly DshWorkflowToolD
       })
     }),
   ]
+}
+
+function validateTemplate(ctx: Context, template: WorkflowTemplate, args: unknown, execution: DshToolRunContextLike) {
+  if (objectArgs(args).inputs === undefined) return ctx.workflowTemplates.validate(template)
+  if (execution.agent === undefined) throw new Error('Workflow run readiness requires a calling Agent')
+  return ctx.dagWorkflowEngine.validate(template, objectArg(args, 'inputs'), execution.agent)
 }
 
 function tool(
@@ -237,7 +245,7 @@ export function renderWorkflowToolOutput(name: string, value: JsonValue): string
     const warnings = diagnostics.length - errors
     return diagnostics.length === 0
       ? `工作流校验通过${typeof value.revision === 'number' ? `（草稿修订 ${value.revision}）` : ''}：0 个错误，0 个警告。可以在画布中检查后再决定是否发布。`
-      : [`工作流校验未通过：${errors} 个错误，${warnings} 个警告。`, stableJsonStringify({ diagnostics })].join('\n')
+      : [`${errors > 0 ? '工作流校验未通过' : '工作流校验通过，有警告'}：${errors} 个错误，${warnings} 个警告。`, stableJsonStringify({ diagnostics })].join('\n')
   }
   if (name === 'workflow_diff') {
     return [

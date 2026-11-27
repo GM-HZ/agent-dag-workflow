@@ -2,10 +2,13 @@ import type {
   JsonObject,
   JsonValue,
   WorkflowEvent,
+  WorkflowHostInvocationEvidence,
+  WorkflowRunOrigin,
   WorkflowRunResult,
   WorkflowTemplate,
 } from '../../core/index.js'
 import type { WorkflowLaunchTarget } from '../../runtime/index.js'
+import type { WorkflowArtifactStore, WorkflowCapturePolicy } from '../../journal/index.js'
 
 export interface DshSessionLike {
   readonly id?: string
@@ -23,6 +26,7 @@ export interface DshSubagentRunLike {
     readonly structured?: unknown
     readonly diagnostic?: string
     readonly stopReason: string
+    readonly workflowEvidence?: WorkflowHostInvocationEvidence
   }>
   dispose(): Promise<void>
 }
@@ -86,9 +90,10 @@ export interface DshToolRuntimeInput {
   readonly agent: DshAgentLike
 }
 
-export type DshToolRuntimeResult =
+export type DshToolRuntimeResult = (
   | { readonly isError: false; readonly value: JsonValue }
   | { readonly isError: true; readonly error: unknown }
+) & { readonly workflowEvidence?: WorkflowHostInvocationEvidence }
 
 export interface DshToolRuntimeLike {
   execute(input: DshToolRuntimeInput): Promise<DshToolRuntimeResult>
@@ -151,6 +156,8 @@ export interface DshSkillRuntimeLike {
 export type DshDagWorkflowStartRequest = {
   readonly inputs: JsonObject
   readonly parent: object
+  readonly idempotencyKey?: string
+  readonly origin?: WorkflowRunOrigin
   readonly signal?: AbortSignal
   /** Request/transport lifetime; aborting it detaches without cancelling the durable Run. */
   readonly interruptionSignal?: AbortSignal
@@ -195,6 +202,8 @@ export interface DshWorkflowRun {
 export interface DshWorkflowPluginConfig {
   readonly catalog?: 'memory' | 'external'
   readonly runStore?: 'memory' | 'external'
+  readonly artifactStore?: WorkflowArtifactStore
+  readonly capturePolicy?: WorkflowCapturePolicy
   /** Optional restart coordinator. Both callbacks must use Host-owned session/Agent state. */
   readonly recovery?: {
     readonly reference: (parent: DshAgentLike) => string

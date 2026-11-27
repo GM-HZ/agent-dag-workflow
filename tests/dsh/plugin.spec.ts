@@ -828,6 +828,10 @@ describe('DSH Cordis plugin', () => {
     })
     expect(imported).toMatchObject({ revision: 3, template: { metadata: { name: 'Imported JSON template' } } })
     expect(await call('workflow_draft_validate', { id: 'tool-authored' })).toEqual({ revision: 3, diagnostics: [] })
+    expect(await call('workflow_draft_validate', { id: 'tool-authored', inputs: {} })).toMatchObject({
+      revision: 3,
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'WORKFLOW_INPUT_INVALID', severity: 'error' })]),
+    })
     expect(await call('workflow_diff', { id: 'tool-authored', candidate: importedTemplate })).toMatchObject({ semanticChanged: false })
     const published = await call('workflow_publish', { id: 'tool-authored', expectedRevision: 3 })
     expect(published).toMatchObject({ id: 'tool-authored', revision: 1 })

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,7 +12,7 @@ const localCli = [
   // npm-packaged Codex Plugin wrapper:
   // integrations/codex/agent-dag-workflow/scripts/agent-workflow.mjs.
   resolve(scriptDirectory, '..', '..', '..', '..', 'lib', 'cli.js'),
-].find(candidate => existsSync(candidate))
+].find(candidate => existsSync(candidate)) ?? workspaceCli()
 const pathCli = findExecutable('agent-workflow')
 const command = localCli !== undefined
   ? { executable: process.execPath, args: [localCli, ...process.argv.slice(2)] }
@@ -51,4 +52,13 @@ function findExecutable(name) {
     }
   }
   return undefined
+}
+
+function workspaceCli() {
+  try {
+    const require = createRequire(resolve(process.cwd(), 'package.json'))
+    const manifest = require.resolve('@gm-hz/agent-dag-workflow/package.json')
+    const cli = join(dirname(manifest), 'lib', 'cli.js')
+    return existsSync(cli) ? cli : undefined
+  } catch { return undefined }
 }

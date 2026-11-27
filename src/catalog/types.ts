@@ -20,6 +20,12 @@ export interface PublishedWorkflowRevision {
   readonly publishedAt: number
 }
 
+export type WorkflowRevisionSummary = Omit<PublishedWorkflowRevision, 'template' | 'id'>
+export interface WorkflowRevisionPage {
+  readonly items: readonly WorkflowRevisionSummary[]
+  readonly nextBefore?: number
+}
+
 export interface WorkflowCatalogSummary {
   readonly id: string
   readonly name: string

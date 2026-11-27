@@ -57,25 +57,40 @@ export async function startDshSubagent(
   request: DshSubagentRequest & { readonly label: string },
   allowedTools: readonly string[] | undefined,
 ): Promise<DshSubagentRunLike> {
-  if ('startActivation' in runtime && allowedTools !== undefined) {
-    throw new WorkflowExecutionError('DSH_SUBAGENT_TOOL_FILTER_UNSUPPORTED',
-      'This DSH version cannot enforce per-node subagent tool allowlists. Move declared tool calls to tool.call nodes.',
-      { nodeId: request.label })
-  }
-  const provider = subagentProviders(runtime).find(candidate =>
-    (request.outputSchema === undefined || candidate.outputSchema)
-    && (request.maxDepth === undefined || candidate.depthLimit)
-    && (allowedTools === undefined || candidate.toolFilter))
-  if (provider === undefined) {
-    throw new WorkflowExecutionError('AGENT_TARGET_UNAVAILABLE',
-      'DSH has no registered subagent target compatible with this workflow node', { nodeId: request.label })
-  }
+  const provider = selectDshSubagent(runtime, {
+    nodeId: request.label,
+    outputSchema: request.outputSchema !== undefined,
+    depthLimit: request.maxDepth !== undefined,
+    toolFilter: allowedTools !== undefined,
+  })
   if ('startActivation' in runtime) {
-    const activation = await runtime.startActivation({ ...request, provider: provider.name, delivery: 'caller' })
+    const activation = await runtime.startActivation({ ...request, provider, delivery: 'caller' })
     return { id: activation.childId, result: activation.result, dispose: () => activation.dispose() }
   }
-  return runtime.start(provider.name, {
+  return runtime.start(provider, {
     ...request,
     ...(allowedTools === undefined ? {} : { toolFilter: { allow: allowedTools } }),
   })
+}
+
+export function selectDshSubagent(runtime: DshSubagents, request: {
+  readonly nodeId: string
+  readonly outputSchema: boolean
+  readonly depthLimit: boolean
+  readonly toolFilter: boolean
+}): string {
+  if ('startActivation' in runtime && request.toolFilter) {
+    throw new WorkflowExecutionError('DSH_SUBAGENT_TOOL_FILTER_UNSUPPORTED',
+      'This DSH version cannot enforce per-node subagent tool allowlists. Move declared tool calls to tool.call nodes.',
+      { nodeId: request.nodeId })
+  }
+  const provider = subagentProviders(runtime).find(candidate =>
+    (!request.outputSchema || candidate.outputSchema)
+    && (!request.depthLimit || candidate.depthLimit)
+    && (!request.toolFilter || candidate.toolFilter))
+  if (provider === undefined) {
+    throw new WorkflowExecutionError('AGENT_TARGET_UNAVAILABLE',
+      'DSH has no registered subagent target compatible with this workflow node', { nodeId: request.nodeId })
+  }
+  return provider.name
 }

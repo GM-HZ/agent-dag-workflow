@@ -5,8 +5,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { Context } from '@deepseek-ai/cordis'
 import {
   DagWorkflowEngine,
+  InMemoryWorkflowRunStore,
   registerCoreNodes,
   WorkflowNodeRegistry,
+  WorkflowPauseError,
   type JsonValue,
   type WorkflowEvent,
   type WorkflowRunCheckpoint,
@@ -18,12 +20,14 @@ import {
 } from '../../src/core/index.js'
 import { WorkflowTemplateCatalog } from '../../src/catalog/index.js'
 import { WorkflowRuntime } from '../../src/runtime/index.js'
+import { readWorkflowEventPage } from '../../src/runtime/journal.js'
 import {
   WorkflowNodeRegistryService,
   WorkflowScriptRuntimeRegistryService,
 } from '../../src/adapters/dsh/index.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  SQLITE_SCHEMA_VERSION,
   SqliteWorkflowCatalogRepository,
   SqliteWorkflowRunStore,
   SqliteWorkflowRunCoordinator,
@@ -255,6 +259,68 @@ describe('SQLite workflow catalog repository', () => {
     reopened.close()
   })
 
+  it('queries metadata-only run history consistently across SQLite reopen and memory', async () => {
+    const path = dbPath()
+    const memory = new InMemoryWorkflowRunStore()
+    const sqlite = new SqliteWorkflowRunStore({ path })
+    const main = toolTemplate()
+    const other = { ...main, metadata: { ...main.metadata, id: 'other-workflow' } }
+    const origin = { type: 'sdk', unprojected: '__private_example__' }
+    try {
+      for (const runStore of [memory, sqlite]) {
+        let now = 100
+        const engine = new DagWorkflowEngine(workflowRegistry(), {
+          tools: { async execute(request) {
+            if (request.inputs.message === 'pause') throw new WorkflowPauseError('review the result')
+            return { echo: request.inputs.message ?? null }
+          } },
+        }, { runStore, now: () => now })
+        const fixtures = [
+          { runId: 'old', template: main, authorityRef: 'test:user', time: 100 },
+          { runId: 'same-a', template: main, authorityRef: 'test:user', time: 200 },
+          { runId: 'same-z', template: main, authorityRef: 'test:user', time: 200 },
+          { runId: 'other-workflow', template: other, authorityRef: 'test:user', time: 300 },
+          { runId: 'other-authority', template: main, authorityRef: 'test:other-user', time: 400 },
+        ] as const
+        for (const fixture of fixtures) {
+          now = fixture.time
+          const pause = fixture.runId === 'same-z'
+          const run = await engine.start({
+            runId: fixture.runId, template: fixture.template,
+            inputs: { message: pause ? 'pause' : '__private_example__' },
+            execution: { ...testExecution, authorityRef: fixture.authorityRef, origin },
+          })
+          expect((await run.result).status).toBe(pause ? 'paused' : 'completed')
+        }
+      }
+    } finally {
+      sqlite.close()
+    }
+
+    const reopened = new SqliteWorkflowRunStore({ path })
+    try {
+      const query = { authorityRef: 'test:user', templateId: 'sqlite-test', limit: 1 } as const
+      const page = await reopened.listRuns(query)
+      expect(page).toEqual(await memory.listRuns(query))
+      expect(page.items).toEqual([{
+        runId: 'same-z', templateId: 'sqlite-test', templateName: 'SQLite run', authorityRef: 'test:user',
+        origin: { type: 'sdk' }, status: 'paused', createdAt: 200, updatedAt: 200,
+        checkpointSeq: expect.any(Number), needsAttention: true,
+      }])
+      expect(page.nextAfter).toEqual({ updatedAt: 200, runId: 'same-z' })
+      const after = { ...query, after: page.nextAfter!, limit: 2 }
+      const rest = await reopened.listRuns(after)
+      expect(rest).toEqual(await memory.listRuns(after))
+      expect(rest.items.map(({ runId }) => runId)).toEqual(['same-a', 'old'])
+      expect(rest.nextAfter).toBeUndefined()
+      expect(JSON.stringify(rest)).not.toContain('__private_example__')
+      expect((await reopened.listRuns({ ...query, status: 'completed' })).items[0]).toMatchObject({ runId: 'same-a', needsAttention: false })
+      await expect(reopened.listRuns({ limit: 101 })).rejects.toThrow(/between 1 and 100/)
+    } finally {
+      reopened.close()
+    }
+  })
+
   it('exports, backs up, and prunes only bounded terminal run batches', async () => {
     const path = dbPath()
     const backup = path.replace(/\.db$/, '.backup.db')
@@ -306,7 +372,7 @@ describe('SQLite workflow catalog repository', () => {
     old.exec('PRAGMA user_version = 10;')
     old.close()
 
-    expect(() => new SqliteWorkflowRunStore({ path })).toThrow(/expected 11/)
+    expect(() => new SqliteWorkflowRunStore({ path })).toThrow(`expected ${SQLITE_SCHEMA_VERSION}`)
 
     const unchanged = new DatabaseSync(path)
     expect((unchanged.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(10)
@@ -359,6 +425,9 @@ describe('SQLite workflow catalog repository', () => {
     expect([left, right].filter(value => value !== undefined)).toHaveLength(1)
     expect(await queued.result).toMatchObject({ status: 'completed', outputs: { answer: 'once' } })
     expect(calls).toBe(1)
+    expect((await runs.listRuns({ authorityRef: 'sqlite:worker' })).items).toEqual([
+      expect.objectContaining({ runId: queued.runId, templateId: draft.id, revision: 1, status: 'completed' }),
+    ])
     queueB.close(); queueA.close(); runs.close(); repository.close()
   })
 
@@ -379,6 +448,70 @@ describe('SQLite workflow catalog repository', () => {
     expect(sends).toBe(1)
     expect(await reopened.listAttention()).toEqual([])
     reopened.close()
+  })
+
+  it('limits operation results after filtering the historical binding and run owners', async () => {
+    const path = dbPath()
+    const bindings = new SqliteWorkflowBindingRepository({ path })
+    const ingress = new SqliteWorkflowIngressStore({ path })
+    const deliveries = new SqliteWorkflowDeliveryStore({ path })
+    const runs = new SqliteWorkflowRunStore({ path })
+    try {
+      const authorityRef = testExecution.authorityRef
+      const otherAuthority = 'test:other'
+      const candidate = {
+        apiVersion: 'workflow.gm-hz.dev/v1' as const, kind: 'WorkflowBinding' as const, metadata: { id: 'handed-off' },
+        spec: { workflow: { id: 'sqlite-test', revision: 1 }, trigger: { uses: 'webhook@1', with: {} }, inputMapping: {}, authorityRef },
+      }
+      const original = await bindings.publish(candidate, 0, 100)
+      const replacement = await bindings.publish({ ...candidate, spec: { ...candidate.spec, authorityRef: otherAuthority } }, 1, 101)
+      for (const [binding, receivedAt] of [[original, 100], [replacement, 101]] as const) {
+        const triggerId = `trigger-${binding.metadata.revision}`
+        const envelope = { schemaVersion: 1 as const, triggerId, source: 'webhook', sourceEventId: triggerId, receivedAt, payload: {} }
+        await ingress.acceptOrGet({ ...envelope, dedupeKey: triggerId, binding: binding.metadata, status: 'received', envelope })
+      }
+      await expect(bindings.list({ authorityRef, latestOnly: true, limit: 1 })).resolves.toEqual([])
+      await expect(ingress.list({ authorityRef, limit: 1 })).resolves.toMatchObject([{ triggerId: 'trigger-1' }])
+      await expect(ingress.list({ authorityRef: otherAuthority, limit: 1 })).resolves.toMatchObject([{ triggerId: 'trigger-2' }])
+
+      const nodes = new WorkflowNodeRegistry()
+      registerCoreNodes(nodes)
+      const engine = new DagWorkflowEngine(nodes, {}, { runStore: runs })
+      for (const [owner, time] of [[otherAuthority, 100], [authorityRef, 101]] as const) {
+        const run = await engine.start({ template: template(), inputs: {}, execution: { ...testExecution, authorityRef: owner } })
+        await run.result
+        await deliveries.save({ runId: run.id, deliveryRef: 'reply', phase: 'terminal', payload: {}, invocationId: owner,
+          updatedAt: time, status: 'unknown', attempts: 1 }, 0)
+      }
+      await expect(deliveries.listAttention({ authorityRef, limit: 1 })).resolves.toMatchObject([{ invocationId: authorityRef }])
+    } finally { deliveries.close(); ingress.close(); bindings.close(); runs.close() }
+  })
+
+  it('reads recent and filtered Journal windows through a stable sequence without changing the forward export', async () => {
+    const runs = new SqliteWorkflowRunStore({ path: dbPath() })
+    try {
+      const nodes = new WorkflowNodeRegistry()
+      registerCoreNodes(nodes)
+      const engine = new DagWorkflowEngine(nodes, { tools: { async execute() { throw new Error('test Tool failed') } } }, { runStore: runs })
+      const run = await engine.start({ template: toolTemplate(), inputs: { message: 'hello' }, execution: testExecution })
+      await expect(run.result).resolves.toMatchObject({ status: 'failed' })
+      const forward = await runs.readEvents(run.id)
+      const recent = await readWorkflowEventPage(runs, run.id, { window: 'recent', limit: 3 })
+      const expected = forward.slice(-3)
+      expect(recent).toEqual({ events: expected, nextBeforeSeq: expected[0]!.seq })
+      const earlier = await readWorkflowEventPage(runs, run.id, { window: 'recent', beforeSeq: recent.nextBeforeSeq!, limit: 3 })
+      expect(earlier.events).toEqual(forward.slice(-6, -3))
+      const filters = { window: 'recent' as const, nodeId: 'call', failuresOnly: true, limit: 1 }
+      const failed = await readWorkflowEventPage(runs, run.id, filters)
+      expect(failed.events).toMatchObject([{ type: 'node.failed', nodeId: 'call' }])
+      expect(failed.nextBeforeSeq).toBe(failed.events[0]!.seq)
+      const legacy = { readEvents: runs.readEvents.bind(runs) }
+      await expect(readWorkflowEventPage(legacy, run.id, filters)).resolves.toEqual(failed)
+      await expect(readWorkflowEventPage(runs, run.id, { ...filters, nodeId: 'start' })).resolves.toEqual({ events: [] })
+      await expect(readWorkflowEventPage(runs, run.id, { limit: 1, afterSeq: failed.events[0]!.seq })).resolves.toMatchObject({
+        events: [{ seq: failed.events[0]!.seq + 1 }],
+      })
+    } finally { runs.close() }
   })
 
   it('atomically deduplicates the same ingress event across two SQLite store instances', async () => {

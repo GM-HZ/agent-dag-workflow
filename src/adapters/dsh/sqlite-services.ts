@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis'
-import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunMetadata, WorkflowRunRecord } from '../../core/index.js'
+import type { WorkflowEvent, WorkflowRunCheckpoint, WorkflowRunEventWindow, WorkflowRunHistoryQuery, WorkflowRunMetadata, WorkflowRunRecord } from '../../core/index.js'
 import {
   SqliteWorkflowBindingRepository,
   SqliteWorkflowCatalogRepository,
@@ -12,7 +12,7 @@ import {
   type SqliteWorkflowIngressStoreOptions,
   type SqliteWorkflowRunStoreOptions,
 } from '../../storage/sqlite/index.js'
-import type { WorkflowDeliveryRecord, WorkflowIngressRecord } from '../../triggers/core/index.js'
+import type { WorkflowDeliveryListQuery, WorkflowDeliveryRecord, WorkflowIngressListQuery, WorkflowIngressRecord } from '../../triggers/core/index.js'
 import {
   RepositoryWorkflowBindingsService,
   RepositoryWorkflowTemplatesService,
@@ -43,9 +43,13 @@ export class SqliteWorkflowRunsService extends WorkflowRunsService {
   commit(runId: string, expectedSeq: number, checkpoint: WorkflowRunCheckpoint, events: readonly WorkflowEvent[]) { return this.store.commit(runId, expectedSeq, checkpoint, events) }
   loadRun(runId: string) { return this.store.loadRun(runId) }
   getRunMetadata(runId: string): Promise<WorkflowRunMetadata | undefined> { return this.store.getRunMetadata(runId) }
+  override getRunInputs(runId: string) { return this.store.getRunInputs(runId) }
   getCheckpoint(runId: string) { return this.store.getCheckpoint(runId) }
+  getRunStatus(runId: string) { return this.store.getRunStatus(runId) }
   readEvents(runId: string, query?: { readonly afterSeq?: number; readonly limit?: number }) { return this.store.readEvents(runId, query) }
+  queryEvents(runId: string, query: WorkflowRunEventWindow) { return this.store.queryEvents(runId, query) }
   listRecoverableRuns() { return this.store.listRecoverableRuns() }
+  listRuns(query?: WorkflowRunHistoryQuery) { return this.store.listRuns(query) }
 }
 
 export class SqliteWorkflowBindingsService extends RepositoryWorkflowBindingsService {
@@ -71,7 +75,7 @@ export class SqliteWorkflowIngressRecordsService extends WorkflowIngressRecordsS
   markRejected(triggerId: string, reasonCode: string) { return this.store.markRejected(triggerId, reasonCode) }
   get(triggerId: string) { return this.store.get(triggerId) }
   listPending() { return this.store.listPending() }
-  list(query?: { readonly limit?: number }) { return this.store.list(query) }
+  list(query?: WorkflowIngressListQuery) { return this.store.list(query) }
 }
 
 export class SqliteWorkflowDeliveryRecordsService extends WorkflowDeliveryRecordsService {
@@ -83,5 +87,5 @@ export class SqliteWorkflowDeliveryRecordsService extends WorkflowDeliveryRecord
   }
   get(invocationId: string) { return this.store.get(invocationId) }
   save(record: WorkflowDeliveryRecord, expectedAttempts: number) { return this.store.save(record, expectedAttempts) }
-  listAttention(query?: { readonly limit?: number }) { return this.store.listAttention(query) }
+  listAttention(query?: WorkflowDeliveryListQuery) { return this.store.listAttention(query) }
 }

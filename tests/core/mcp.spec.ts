@@ -41,8 +41,12 @@ describe('workflow MCP gateway', () => {
     const context = { authorityRef: 'mcp:author', authority: {} }
     expect(invoke.listTools()).toHaveLength(6)
     expect(author.listTools()).toHaveLength(12)
-    await expect(invoke.callTool('workflow_validate', { template: toolWorkflowTemplate() as unknown as JsonValue }, context))
+    const template = toolWorkflowTemplate() as unknown as JsonValue
+    await expect(invoke.callTool('workflow_validate', { template }, context))
       .rejects.toMatchObject({ code: 'WORKFLOW_REQUEST_INVALID' })
+    await expect(author.callTool('workflow_validate', { template, inputs: {} }, context)).resolves.toMatchObject({
+      diagnostics: expect.arrayContaining([expect.objectContaining({ code: 'WORKFLOW_INPUT_INVALID', severity: 'error' })]),
+    })
     const nodes = await author.callTool('workflow_nodes_list', { query: 'tool.call' }, context) as JsonObject
     expect(nodes.items).toEqual([expect.objectContaining({ uses: 'tool.call@1' })])
     const draft = await author.callTool('workflow_draft_put', { template: toolWorkflowTemplate() as unknown as JsonValue }, context) as JsonObject

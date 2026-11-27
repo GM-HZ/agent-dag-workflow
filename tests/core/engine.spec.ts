@@ -1,11 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DagWorkflowEngine,
+  InMemoryWorkflowRunStore,
   parseWorkflowTemplate,
   registerCoreNodes,
   WORKFLOW_TEMPLATE_API_VERSION,
   WorkflowCapabilityRegistry,
+  WorkflowExecutionError,
   WorkflowNodeRegistry,
+  type WorkflowHostEvidenceReporter,
+  type WorkflowHostInvocationEvidence,
   type WorkflowToolRequest,
   type WorkflowTemplate,
 } from '../../src/core/index.js'
@@ -34,6 +38,86 @@ describe('DAG workflow engine', () => {
     expect(execute).toHaveBeenCalledOnce()
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ uses: 'echo', nodeId: 'call', inputs: { message: 'hello' }, authority: testExecution.authority }))
     expect(result.events.map(event => event.seq)).toEqual(result.events.map((_, index) => index + 1))
+    expect(result.events.find(event => event.type === 'capability.completed')?.hostEvidence).toBeUndefined()
+  })
+
+  it('journals only validated Tool provenance and preserves the Tool result shape', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const store = new InMemoryWorkflowRunStore()
+    let report: WorkflowHostEvidenceReporter | undefined
+    let accessorReads = 0
+    const privateValue = 'test-provider-private-marker'
+    const engine = new DagWorkflowEngine(registry, {
+      tools: {
+        async execute(request) {
+          report = request.reportEvidence
+          expect(report).toBeDefined()
+          expect(report!({
+            toolVersion: 'echo@2.0.0-rc.1', traceId: 'ABCD'.repeat(8), spanId: '1234'.repeat(4),
+            durationMs: 12.5, usage: { inputTokens: 4, cacheReadTokens: 1 },
+          })).toBe(true)
+          const usage = { outputTokens: 3, totalTokens: 7 }
+          expect(report!({ usage })).toBe(true)
+          usage.outputTokens = 100
+          expect(report!({ toolVersion: 'unrelated@9', usage: { totalTokens: 200 } })).toBe(false)
+          expect(report!({ modelId: 'trusted/model-v2', credentials: privateValue } as WorkflowHostInvocationEvidence)).toBe(false)
+          expect(report!({ usage: { inputTokens: 999_999_999_999 } })).toBe(false)
+          expect(report!({ usage: { inputTokens: 4, prompt: privateValue } } as WorkflowHostInvocationEvidence)).toBe(false)
+          expect(report!({ traceId: '0'.repeat(32) })).toBe(false)
+          expect(report!(Object.defineProperty({}, 'modelId', {
+            enumerable: true,
+            get() { accessorReads++; return privateValue },
+          }))).toBe(false)
+          return { echo: request.inputs.message ?? null }
+        },
+      },
+    }, { runStore: store })
+    const run = await engine.start({ execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'hello' } })
+    expect(await run.result).toMatchObject({ status: 'completed', outputs: { answer: 'hello' } })
+    expect(report!({ modelId: 'too-late' })).toBe(false)
+    expect(accessorReads).toBe(0)
+    const record = await store.loadRun(run.id)
+    const completed = record?.events.find(event => event.type === 'capability.completed')
+    const evidence = {
+      toolVersion: 'echo@2.0.0-rc.1', traceId: 'abcd'.repeat(8), spanId: '1234'.repeat(4), durationMs: 12.5,
+      usage: { inputTokens: 4, cacheReadTokens: 1, outputTokens: 3, totalTokens: 7 },
+    }
+    expect(completed?.hostEvidence).toEqual(evidence)
+    expect(completed?.payload.hostEvidence).toEqual(evidence)
+    expect(record?.checkpoint.nodeOutputs.call).toEqual({ result: { echo: 'hello' } })
+    expect(JSON.stringify(record)).not.toContain(privateValue)
+  })
+
+  it('retains Agent child provenance when the invocation fails', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const engine = new DagWorkflowEngine(registry, {
+      agents: {
+        async execute(request) {
+          expect(request.reportEvidence?.({ childRunId: 'dsh-agent:child-1', modelId: 'provider/model-v2', usage: { outputTokens: 17 } })).toBe(true)
+          throw new WorkflowExecutionError('FIXTURE_AGENT_FAILED', 'agent execution interrupted')
+        },
+      },
+    })
+    const base = toolWorkflowTemplate()
+    const template: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec,
+        requires: [{ kind: 'capability', uses: 'gateway.agent.execute' }],
+        nodes: base.spec.nodes.map(node => node.id === 'call'
+          ? { ...node, uses: 'agent.run@1', with: { prompt: 'Summarize the sample.' } }
+          : node.id === 'end' ? { ...node, inputs: { answer: { literal: 'done' } } } : node),
+      },
+    }
+    const run = await engine.start({ execution: testExecution, template, inputs: { message: 'sample' } })
+    const result = await run.result
+    expect(result).toMatchObject({ status: 'failed', error: 'agent execution interrupted' })
+    const failure = result.events.find(event => event.type === 'capability.failed')
+    const evidence = { childRunId: 'dsh-agent:child-1', modelId: 'provider/model-v2', usage: { outputTokens: 17 } }
+    expect(failure).toMatchObject({ nodeId: 'call', invocationId: `${run.id}:call`, hostEvidence: evidence })
+    expect(failure?.payload.hostEvidence).toEqual(evidence)
   })
 
   it('settles untaken branches as skipped before running a join', async () => {
@@ -73,6 +157,77 @@ describe('DAG workflow engine', () => {
     expect(result).toMatchObject({ status: 'failed', error: 'policy denied' })
     expect(result.nodeStates.call).toBe('failed')
     expect(result.events).toContainEqual(expect.objectContaining({ type: 'node.failed', nodeId: 'call' }))
+  })
+
+  it('keeps the failed attempt audit when an automatic retry later succeeds', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    let attempts = 0
+    let now = 1000
+    registry.register({
+      type: 'test.retry', version: 1, title: 'Retry fixture', description: 'Retry one deterministic transformation',
+      configSchema: { type: 'object' }, inputSchema: { type: 'object' }, outputSchema: { type: 'object' },
+      outputPorts: ['success'], capabilities: [], effects: 'deterministic', retry: 'safe', implementationDigest: 'test-retry-v1',
+      async execute() {
+        if (++attempts === 1) {
+          now += 18
+          throw new WorkflowExecutionError('FIXTURE_TRANSIENT', 'temporary fixture failure')
+        }
+        now += 7
+        return { outputs: { result: { echo: 'recovered' } } }
+      },
+    })
+    const base = toolWorkflowTemplate()
+    const template: WorkflowTemplate = {
+      ...base,
+      spec: {
+        ...base.spec, requires: [],
+        nodes: base.spec.nodes.map(node => node.id === 'call'
+          ? { ...node, uses: 'test.retry@1', with: {}, policy: { retry: { maxAttempts: 2 } } }
+          : node),
+      },
+    }
+    const store = new InMemoryWorkflowRunStore()
+    const engine = new DagWorkflowEngine(registry, {}, { runStore: store, now: () => now })
+    const run = await engine.start({ execution: testExecution, template, inputs: { message: 'example' } })
+    expect(await run.result).toMatchObject({ status: 'completed', outputs: { answer: 'recovered' } })
+    const events = await store.readEvents(run.id)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'node.retry-scheduled',
+      node: expect.objectContaining({ id: 'call', attempt: 1 }),
+      payload: {
+        error: 'temporary fixture failure', errorCode: 'FIXTURE_TRANSIENT', durationMs: 18,
+        nextAttempt: 2, retryMode: 'safe',
+      },
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'node.completed',
+      node: expect.objectContaining({ id: 'call', attempt: 2 }),
+      payload: { durationMs: 7, selectedPorts: ['success'] },
+    }))
+  })
+
+  it('executes approved offline fixtures only for matching inputs and never uses a live gateway as fallback', async () => {
+    const registry = new WorkflowNodeRegistry()
+    registerCoreNodes(registry)
+    const execute = vi.fn(async () => ({ echo: 'live side effect' }))
+    const engine = new DagWorkflowEngine(registry, { tools: { execute } })
+    const request = { execution: testExecution, template: toolWorkflowTemplate(), inputs: { message: 'case' } }
+    const fixture = { outputs: { result: { echo: 'recorded' } }, selectedPorts: ['success'], expectedInputs: { message: 'case' } }
+    const matching = await engine.start({ ...request, recordedFixtures: { call: fixture } })
+    expect(await matching.result).toMatchObject({ status: 'completed', outputs: { answer: 'recorded' } })
+    const mismatching = await engine.start({ ...request, inputs: { message: 'changed' }, recordedFixtures: { call: fixture } })
+    expect(await mismatching.result).toMatchObject({ status: 'failed', error: expect.stringContaining('recorded fixture inputs do not match node call') })
+    const missing = await engine.start({ ...request, recordedFixtures: {} })
+    expect(await missing.result).toMatchObject({ status: 'failed', error: expect.stringContaining('no committed outputs for call') })
+    const recordedFailure = await engine.start({
+      ...request,
+      recordedFixtures: { call: { failure: { code: 'FIXTURE_FAILURE', message: 'recorded upstream failure' }, expectedInputs: { message: 'case' } } },
+    })
+    const failure = await recordedFailure.result
+    expect(failure).toMatchObject({ status: 'failed', error: 'recorded upstream failure' })
+    expect(failure.events).toContainEqual(expect.objectContaining({ type: 'node.failed', nodeId: 'call', errorCode: 'FIXTURE_FAILURE' }))
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('rejects generic secret bindings before compilation', () => {

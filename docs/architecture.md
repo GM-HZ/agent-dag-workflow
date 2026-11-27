@@ -197,7 +197,7 @@ Canvas 的运维投影可以读取 Binding、Ingress duplicate/run 关联、unkn
 ## 8. 版本与兼容边界
 
 - Template Parser 只接受 `workflow.gm-hz.dev/v1`，Core 不注册旧 API Version、旧节点别名或双解析路径；
-- SQLite 只创建当前完整 schema，或打开 application id 与 schema version 精确匹配的数据库；旧、未知和被篡改的数据库 fail closed；
+- SQLite 可初始化 v12，或将属于本应用的 v11 原子升级为 v12。已有 v12 在打开时补齐历史索引。其他 application id 或版本会被拒绝；
 - 发布修订和历史 Run 不原地改写；节点发生破坏性语义变化时提升 `uses@major`，并创建新的 Workflow revision；
 - 协议升级通过独立、显式、可审查的数据转换完成，转换代码不进入 Runtime、CLI 或公开包入口。
 - DSH 是独立 Adapter 兼容面，版本声明位于 `engines.dsh`。Adapter 负责 Typert、Client module graph、Tool 单次或批量执行，以及新旧子 Agent 接口。需要逐节点工具白名单时必须由 Host 强制执行，缺少该能力时在启动子 Agent 前失败。

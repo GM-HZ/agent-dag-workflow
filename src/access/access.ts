@@ -16,6 +16,8 @@ import type {
   WorkflowNodeSearchResult,
   WorkflowPublishedProjection,
   WorkflowRunProjection,
+  WorkflowRunHistoryProjection,
+  WorkflowRunHistoryRequest,
   WorkflowSearchRequest,
   WorkflowSearchResult,
   WorkflowTraceProjection,
@@ -109,6 +111,21 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
 
+  async listRuns(request: WorkflowRunHistoryRequest, context: AgentAccessContext): Promise<WorkflowRunHistoryProjection> {
+    try {
+      await this.#authorize({
+        operation: 'run.list', context, resourceAuthorityRef: context.authorityRef,
+        ...(request.templateId === undefined ? {} : { workflowId: request.templateId }),
+      })
+      if (this.runtime.listRuns === undefined) throw new WorkflowAccessError('WORKFLOW_HISTORY_UNAVAILABLE', 'the configured workflow runtime does not support run history')
+      const { items, nextAfter } = await this.runtime.listRuns({ ...request, authorityRef: context.authorityRef })
+      return {
+        items: items.filter(item => item.authorityRef === context.authorityRef).map(({ authorityRef: _authorityRef, ...item }) => item),
+        ...(nextAfter === undefined ? {} : { nextAfter }),
+      }
+    } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
+  }
+
   async trace(request: WorkflowTraceRequest, context: AgentAccessContext): Promise<WorkflowTraceProjection> {
     try {
       const run = projectRun(await this.#authorizedRun('trace', request.runId, context))
@@ -117,7 +134,11 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
       if (view !== 'events') throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', `unsupported workflow trace view: ${String(view)}`)
       const afterSeq = request.afterSeq ?? 0
       const limit = Math.min(1000, Math.max(1, request.limit ?? 100))
-      const page = await this.runtime.readEvents(request.runId, { afterSeq, limit })
+      const cutoff = request.throughSeq
+      if (cutoff !== undefined && (!Number.isSafeInteger(cutoff) || cutoff < 0)) {
+        throw new WorkflowAccessError('WORKFLOW_REQUEST_INVALID', 'trace throughSeq must be a non-negative safe integer')
+      }
+      const page = await this.runtime.readEvents(request.runId, { afterSeq, limit, throughSeq: Math.min(run.checkpointSeq, cutoff ?? run.checkpointSeq) })
       return snapshotJsonValue({ run, events: page.events, ...(page.nextAfterSeq === undefined ? {} : { nextAfterSeq: page.nextAfterSeq }) }) as unknown as WorkflowTraceProjection
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
@@ -175,10 +196,12 @@ export class WorkflowAgentAccess implements WorkflowAgentAccessApi {
     } catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
 
-  async validate(template: WorkflowTemplate, context: AgentAccessContext): Promise<WorkflowValidationResult> {
+  async validate(template: WorkflowTemplate, context: AgentAccessContext, inputs?: JsonObject): Promise<WorkflowValidationResult> {
     try {
       await this.#authorize({ operation: 'validate', context, workflowId: template.metadata.id })
-      return snapshotJsonValue({ diagnostics: await this.runtime.validate(template) }) as unknown as WorkflowValidationResult
+      return snapshotJsonValue({ diagnostics: await this.runtime.validate(template,
+        inputs === undefined ? undefined : { inputs, authority: context.authority },
+      ) }) as unknown as WorkflowValidationResult
     }
     catch (error: unknown) { throw normalizeWorkflowAccessError(error) }
   }
@@ -262,10 +285,9 @@ export function parsePublishedWorkflowRef(ref: string): { readonly id: string; r
 
 function projectRun(run: Awaited<ReturnType<WorkflowRuntimeApi['getRun']>> & {}): WorkflowRunProjection {
   const revision = run.plan.root.revision
-  if (revision === undefined) throw new WorkflowAccessError('WORKFLOW_REVISION_REQUIRED', `run ${run.runId} does not reference a published workflow revision`)
   return snapshotJsonValue({
     runId: run.runId,
-    ref: `${run.templateId}@${revision}`,
+    ref: revision === undefined ? run.templateId : `${run.templateId}@${revision}`,
     status: run.status,
     semanticHash: run.semanticHash,
     origin: run.origin,

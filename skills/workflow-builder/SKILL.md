@@ -1,6 +1,6 @@
 ---
 name: workflow-builder
-description: Discover, run, diagnose, create, validate, review, and publish durable Agent DAG workflows. Use for reusable workflows, DAG automation, multi-step Tool/Agent orchestration, approval flows, foreach pipelines, workflow templates, workflow runs, traces, replay, or recovery. Prefer the local agent-workflow CLI; fall back to fixed workflow_* MCP/Host tools when no CLI is available.
+description: Discover, run, diagnose, create, validate, review, and publish durable Agent DAG workflows. Use for reusable workflows, DAG automation, multi-step Tool/Agent orchestration, workflow templates, runs, traces, replay, recovery, or comparing workflow revisions against recorded cases. Prefer the local agent-workflow CLI; fall back to fixed workflow_* MCP/Host tools when no CLI is available.
 ---
 
 # Use Agent DAG workflows
@@ -9,7 +9,7 @@ Treat a Workflow as a published, schema-validated callable entity. Never reprodu
 
 ## Select the access path
 
-1. If `agent-workflow` is available, use its JSON protocol. In this repository after a build, use `node lib/cli.js` equivalently. From the Codex Plugin, `node ../../scripts/agent-workflow.mjs` is the deterministic wrapper relative to this Skill.
+1. In a project with `@gm-hz/agent-dag-workflow` installed locally, use `npm exec --no -- adw <arguments>` from the project. `--no` prevents fetching an uninstalled command. If `agent-workflow` is already on `PATH`, it exposes the same JSON protocol. A built source checkout can use `node lib/cli.js`. The Codex Plugin includes `../../scripts/agent-workflow.mjs` relative to the Skill when loaded from its Plugin folder.
 2. Otherwise, if fixed `workflow_search`, `workflow_describe`, and `workflow_run` tools exist, use that Gateway.
 3. A Host such as DSH may expose its native `workflow_*` authoring tools instead. Use their exact schemas; do not invent missing operations.
 4. If none exists, report that Workflow Access is not installed. Do not simulate a run.
@@ -43,6 +43,8 @@ With MCP/Host tools, call the equivalent `workflow_search` → `workflow_describ
 
 First clarify the goal, inputs, outputs, external side effects, approval points, reuse boundaries, and required recovery semantics. Ask only when ambiguity changes behavior or authority.
 
+For a new local project, `agent-workflow init [directory]` scaffolds an executable starter, input, and project config. `doctor` shows the effective database and authority before you write to a project.
+
 1. Query registered nodes and Host Tools. Use `agent-workflow nodes search` or `workflow_nodes_list`.
 2. Plan stable kebab-case template/node ids, static edges, explicit start/end nodes, branch ports, and fixed subworkflow revisions.
 3. Produce exactly one `workflow.gm-hz.dev/v1` `WorkflowTemplate` JSON/YAML file.
@@ -74,6 +76,12 @@ For unknown Tools/Nodes, changed side effects, approval placement, credential sc
 - Transport failure after launch: query by run id or stable idempotency key before launching again.
 
 Use recorded replay only when the user wants deterministic reproduction without new external calls. Use live replay only when re-executing external capabilities is explicitly intended.
+
+## Turn a run into a regression case
+
+Use `trace <run-id> --stats` to inspect node attempts, retries, durations, and reported host usage. If the user refers to the latest run, use `trace --latest`, optionally with `--workflow <id>`. Use `trace <run-id> --all --output run.jsonl` and `verify-log run.jsonl` when a complete local journal is useful. Use `case from-run <run-id> --output run.case.json` to capture a completed or failed run under the same database and execution identity. Examine the trace and review the sample's saved inputs and outputs before sharing.
+
+For an intended fix, preserve the original assertions in `baselineExpected` and write the desired status and outputs in `expected`. Keep a known-good case unchanged as a regression control. Run `case compare <case-or-dir> --base <ref-or-file> --candidate <ref-or-file> --output report.json`. Read each `classification` when a case fails. A baseline drift or missing fixture needs investigation before drawing conclusions about the candidate. Comparing a candidate does not publish it.
 
 ## Handoff
 

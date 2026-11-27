@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import {
   DagWorkflowEngine,
   WORKFLOW_ENGINE_VERSION,
+  WorkflowExecutionError,
+  compileWorkflow,
   compileWorkflowOrThrow,
   normalizeWorkflowDeploymentLimits,
   snapshotJsonObject,
@@ -11,24 +13,31 @@ import {
   type WorkflowAuthorityResolver,
   type WorkflowEngineServices,
   type WorkflowDeploymentLimits,
+  type WorkflowDiagnostic,
   type WorkflowEvent,
   type WorkflowExecutionPlanEntry,
   type WorkflowExecutionPlanSnapshot,
   type WorkflowNodeRegistry,
   type WorkflowEngineRun,
+  type WorkflowRecordedReplay,
   type WorkflowRunRecord,
+  type WorkflowRunHistoryQuery,
   type WorkflowRunResult,
   type WorkflowRunStore,
   type WorkflowTemplate,
+  type WorkflowNodeTemplate,
   stableJsonStringify,
-  isJsonObject,
   WorkflowPauseError,
 } from '../core/index.js'
-import type { WorkflowTemplateCatalog } from '../catalog/index.js'
+import { publishedWorkflowDependency } from '../core/dependencies.js'
+import { buildRecordedReplay, isRecordedReplayOrigin } from '../core/replay.js'
+import { WorkflowCatalogError, type WorkflowTemplateCatalog } from '../catalog/index.js'
 import type { WorkflowArtifactStore, WorkflowCapturePolicy } from '../journal/index.js'
 import { WorkflowLiveEventBus } from './live.js'
+import { readWorkflowEventPage } from './journal.js'
+import { checkWorkflowReadiness } from './readiness.js'
 import type {
-  WorkflowEventPage,
+  WorkflowEventQuery,
   WorkflowLaunchRequest,
   WorkflowReplayRequest,
   WorkflowRunHandle,
@@ -36,6 +45,7 @@ import type {
   WorkflowRunQueue,
   WorkflowRuntimeApi,
   WorkflowRuntimeCancelRequest,
+  WorkflowValidationContext,
 } from './types.js'
 
 export interface WorkflowRuntimeOptions {
@@ -50,6 +60,8 @@ export interface WorkflowRuntimeOptions {
   readonly capturePolicy?: WorkflowCapturePolicy
   readonly queue?: WorkflowRunQueue
   readonly deploymentLimits?: Partial<WorkflowDeploymentLimits>
+  /** Optional read-only host checks for start-time node capabilities. */
+  readonly checkNodeReadiness?: (node: WorkflowNodeTemplate, authority: unknown) => WorkflowDiagnostic | undefined
 }
 
 export class WorkflowRuntime implements WorkflowRuntimeApi {
@@ -65,6 +77,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   readonly #artifactStore: WorkflowArtifactStore | undefined
   readonly #queue: WorkflowRunQueue | undefined
   readonly #deploymentLimits: WorkflowDeploymentLimits
+  readonly #checkNodeReadiness: WorkflowRuntimeOptions['checkNodeReadiness']
   readonly #idempotent = new Map<string, { readonly fingerprint: string; readonly handle: Promise<WorkflowRunHandle> }>()
   readonly #active = new Map<string, WorkflowEngineRun>()
 
@@ -78,6 +91,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     this.#allowInline = options.allowInline ?? true
     this.#queue = options.queue
     this.#deploymentLimits = normalizeWorkflowDeploymentLimits(options.deploymentLimits)
+    this.#checkNodeReadiness = options.checkNodeReadiness
     const policy = options.capturePolicy ?? { mode: 'metadata', maxArtifactBytes: 1024 * 1024 }
     if (!Number.isSafeInteger(policy.maxArtifactBytes) || policy.maxArtifactBytes < 0) throw new Error('capturePolicy.maxArtifactBytes must be a non-negative safe integer')
     if (policy.mode === 'replayable' && options.artifactStore === undefined) throw new Error('replayable capture policy requires an artifact store')
@@ -95,7 +109,29 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     this.#capture = createCaptureGateway(policy, options.artifactStore)
   }
 
-  async validate(template: WorkflowTemplate) { return this.#catalog.validate(template) }
+  async validate(template: WorkflowTemplate, context?: WorkflowValidationContext): Promise<readonly WorkflowDiagnostic[]> {
+    const diagnostics = await this.#catalog.validate(template)
+    if (context === undefined || diagnostics.some(item => item.severity === 'error')) return diagnostics
+    const compilation = compileWorkflow(template, this.#nodes, { deploymentLimits: this.#deploymentLimits })
+    if (compilation.workflow === undefined) return [...diagnostics, ...compilation.diagnostics]
+    return [...diagnostics, ...await checkWorkflowReadiness(compilation.workflow, context, {
+      services: this.#services,
+      deploymentLimits: this.#deploymentLimits,
+      checkNode: this.#checkNodeReadiness,
+      loadDependency: async ({ id, revision }) => {
+        try {
+          const published = await this.#catalog.getPublished(id, revision)
+          if (published.revision !== revision) return { diagnostics: [{
+            code: 'SUBWORKFLOW_REVISION_MISMATCH', severity: 'error', message: `Expected published revision ${id}@${revision}.`,
+          }] }
+          return compileWorkflow(published.template, this.#nodes, { deploymentLimits: this.#deploymentLimits })
+        } catch (error: unknown) {
+          if (!(error instanceof WorkflowCatalogError) || error.code !== 'CATALOG_NOT_FOUND') throw error
+          return { diagnostics: [{ code: 'SUBWORKFLOW_REVISION_NOT_FOUND', severity: 'error', message: error.message }] }
+        }
+      },
+    })]
+  }
   async listNodes() {
     return this.#nodes.list().map(definition => snapshotJsonValue({
       uses: `${definition.type}@${definition.version}`,
@@ -140,9 +176,10 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
         // acceptance receipt.
         if (this.#idempotent.get(scoped)?.handle === launched) this.#idempotent.delete(scoped)
       } else {
-        void handle.result.finally(() => {
+        const release = () => {
           if (this.#idempotent.get(scoped)?.handle === launched) this.#idempotent.delete(scoped)
-        })
+        }
+        void handle.result.then(release, release)
       }
       return handle
     } catch (error: unknown) {
@@ -218,15 +255,28 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
   async resume(request: import('./types.js').WorkflowRuntimeResumeRequest): Promise<WorkflowRunHandle> {
     const record = await this.#runStore.loadRun(request.runId)
     if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
+    if (request.authorityRef !== record.execution.authorityRef) {
+      throw new WorkflowExecutionError('AUTHORITY_MISMATCH', 'resume authorityRef does not match the persisted run authority')
+    }
     const authority = await this.#resolveAuthority(request.authorityRef, request.authority, request.interruptionSignal ?? request.signal)
     const emit = (event: WorkflowEvent) => { this.#projectLive(event); request.onEvent?.(event) }
     const engine = this.#createEngine(record.plan, request.authorityRef, authority, emit)
+    let recordedReplay: WorkflowRecordedReplay | undefined
+    if (isRecordedReplayOrigin(record.execution.origin) && !isTerminal(record.checkpoint.status)) {
+      const sourceRef = record.execution.origin.sourceRef
+      const source = sourceRef === undefined ? undefined : await this.#runStore.loadRun(sourceRef)
+      if (source?.execution.authorityRef !== record.execution.authorityRef || source?.runId === record.runId) {
+        throw new Error('recorded replay cannot resume without its matching source evidence')
+      }
+      recordedReplay = await this.#prepareRecordedReplay(source)
+    }
     const run = await engine.resume({
       runId: request.runId,
       execution: { authorityRef: request.authorityRef, authority, origin: { type: 'sdk', source: 'resume' } },
       ...(request.signal === undefined ? {} : { signal: request.signal }),
       ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
       ...(request.unknownNodeResolutions === undefined ? {} : { unknownNodeResolutions: request.unknownNodeResolutions }),
+      ...(recordedReplay === undefined ? {} : { recordedReplay }),
       onEvent: emit,
     })
     return this.#handle(run, request.authorityRef, authority)
@@ -274,13 +324,13 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     }
   }
 
-  async readEvents(runId: string, query: { readonly afterSeq?: number; readonly limit?: number } = {}): Promise<WorkflowEventPage> {
-    const after = query.afterSeq ?? 0
-    const limit = Math.min(1000, Math.max(1, query.limit ?? 100))
-    const page = await this.#runStore.readEvents(runId, { afterSeq: after, limit: limit + 1 })
-    const events = page.slice(0, limit)
-    const last = events.at(-1)?.seq
-    return { events, ...(page.length > limit && last !== undefined ? { nextAfterSeq: last } : {}) }
+  async listRuns(query?: WorkflowRunHistoryQuery) {
+    if (this.#runStore.listRuns === undefined) throw new Error('the configured workflow run store does not support run history')
+    return this.#runStore.listRuns(query)
+  }
+
+  async readEvents(runId: string, query?: WorkflowEventQuery) {
+    return readWorkflowEventPage(this.#runStore, runId, query)
   }
 
   async replay(request: WorkflowReplayRequest): Promise<WorkflowRunHandle> {
@@ -288,14 +338,8 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     if (record === undefined) throw new Error(`workflow run not found: ${request.runId}`)
     if (request.mode === 'inspect') return historicalHandle(record)
     if (request.mode === 'recorded') {
-      if (!record.plan.replayable) throw new Error('recorded replay requires implementation digests for every node definition')
-      if (record.checkpoint.status !== 'completed') throw new Error('recorded replay requires a completed source run')
-      const missing = record.template.spec.nodes
-        .filter(node => this.#isExternalNode(node.uses) && record.checkpoint.nodeOutputs[node.id] === undefined)
-        .map(node => node.id)
-      if (missing.length > 0) throw new Error(`recorded replay is missing committed external outputs: ${missing.join(', ')}`)
-      if (this.#capturePolicy.mode === 'replayable') await verifyReplayArtifacts(record, this.#artifactStore, this.#nodes)
-      const engine = new DagWorkflowEngine(this.#nodes, this.#services, {
+      const recordedReplay = await this.#prepareRecordedReplay(record)
+      const engine = new DagWorkflowEngine(this.#nodes, {}, {
         runStore: this.#runStore,
         capture: this.#capture,
         deploymentLimits: this.#deploymentLimits,
@@ -309,7 +353,7 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
           authority: request.authority,
           origin: { type: 'replay', source: 'recorded', sourceRef: request.runId },
         },
-        recordedNodeOutputs: record.checkpoint.nodeOutputs,
+        recordedReplay,
         ...(request.signal === undefined ? {} : { signal: request.signal }),
         ...(request.interruptionSignal === undefined ? {} : { interruptionSignal: request.interruptionSignal }),
         onEvent: event => this.#projectLive(event),
@@ -416,7 +460,8 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
 
   #handle(run: WorkflowEngineRun, authorityRef: string, authority: unknown): WorkflowRunHandle {
     this.#active.set(run.id, run)
-    void run.result.finally(() => { if (this.#active.get(run.id) === run) this.#active.delete(run.id) })
+    const release = () => { if (this.#active.get(run.id) === run) this.#active.delete(run.id) }
+    void run.result.then(release, release)
     let observedResult: Promise<WorkflowRunResult> | undefined
     const live = this.#live
     const store = this.#runStore
@@ -509,40 +554,36 @@ export class WorkflowRuntime implements WorkflowRuntimeApi {
     })
   }
 
-  #isExternalNode(uses: string): boolean {
-    return this.#nodes.resolve(uses)?.effects === 'external'
+  async #prepareRecordedReplay(record: WorkflowRunRecord): Promise<WorkflowRecordedReplay> {
+    const evidence = buildRecordedReplay(record, this.#nodes)
+    if (this.#capturePolicy.mode === 'replayable') await verifyReplayArtifacts(evidence, this.#artifactStore)
+    return evidence
   }
 }
 
 async function verifyReplayArtifacts(
-  record: WorkflowRunRecord,
+  evidence: WorkflowRecordedReplay,
   store: WorkflowArtifactStore | undefined,
-  nodes: WorkflowNodeRegistry,
 ): Promise<void> {
   if (store === undefined) throw new Error('recorded replay requires the configured artifact store')
   const decoder = new TextDecoder()
-  for (const node of record.template.spec.nodes.filter(item => nodes.resolve(item.uses)?.effects === 'external')) {
-    const event = record.events.findLast(item => item.type === 'capability.completed' && item.node?.id === node.id)
-    const rawRef = event?.payload.artifact
-    if (!isArtifactRef(rawRef)) throw new Error(`recorded replay is missing replayable artifact for external node: ${node.id}`)
-    if (rawRef.redacted) throw new Error(`recorded replay cannot use a redacted artifact for external node: ${node.id}`)
-    const artifacts = await store.read([rawRef])
+  for (const [nodeId, recorded] of Object.entries(evidence.nodeResults)) {
+    const ref = recorded.artifact
+    if (ref === undefined) throw new Error(`recorded replay is missing replayable artifact for external node: ${nodeId}`)
+    if (ref.redacted) throw new Error(`recorded replay cannot use a redacted artifact for external node: ${nodeId}`)
+    const artifacts = await store.read([ref])
     const artifact = artifacts[0]
-    if (artifact === undefined) throw new Error(`recorded replay artifact is unavailable for external node: ${node.id}`)
-    if (artifact.redacted) throw new Error(`recorded replay cannot use a redacted artifact for external node: ${node.id}`)
+    if (artifact === undefined) throw new Error(`recorded replay artifact is unavailable for external node: ${nodeId}`)
+    if (artifact.redacted) throw new Error(`recorded replay cannot use a redacted artifact for external node: ${nodeId}`)
     let captured: unknown
-    try { captured = JSON.parse(decoder.decode(artifact.content)) } catch { throw new Error(`recorded replay artifact is not valid JSON for external node: ${node.id}`) }
-    const committed = record.checkpoint.nodeOutputs[node.id]
-    if (committed === undefined || stableJsonStringify(captured as JsonValue) !== stableJsonStringify(committed)) {
-      throw new Error(`recorded replay artifact does not match committed output for external node: ${node.id}`)
+    try { captured = JSON.parse(decoder.decode(artifact.content)) } catch { throw new Error(`recorded replay artifact is not valid JSON for external node: ${nodeId}`) }
+    if (artifact.digest !== ref.digest || artifact.mediaType !== ref.mediaType || artifact.size !== ref.size
+      || artifact.content.byteLength !== ref.size || createHash('sha256').update(artifact.content).digest('hex') !== ref.digest
+      || (recorded.dataHash !== undefined && recorded.dataHash !== ref.digest)
+      || stableJsonStringify(captured as JsonValue) !== stableJsonStringify(recorded.outputs)) {
+      throw new Error(`recorded replay artifact does not match committed output for external node: ${nodeId}`)
     }
   }
-}
-
-function isArtifactRef(value: JsonValue | undefined): value is JsonObject & import('../journal/index.js').WorkflowArtifactRef {
-  return isJsonObject(value)
-    && typeof value.digest === 'string' && typeof value.size === 'number'
-    && typeof value.mediaType === 'string' && typeof value.redacted === 'boolean'
 }
 
 function createCaptureGateway(
@@ -610,9 +651,10 @@ function isTerminal(status: WorkflowRunRecord['checkpoint']['status']): boolean 
 
 async function waitForPersistedResult(store: WorkflowRunStore, runId: string): Promise<WorkflowRunResult> {
   for (;;) {
-    const checkpoint = await store.getCheckpoint(runId)
-    if (checkpoint === undefined) throw new Error(`workflow run disappeared while awaiting idempotent result: ${runId}`)
-    if (isTerminal(checkpoint.status) || checkpoint.status === 'paused') {
+    const status = store.getRunStatus === undefined
+      ? (await store.getCheckpoint(runId))?.status : await store.getRunStatus(runId)
+    if (status === undefined) throw new Error(`workflow run disappeared while awaiting idempotent result: ${runId}`)
+    if (isTerminal(status) || status === 'paused') {
       const record = await store.loadRun(runId)
       if (record === undefined) throw new Error(`workflow run disappeared while reading terminal result: ${runId}`)
       return resultOf(record)
@@ -622,12 +664,7 @@ async function waitForPersistedResult(store: WorkflowRunStore, runId: string): P
 }
 
 function dependenciesOf(template: WorkflowTemplate): { readonly id: string; readonly revision: number }[] {
-  return template.spec.nodes.flatMap(node => {
-    if (node.uses !== 'workflow.call@1' && node.uses !== 'core.foreach@1') return []
-    return typeof node.with.templateId === 'string' && typeof node.with.revision === 'number'
-      ? [{ id: node.with.templateId, revision: node.with.revision }]
-      : []
-  })
+  return template.spec.nodes.map(publishedWorkflowDependency).filter(item => item !== undefined)
 }
 
 function planForEntry(
